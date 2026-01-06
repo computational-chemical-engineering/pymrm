@@ -1,9 +1,9 @@
 # pymrm: Python Package for Multiphase Reactor Modeling
 
-[![CI](https://github.com/multiscale-modelling-multiphase-flows/pymrm/actions/workflows/test.yml/badge.svg)](https://github.com/multiscale-modelling-multiphase-flows/pymrm/actions/workflows/test.yml)
+[![CI](https://github.com/computational-chemical-engineering/pymrm/actions/workflows/test.yml/badge.svg)](https://github.com/computational-chemical-engineering/pymrm/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/pymrm.svg)](https://pypi.org/project/pymrm/)
 [![Python](https://img.shields.io/pypi/pyversions/pymrm.svg)](https://pypi.org/project/pymrm/)
-[![License](https://img.shields.io/github/license/multiscale-modelling-multiphase-flows/pymrm)](https://github.com/multiscale-modelling-multiphase-flows/pymrm/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/computational-chemical-engineering/pymrm)](https://github.com/computational-chemical-engineering/pymrm/blob/main/LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![DOI](https://zenodo.org/badge/901029258.svg)](https://zenodo.org/badge/latestdoi/901029258)
 
@@ -25,13 +25,13 @@ Install pymrm directly from PyPI:
 pip install pymrm
 ```
 
-For detailed instructions, see the [Installation Guide](https://github.com/multiscale-modelling-multiphase-flows/pymrm/blob/main/docs/installation.md).
+For detailed instructions, see the [Installation Guide](https://github.com/computational-chemical-engineering/pymrm/blob/main/docs/installation.md).
 
 ## Quickstart
 
-Start with the tutorials in the [`tutorials`](https://github.com/multiscale-modelling-multiphase-flows/pymrm/tree/main/tutorials) folder to learn the basics of pymrm. Then, explore the [`examples`](https://github.com/multiscale-modelling-multiphase-flows/pymrm/tree/main/examples) folder for more advanced use cases, including modeling diffusion, convection, and reaction processes.
+Start with the tutorials in the [`tutorials`](https://github.com/computational-chemical-engineering/pymrm/tree/main/tutorials) folder to learn the basics of pymrm. Then, explore the [`examples`](https://github.com/computational-chemical-engineering/pymrm/tree/main/examples) folder for more advanced use cases, including modeling diffusion, convection, and reaction processes.
 
-For extensive documentation, exercises, and additional resources, visit the [PyMRM documentation site](https://multiscale-modelling-multiphase-flows.github.io/pymrm-book).
+For extensive documentation, exercises, and additional resources, visit the [PyMRM documentation site](https://computational-chemical-engineering.github.io/pymrm-book).
 
 ## Helper utilities
 
