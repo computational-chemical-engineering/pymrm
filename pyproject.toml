@@ -37,8 +37,8 @@ dependencies = { file = ["requirements.txt"]}
 write_to = "src/pymrm/_version.py"
 
 [project.urls]
-Homepage = "https://multiscale-modelling-multiphase-flows.github.io/pymrm-book"
-Repository = "https://github.com/multiscale-modelling-multiphase-flows/pymrm"
+Homepage = "https://computational-chemical-engineering.github.io/pymrm-book"
+Repository = "https://github.com/computational-chemical-engineering/pymrm"
 
 [tool.pytest.ini_options]
 addopts = [
