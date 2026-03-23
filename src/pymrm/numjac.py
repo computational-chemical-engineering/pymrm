@@ -20,7 +20,7 @@ Dependencies:
 """
 
 import numpy as np
-from scipy.sparse import csc_array, csr_array, sparray
+from scipy.sparse import csc_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from numba import njit, prange
 from pymrm.helpers import _sparse_array
