@@ -95,22 +95,19 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0):
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
 
+    n0, n1, n2 = shape_t
     if isinstance(v, (float, int)):
         v_t = np.broadcast_to(np.array(v), shape_f_t)
     else:
         v_t = v.reshape(shape_f_t)
     fltr_v_pos = v_t > 0
-    i_f = (
-        (shape_t[1] + 1) * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-        + shape_t[2] * np.arange(1, shape_t[1]).reshape((1, -1, 1))  # noqa: E128
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
-    )  # noqa: E128
-    i_c = (
-        shape_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-        + shape_t[2] * np.arange(1, shape_t[1]).reshape((1, -1, 1))  # noqa: E128
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
-    )  # noqa: E128
-    i_c = i_c - shape_t[2] * fltr_v_pos[:, 1:-1, :]
+    # Internal faces: indices 1 .. n1-1 along the axis
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i1_int = np.arange(1, n1).reshape(1, -1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    i_f = np.ravel_multi_index((i0, i1_int, i2), shape_f_t)
+    # Upwind: shift cell index left by 1 when velocity is positive
+    i_c = np.ravel_multi_index((i0, i1_int - fltr_v_pos[:, 1:-1, :], i2), shape_t)
     conv_matrix = csc_array(
         (v_t[:, 1:-1, :].ravel(), (i_f.ravel(), i_c.ravel())),
         shape=(math.prod(shape_f_t), math.prod(shape_t)),
@@ -148,8 +145,12 @@ def construct_convflux_bc(
     shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+
     # Handle special case with one cell in the dimension axis
-    if shape_t[1] == 1:
+    if n1 == 1:
         a, b, d = [
             [
                 (
@@ -163,15 +164,12 @@ def construct_convflux_bc(
         ]
         if x_c is None:
             x_c = 0.5 * (x_f[0:-1] + x_f[1:])
-        i_c = (
-            shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-            + np.array([0, 0]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        # Both faces reference cell 0
+        i_c = np.ravel_multi_index(
+            (i0, np.array([0, 0]).reshape(1, -1, 1), i2), shape_t
         )
-        i_f = (
-            shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-            + shape_t[2] * np.array([0, 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        i_f = np.ravel_multi_index(
+            (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
         )
         values = np.empty(shape_f_t)
         alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
@@ -193,12 +191,10 @@ def construct_convflux_bc(
             shape,
         ).reshape(shape_bc_d)
 
-        i_f_bc = (
-            shape_f_t[1] * shape_f_t[2] * np.arange(shape_f_t[0]).reshape((-1, 1, 1))
-            + shape_f_t[2] * np.array([0, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_f_t[2]).reshape((1, 1, -1))
+        i_f_bc = np.ravel_multi_index(
+            (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        values_bc = np.empty((shape_t[0], 2, shape_t[2]))
+        values_bc = np.empty((n0, 2, n2))
         values_bc[:, 0, :] = np.broadcast_to(
             ((a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]) * fctr,
             shape_bc,
@@ -225,25 +221,18 @@ def construct_convflux_bc(
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
         )
     else:
-        i_c = (
-            shape_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-            + shape_t[2]
-            * np.array([0, 1, shape_t[1] - 2, shape_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        # Cell indices: 2 near left + 2 near right boundary
+        cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
+        i_c = np.ravel_multi_index((i0, cell_axis_idx, i2), shape_t)
+        # Face indices: left face (0) twice, right face twice
+        nf = shape_f_t[1]
+        face_axis_idx = np.array([0, 0, nf - 1, nf - 1]).reshape(1, -1, 1)
+        i_f = np.ravel_multi_index((i0, face_axis_idx, i2), shape_f_t)
+        i_f_bc = np.ravel_multi_index(
+            (i0, np.array([0, nf - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        i_f = (
-            shape_f_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-            + shape_t[2]
-            * np.array([0, 0, shape_f_t[1] - 1, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
-        )
-        i_f_bc = (
-            shape_f_t[1] * shape_f_t[2] * np.arange(shape_f_t[0]).reshape((-1, 1, 1))
-            + shape_f_t[2] * np.array([0, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_f_t[2]).reshape((1, 1, -1))
-        )
-        values_bc = np.empty((shape_t[0], 2, shape_t[2]))
-        values = np.empty((shape_t[0], 4, shape_t[2]))
+        values_bc = np.empty((n0, 2, n2))
+        values = np.empty((n0, 4, n2))
         if x_c is None:
             x_c = 0.5 * np.array(
                 [x_f[0] + x_f[1], x_f[1] + x_f[2], x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]]

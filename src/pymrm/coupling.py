@@ -264,16 +264,16 @@ def construct_interface_matrices(
         values[j] = np.concatenate(values[j], axis=axis)
 
     shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
-    row_indices = (
-        shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-        + np.zeros((1, 4, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    # Row indices: flat index into the interface (n0 x n2) array
+    row_indices = np.ravel_multi_index(
+        (i0, np.zeros((1, 4, 1), dtype=int), i2), (n0, 1, n2)
     )
-    col_indices = (
-        shape_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-        + shape_t[2] * (shapes[0][axis] + np.array([-2, -1, 0, 1])).reshape((1, 4, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
-    )
+    # Column indices: 4-point stencil around the interface
+    stencil = (shapes[0][axis] + np.array([-2, -1, 0, 1])).reshape(1, -1, 1)
+    col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
 
     # Create the sparse matrix representing the interface
     interface_matrix = [None] * 2
@@ -287,9 +287,9 @@ def construct_interface_matrices(
             shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
         )
 
-    row_indices_bc = shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1)) + np.arange(
-        shape_t[2]
-    ).reshape((1, -1))
+    row_indices_bc = np.ravel_multi_index(
+        (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
+    )
     if shapes_d[0] is None and shapes_d[1] is None:
         interface_bc = [None] * 2
         for j in range(2):
