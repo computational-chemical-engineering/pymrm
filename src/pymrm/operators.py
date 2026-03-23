@@ -22,12 +22,12 @@ Dependencies:
 import math
 import numpy as np
 from scipy.sparse import csc_array
-from pymrm.helpers import unwrap_bc_coeff
+from pymrm.helpers import unwrap_bc_coeff, _sparse_array
 from pymrm.grid import generate_grid
 
 
 def construct_grad(
-    shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None)
+    shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None), format="csc"
 ):
     """
     Construct the gradient matrix for spatial differentiation.
@@ -39,17 +39,19 @@ def construct_grad(
         bc (tuple, optional): Boundary conditions as a tuple of dictionaries. Default is (None, None).
         axis (int, optional): Axis of differentiation. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition contributions. Default is (None, None).
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Gradient matrix.
-        csc_array or tuple: Gradient contribution from boundary conditions. If `shapes_d` is provided, returns a tuple.
+        csc_array or csr_array: Gradient matrix.
+        csc_array or csr_array: Gradient contribution from boundary conditions.
+            If ``shapes_d`` is provided, returns a tuple.
     """
     if isinstance(shape, int):
         shape = (shape,)
     else:
         shape = tuple(shape)
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
-    grad_matrix = construct_grad_int(shape, x_f, x_c, axis)
+    grad_matrix = construct_grad_int(shape, x_f, x_c, axis, format=format)
 
     if bc == (None, None):
         shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
@@ -57,18 +59,22 @@ def construct_grad(
         return grad_matrix, grad_bc
     else:
         if shapes_d is None or shapes_d == (None, None):
-            grad_matrix_bc, grad_bc = construct_grad_bc(shape, x_f, x_c, bc, axis)
+            grad_matrix_bc, grad_bc = construct_grad_bc(
+                shape, x_f, x_c, bc, axis, format=format
+            )
             grad_matrix += grad_matrix_bc
             return grad_matrix, grad_bc
         else:
             grad_matrix_bc_0, grad_bc_0, grad_matrix_bc_1, grad_bc_1 = (
-                construct_grad_bc(shape, x_f, x_c, bc, axis, shapes_d=shapes_d)
+                construct_grad_bc(
+                    shape, x_f, x_c, bc, axis, shapes_d=shapes_d, format=format
+                )
             )
             grad_matrix += grad_matrix_bc_0 + grad_matrix_bc_1
             return grad_matrix, grad_bc_0, grad_bc_1
 
 
-def construct_grad_int(shape, x_f, x_c=None, axis=0):
+def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     """
     Construct the gradient matrix for internal faces.
 
@@ -77,9 +83,10 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0):
         x_f (ndarray): Face coordinates.
         x_c (ndarray, optional): Cell center coordinates. If not provided, they are calculated.
         axis (int, optional): Axis of differentiation. Default is 0.
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Gradient matrix for internal faces.
+        csc_array or csr_array: Gradient matrix for internal faces.
     """
     if axis < 0:
         axis += len(shape)
@@ -108,15 +115,22 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0):
     values[:, 1:, :, 0] = dx_inv
     values[:, :-1, :, 1] = -dx_inv
     values[:, -1, :, 1] = np.zeros((n0, n2))
-    grad_matrix = csc_array(
-        (values.ravel(), i_f.ravel(), range(0, i_f.size + 1, 2)),
-        shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
-    )
+    if format == "csc":
+        grad_matrix = csc_array(
+            (values.ravel(), i_f.ravel(), range(0, i_f.size + 1, 2)),
+            shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
+        )
+    else:
+        grad_matrix = _sparse_array(
+            (values.ravel(), (i_f.ravel(), np.repeat(np.arange(n0 * n1 * n2), 2))),
+            shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
+            format=format,
+        )
     return grad_matrix
 
 
 def construct_grad_bc(
-    shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None)
+    shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None), format="csc"
 ):
     """
     Construct the gradient matrix for boundary faces.
@@ -128,10 +142,11 @@ def construct_grad_bc(
         bc (tuple, optional): Boundary conditions as a tuple of dictionaries. Default is (None, None).
         axis (int, optional): Axis of differentiation. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition contributions. Default is (None, None).
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array or tuple: Gradient matrix for boundary faces and contributions from inhomogeneous boundary conditions.
-                            If `shapes_d` is provided, returns a tuple of matrices.
+        csc_array/csr_array or tuple: Gradient matrix for boundary faces and contributions from
+            inhomogeneous boundary conditions.  If ``shapes_d`` is provided, returns a tuple of matrices.
     """
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -289,9 +304,10 @@ def construct_grad_bc(
             (values_bc.ravel(), i_f_bc.ravel(), [0, i_f_bc.size]),
             shape=(math.prod(shape_f_t), 1),
         )
-        grad_matrix = csc_array(
+        grad_matrix = _sparse_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
+            format=format,
         )
         return grad_matrix, grad_bc
     else:
@@ -313,36 +329,40 @@ def construct_grad_bc(
                 shape=(math.prod(shape_f_t), num_cols),
             )
         if shape_t[1] == 1:
-            grad_matrix_0 = csc_array(
+            grad_matrix_0 = _sparse_array(
                 (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
-            grad_matrix_1 = csc_array(
+            grad_matrix_1 = _sparse_array(
                 (
                     values[:, -1, :].ravel(),
                     (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
         else:
-            grad_matrix_0 = csc_array(
+            grad_matrix_0 = _sparse_array(
                 (
                     values[:, :2, :].ravel(),
                     (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
-            grad_matrix_1 = csc_array(
+            grad_matrix_1 = _sparse_array(
                 (
                     values[:, -2:, :].ravel(),
                     (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
         return grad_matrix_0, grad_bc[0], grad_matrix_1, grad_bc[1]
 
 
-def construct_div(shape, x_f, nu=0, axis=0):
+def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     """
     Construct the divergence matrix for flux calculations.
 
@@ -352,9 +372,10 @@ def construct_div(shape, x_f, nu=0, axis=0):
         nu (int or callable, optional): Geometry factor (0: flat, 1: cylindrical,
             2: spherical, or a callable for custom geometry). Default is 0.
         axis (int, optional): Axis along which divergence is computed. Default is 0.
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Divergence matrix.
+        csc_array or csr_array: Divergence matrix.
     """
     if isinstance(shape, int):
         shape = (shape,)
@@ -401,9 +422,10 @@ def construct_div(shape, x_f, nu=0, axis=0):
     values = np.tile(values.reshape((1, -1, 1, 2)), (shape_t[0], 1, shape_t[2]))
 
     num_cells = np.prod(shape_t, dtype=int)
-    div_matrix = csc_array(
+    div_matrix = _sparse_array(
         (values.ravel(), (np.repeat(np.arange(num_cells), 2), i_f.ravel())),
         shape=(num_cells, np.prod(shape_f_t, dtype=int)),
+        format=format,
     )
     div_matrix.sort_indices()
     return div_matrix

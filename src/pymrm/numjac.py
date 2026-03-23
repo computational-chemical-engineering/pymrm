@@ -20,9 +20,10 @@ Dependencies:
 """
 
 import numpy as np
-from scipy.sparse import csc_array, sparray
+from scipy.sparse import csc_array, csr_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from numba import njit, prange
+from pymrm.helpers import _sparse_array
 
 
 def expand_dependencies(shape_in, shape_out, dependencies):
@@ -559,6 +560,7 @@ class NumJac:
         shape_out=None,
         stencil=stencil_block_diagonals,
         eps_jac=1e-6,
+        format="csc",
         **kwargs,
     ):
         """
@@ -570,6 +572,7 @@ class NumJac:
         - shape_out (tuple, optional): Shape of the output array (used when shape != shape_out).
         - stencil (callable, optional): Function to generate the stencil. Default is stencil_block_diagonals.
         - eps_jac (float, optional): Perturbation size for numerical Jacobian. Default is 1e-6.
+        - format (str, optional): Sparse format for the Jacobian, ``'csc'`` (default) or ``'csr'``.
         - **kwargs: Additional keyword arguments passed to the stencil function.
         """
         if shape is not None and (shape_in is not None or shape_out is not None):
@@ -595,6 +598,7 @@ class NumJac:
             )
 
         self.eps_jac = eps_jac
+        self.format = format
 
         # Initialize stencil
         self.init_stencil(stencil, **kwargs)
@@ -703,6 +707,10 @@ class NumJac:
             df.reshape((self.num_gr, -1))[self.gr.ravel()[self.cols], self.rows]
             / dc.ravel()[self.cols]
         )
-        jac = csc_array((values, (self.rows, self.cols)), shape=(f_value.size, c.size))
+        jac = _sparse_array(
+            (values, (self.rows, self.cols)),
+            shape=(f_value.size, c.size),
+            format=self.format,
+        )
 
         return f_value, jac

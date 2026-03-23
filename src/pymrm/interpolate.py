@@ -36,7 +36,7 @@ Dependencies:
 import math
 import numpy as np
 from scipy.sparse import csc_array
-from .helpers import unwrap_bc_coeff
+from .helpers import unwrap_bc_coeff, _sparse_array
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
@@ -575,10 +575,10 @@ def compute_boundary_values(
 
 
 def construct_boundary_value_matrices(
-    shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None
+    shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None, format="csc"
 ):
     """
-    Constructs thr matrices that can be used to compute boundary values
+    Constructs the matrices that can be used to compute boundary values.
 
     Args:
         shape (tuple): Shape of the multi-dimensional array.
@@ -588,10 +588,11 @@ def construct_boundary_value_matrices(
         axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
         bound_id (int, optional): Identifier for the boundary condition. Must be 0 or 1. Default is 0.
         shape_d (tuple, optional): Shape for inhomogeneous boundary condition matrices. Default is None.
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: homogeneous-part matrix
-        csc_array: inhomogeneous-part matrix
+        csc_array or csr_array: homogeneous-part matrix
+        csc_array or csr_array: inhomogeneous-part matrix
     """
 
     if bound_id not in (0, 1):
@@ -674,9 +675,10 @@ def construct_boundary_value_matrices(
         )
         values_bc[fltr] = 0.0
 
-    matrix = csc_array(
+    matrix = _sparse_array(
         (values.ravel(), (i_f.ravel(), i_c.ravel())),
         shape=(math.prod(shape_bc), math.prod(shape_t)),
+        format=format,
     )
     matrix.sort_indices()
     if shape_d is None:

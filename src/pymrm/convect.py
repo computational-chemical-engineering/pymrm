@@ -29,11 +29,12 @@ import numpy as np
 from scipy.sparse import csc_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array
-from .helpers import unwrap_bc_coeff
+from .helpers import unwrap_bc_coeff, _sparse_array
 
 
 def construct_convflux_upwind(
-    shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None)
+    shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
+    format="csc"
 ):
     """
     Constructs the convective flux matrix using the upwind scheme.
@@ -47,10 +48,11 @@ def construct_convflux_upwind(
         v (float or ndarray): Velocities on face positions. Can be a scalar or an array.
         axis (int, optional): The axis along which the convection takes place. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Convective flux matrix for internal faces.
-        csc_array: Convective flux matrix for boundary conditions.
+        csc_array or csr_array: Convective flux matrix for internal faces.
+        csc_array or csr_array: Convective flux matrix for boundary conditions.
     """
     if isinstance(shape, int):
         shape = (shape,)
@@ -59,7 +61,7 @@ def construct_convflux_upwind(
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
 
     v_f = create_staggered_array(v, shape, axis, x_f=x_f, x_c=x_c)
-    conv_matrix = construct_convflux_upwind_int(shape, v_f, axis)
+    conv_matrix = construct_convflux_upwind_int(shape, v_f, axis, format=format)
     if bc is None or bc == (None, None):
         shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
         conv_bc = csc_array((math.prod(shape_f), 1))
@@ -67,19 +69,21 @@ def construct_convflux_upwind(
     else:
         if shapes_d is None or shapes_d == (None, None):
             conv_matrix_bc, conv_bc = construct_convflux_bc(
-                shape, x_f, x_c, bc, v_f, axis
+                shape, x_f, x_c, bc, v_f, axis, format=format
             )
             conv_matrix += conv_matrix_bc
             return conv_matrix, conv_bc
         else:
             conv_matrix_bc_0, conv_bc_0, conv_matrix_bc_1, conv_bc_1 = (
-                construct_convflux_bc(shape, x_f, x_c, bc, v_f, axis, shapes_d=shapes_d)
+                construct_convflux_bc(
+                    shape, x_f, x_c, bc, v_f, axis, shapes_d=shapes_d, format=format
+                )
             )
             conv_matrix += conv_matrix_bc_0 + conv_matrix_bc_1
             return conv_matrix, conv_bc_0, conv_bc_1
 
 
-def construct_convflux_upwind_int(shape, v=1.0, axis=0):
+def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
     """
     Constructs the convective flux matrix for internal faces using the upwind scheme.
 
@@ -87,9 +91,10 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0):
         shape (tuple): Shape of the multi-dimensional array.
         v (float or ndarray): Velocity array. Can be a scalar or an array.
         axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Convective flux matrix for internal faces.
+        csc_array or csr_array: Convective flux matrix for internal faces.
     """
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -108,16 +113,18 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0):
     i_f = np.ravel_multi_index((i0, i1_int, i2), shape_f_t)
     # Upwind: shift cell index left by 1 when velocity is positive
     i_c = np.ravel_multi_index((i0, i1_int - fltr_v_pos[:, 1:-1, :], i2), shape_t)
-    conv_matrix = csc_array(
+    conv_matrix = _sparse_array(
         (v_t[:, 1:-1, :].ravel(), (i_f.ravel(), i_c.ravel())),
         shape=(math.prod(shape_f_t), math.prod(shape_t)),
+        format=format,
     )
     conv_matrix.sort_indices()
     return conv_matrix
 
 
 def construct_convflux_bc(
-    shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None)
+    shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
+    format="csc"
 ):
     """
     Constructs the convective flux matrix for boundary faces using the upwind scheme.
@@ -132,10 +139,11 @@ def construct_convflux_bc(
         v (float or ndarray): Velocity array. Can be a scalar or an array.
         axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: Convective flux matrix for internal faces.
-        csc_array: Convective flux matrix for boundary conditions.
+        csc_array or csr_array: Convective flux matrix for internal faces.
+        csc_array or csr_array: Convective flux matrix for boundary conditions.
     """
 
     # Trick: Reshape to triplet shape_t
@@ -216,9 +224,10 @@ def construct_convflux_bc(
             values *= v[tuple(slicer)]
             values_bc = values_bc.reshape(shape_f_b)
             values_bc *= v[tuple(slicer)]
-        conv_matrix = csc_array(
+        conv_matrix = _sparse_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
+            format=format,
         )
     else:
         # Cell indices: 2 near left + 2 near right boundary
@@ -301,9 +310,10 @@ def construct_convflux_bc(
             (values_bc.ravel(), i_f_bc.ravel(), [0, i_f_bc.size]),
             shape=(math.prod(shape_f_t), 1),
         )
-        conv_matrix = csc_array(
+        conv_matrix = _sparse_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
+            format=format,
         )
         conv_matrix.sort_indices()
         return conv_matrix, conv_bc
@@ -326,31 +336,35 @@ def construct_convflux_bc(
                 shape=(math.prod(shape_f_t), num_cols),
             )
         if shape_t[1] == 1:
-            conv_matrix_0 = csc_array(
+            conv_matrix_0 = _sparse_array(
                 (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
-            conv_matrix_1 = csc_array(
+            conv_matrix_1 = _sparse_array(
                 (
                     values[:, -1, :].ravel(),
                     (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
         else:
-            conv_matrix_0 = csc_array(
+            conv_matrix_0 = _sparse_array(
                 (
                     values[:, :2, :].ravel(),
                     (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
-            conv_matrix_1 = csc_array(
+            conv_matrix_1 = _sparse_array(
                 (
                     values[:, -2:, :].ravel(),
                     (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
                 ),
                 shape=(math.prod(shape_f_t), math.prod(shape_t)),
+                format=format,
             )
         return conv_matrix_0, conv_bc[0], conv_matrix_1, conv_bc[1]
 
