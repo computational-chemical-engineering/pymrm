@@ -146,11 +146,12 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
     Rectangular coupling (cell centers -> axial faces):
         A = construct_coefficient_matrix(alpha, shape=((1, Nr), (Nz, Nr)), axis=0)
     """
-    fmt = format  # keep the diags call format separate
+    fmt = format
     if fmt not in ("csc", "csr"):
         raise ValueError(f"format must be one of {{'csc', 'csr'}}, got {fmt!r}")
+    cls = csc_array if fmt == "csc" else csr_array
     if shape is None:
-        coeff_matrix = _sparse_array(diags(coefficients.ravel(), format=fmt), format=fmt)
+        coeff_matrix = cls(diags(coefficients.ravel(), format=fmt))
     elif all(isinstance(t, tuple) for t in shape):
         shape_rows = shape[0]
         shape_cols = shape[1]
@@ -196,5 +197,5 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
         ) + coefficients_copy.shape
         coefficients_copy = coefficients_copy.reshape(shape_coeff)
         coefficients_copy = np.broadcast_to(coefficients_copy, shape)
-        coeff_matrix = _sparse_array(diags(coefficients_copy.ravel(), format=fmt), format=fmt)
+        coeff_matrix = cls(diags(coefficients_copy.ravel(), format=fmt))
     return coeff_matrix
