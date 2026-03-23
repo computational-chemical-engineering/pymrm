@@ -23,7 +23,6 @@ import numpy as np
 from scipy.sparse import csc_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from numba import njit, prange
-import numpy as np
 
 
 def expand_dependencies(shape_in, shape_out, dependencies):
@@ -154,7 +153,7 @@ def expand_dependencies(shape_in, shape_out, dependencies):
     # Now expand reference and dependent indices
     expanded_deps = []
     for idx_in, idx_out, fixed_axes, periodic_axes in normalized_deps:
-        if idx_out == None:
+        if idx_out is None:
             if len(fixed_axes) > 0:
                 raise ValueError(
                     "Fixed axes are not allowed when the out-index is None."

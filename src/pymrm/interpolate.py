@@ -57,8 +57,8 @@ def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
         axis += len(shape_f)
     shape_f_t = [
         math.prod(shape_f[:axis]),
-        math.prod(shape_f[axis : axis + 1]),
-        math.prod(shape_f[axis + 1 :]),
+        math.prod(shape_f[axis: axis + 1]),
+        math.prod(shape_f[axis + 1:]),
     ]
     shape = shape_f.copy()
     shape[axis] -= 1
@@ -95,8 +95,8 @@ def interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0):
         axis += len(shape)
     shape_t = [
         math.prod(shape[:axis]),
-        math.prod(shape[axis : axis + 1]),
-        math.prod(shape[axis + 1 :]),
+        math.prod(shape[axis: axis + 1]),
+        math.prod(shape[axis + 1:]),
     ]
     shape_f = shape.copy()
     shape_f[axis] += 1
@@ -150,8 +150,8 @@ def interp_cntr_to_stagg_tvd(
         axis += len(shape)
     shape_t = [
         math.prod(shape[:axis]),
-        math.prod(shape[axis : axis + 1]),
-        math.prod(shape[axis + 1 :]),
+        math.prod(shape[axis: axis + 1]),
+        math.prod(shape[axis + 1:]),
     ]  # reshape as a triplet
     shape_f = shape.copy()
     shape_f[axis] = shape[axis] + 1
@@ -394,8 +394,8 @@ def compute_boundary_values(
         axis += len(shape)
     shape_t = [
         math.prod(shape[:axis]),
-        math.prod(shape[axis : axis + 1]),
-        math.prod(shape[axis + 1 :]),
+        math.prod(shape[axis: axis + 1]),
+        math.prod(shape[axis + 1:]),
     ]  # reshape as a triplet
     shape_b_t = shape_t.copy()
     shape_b_t[1] = 2
@@ -598,10 +598,10 @@ def construct_boundary_value_matrices(
         raise ValueError("bound_id must be 0 or 1")
 
     # Trick: Reshape to triplet shape_t
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1 :]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1 :]
+    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
     # Handle special case with one cell in the dimension axis

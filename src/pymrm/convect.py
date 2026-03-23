@@ -42,7 +42,8 @@ def construct_convflux_upwind(
         shape (tuple or int): Shape of the multi-dimensional array. If an integer is provided, it is treated as 1D.
         x_f (ndarray): Face positions.
         x_c (ndarray, optional): Cell positions. If not provided, it will be calculated based on the face array.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries for left and right boundaries. Default is (None, None).
+        bc (tuple, optional): Boundary conditions as a tuple of dictionaries
+            for left and right boundaries. Default is (None, None).
         v (float or ndarray): Velocities on face positions. Can be a scalar or an array.
         axis (int, optional): The axis along which the convection takes place. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
@@ -60,7 +61,7 @@ def construct_convflux_upwind(
     v_f = create_staggered_array(v, shape, axis, x_f=x_f, x_c=x_c)
     conv_matrix = construct_convflux_upwind_int(shape, v_f, axis)
     if bc is None or bc == (None, None):
-        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
+        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
         conv_bc = csc_array((math.prod(shape_f), 1))
         return conv_matrix, conv_bc
     else:
@@ -90,8 +91,8 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0):
     Returns:
         csc_array: Convective flux matrix for internal faces.
     """
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1 :]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
 
     if isinstance(v, (float, int)):
@@ -127,8 +128,10 @@ def construct_convflux_bc(
     Args:
         shape (tuple): Shape of the multi-dimensional array.
         x_f (ndarray): Face positions.
-        x_c (ndarray, optional): Cell-centered positions. If not provided, it is calculated based on the face array.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries for left and right boundaries. Default is (None, None).
+        x_c (ndarray, optional): Cell-centered positions. If not provided,
+            it is calculated based on the face array.
+        bc (tuple, optional): Boundary conditions as a tuple of dictionaries
+            for left and right boundaries. Default is (None, None).
         v (float or ndarray): Velocity array. Can be a scalar or an array.
         axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
         shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
@@ -139,10 +142,10 @@ def construct_convflux_bc(
     """
 
     # Trick: Reshape to triplet shape_t
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1 :]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1 :]
+    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
     # Handle special case with one cell in the dimension axis
