@@ -263,7 +263,7 @@ def construct_interface_matrices(
             values[j][i] = np.broadcast_to(values[j][i], shape_i)
         values[j] = np.concatenate(values[j], axis=axis)
 
-    shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1 :])]
+    shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
     row_indices = (
         shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
         + np.zeros((1, 4, 1))

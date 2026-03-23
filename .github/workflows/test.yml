@@ -11,6 +11,7 @@ on:
       - dev
 permissions:
   checks: write
+  pull-requests: write
   contents: read
 jobs:
   unit_test:

@@ -52,7 +52,7 @@ def construct_grad(
     grad_matrix = construct_grad_int(shape, x_f, x_c, axis)
 
     if bc == (None, None):
-        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
+        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
         grad_bc = csc_array((math.prod(shape_f), 1))
         return grad_matrix, grad_bc
     else:
@@ -85,8 +85,8 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0):
         axis += len(shape)
     shape_t = [
         math.prod(shape[:axis]),
-        math.prod(shape[axis : axis + 1]),
-        math.prod(shape[axis + 1 :]),
+        math.prod(shape[axis: axis + 1]),
+        math.prod(shape[axis + 1:]),
     ]
 
     i_f = (
@@ -135,10 +135,10 @@ def construct_grad_bc(
         csc_array or tuple: Gradient matrix for boundary faces and contributions from inhomogeneous boundary conditions.
                             If `shapes_d` is provided, returns a tuple of matrices.
     """
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1 :]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1 :]
+    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
     # Handle special case with one cell in the dimension axis.
@@ -359,7 +359,8 @@ def construct_div(shape, x_f, nu=0, axis=0):
     Parameters:
         shape (tuple or int): Shape of the domain. If an integer is provided, it is converted to a tuple.
         x_f (ndarray): Face positions.
-        nu (int or callable, optional): Geometry factor (0: flat, 1: cylindrical, 2: spherical, or a callable for custom geometry). Default is 0.
+        nu (int or callable, optional): Geometry factor (0: flat, 1: cylindrical,
+            2: spherical, or a callable for custom geometry). Default is 0.
         axis (int, optional): Axis along which divergence is computed. Default is 0.
 
     Returns:
@@ -371,8 +372,8 @@ def construct_div(shape, x_f, nu=0, axis=0):
         shape = tuple(shape)
     x_f = generate_grid(shape[axis], x_f)
 
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1 :]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1 :]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
 
     i_f = (

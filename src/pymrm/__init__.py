@@ -117,4 +117,5 @@ __all__ = [
     "NumJac",
     "stencil_block_diagonals",
     "construct_coefficient_matrix",
+    "__version__",
 ]
