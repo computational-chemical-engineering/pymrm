@@ -147,6 +147,8 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
         A = construct_coefficient_matrix(alpha, shape=((1, Nr), (Nz, Nr)), axis=0)
     """
     fmt = format  # keep the diags call format separate
+    if fmt not in ("csc", "csr"):
+        raise ValueError(f"format must be one of {{'csc', 'csr'}}, got {fmt!r}")
     if shape is None:
         coeff_matrix = _sparse_array(diags(coefficients.ravel(), format=fmt), format=fmt)
     elif all(isinstance(t, tuple) for t in shape):
