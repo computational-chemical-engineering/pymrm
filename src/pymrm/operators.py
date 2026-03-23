@@ -89,30 +89,28 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0):
         math.prod(shape[axis + 1:]),
     ]
 
-    i_f = (
-        (shape_t[1] + 1) * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1, 1)
-        + shape_t[2] * np.arange(shape_t[1]).reshape((1, -1, 1, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1, 1))
-        + np.array([0, shape_t[2]]).reshape((1, 1, 1, -1))
-    )
+    n0, n1, n2 = shape_t
+    # Open grids for each dimension; the 4th axis selects the face-pair [j, j+1]
+    i0 = np.arange(n0).reshape(-1, 1, 1, 1)
+    i1 = np.arange(n1).reshape(1, -1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1, 1)
+    face_pair = np.array([0, 1]).reshape(1, 1, 1, -1)
+    i_f = np.ravel_multi_index((i0, i1 + face_pair, i2), (n0, n1 + 1, n2))
 
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
 
     dx_inv = np.tile(
-        1 / (x_c[1:] - x_c[:-1]).reshape((1, -1, 1)), (shape_t[0], 1, shape_t[2])
+        1 / (x_c[1:] - x_c[:-1]).reshape((1, -1, 1)), (n0, 1, n2)
     )
     values = np.empty(i_f.shape)
-    values[:, 0, :, 0] = np.zeros((shape_t[0], shape_t[2]))
+    values[:, 0, :, 0] = np.zeros((n0, n2))
     values[:, 1:, :, 0] = dx_inv
     values[:, :-1, :, 1] = -dx_inv
-    values[:, -1, :, 1] = np.zeros((shape_t[0], shape_t[2]))
+    values[:, -1, :, 1] = np.zeros((n0, n2))
     grad_matrix = csc_array(
         (values.ravel(), i_f.ravel(), range(0, i_f.size + 1, 2)),
-        shape=(
-            shape_t[0] * (shape_t[1] + 1) * shape_t[2],
-            shape_t[0] * shape_t[1] * shape_t[2],
-        ),
+        shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
     )
     return grad_matrix
 
@@ -145,18 +143,19 @@ def construct_grad_bc(
     # This is convenient e.g. for flexibility where you can choose not to
     # spatially discretize a direction, but still use a BC, e.g. with a mass transfer coefficient
     # It is a bit subtle because in this case the two opposite faces influence each other
-    if shape_t[1] == 1:
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+
+    if n1 == 1:
         if x_c is None:
             x_c = 0.5 * (x_f[0:-1] + x_f[1:])
-        i_c = (
-            shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-            + np.array([0, 0]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        # Both faces reference cell 0
+        i_c = np.ravel_multi_index(
+            (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, n1, n2)
         )
-        i_f = (
-            shape_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1))
-            + shape_t[2] * np.array([0, 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        i_f = np.ravel_multi_index(
+            (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
         )
         values = np.empty(shape_f_t)
         alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
@@ -190,12 +189,10 @@ def construct_grad_bc(
         )
         values[:, 1, :] = np.reshape(value, shape_bc_d)
 
-        i_f_bc = (
-            shape_f_t[1] * shape_f_t[2] * np.arange(shape_f_t[0]).reshape((-1, 1, 1))
-            + shape_f_t[2] * np.array([0, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_f_t[2]).reshape((1, 1, -1))
+        i_f_bc = np.ravel_multi_index(
+            (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        values_bc = np.empty((shape_t[0], 2, shape_t[2]))
+        values_bc = np.empty((n0, 2, n2))
         value = np.broadcast_to(
             (
                 (
@@ -225,25 +222,18 @@ def construct_grad_bc(
         )
         values_bc[:, 1, :] = np.reshape(value, shape_bc_d)
     else:
-        i_c = (
-            shape_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-            + shape_t[2]
-            * np.array([0, 1, shape_t[1] - 2, shape_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
+        # Cell indices: 2 near left boundary + 2 near right boundary
+        cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
+        i_c = np.ravel_multi_index((i0, cell_axis_idx, i2), shape_t)
+        # Face indices: left face (0) twice, right face (n1) twice
+        nf = shape_f_t[1]
+        face_axis_idx = np.array([0, 0, nf - 1, nf - 1]).reshape(1, -1, 1)
+        i_f = np.ravel_multi_index((i0, face_axis_idx, i2), shape_f_t)
+        i_f_bc = np.ravel_multi_index(
+            (i0, np.array([0, nf - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        i_f = (
-            shape_f_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-            + shape_t[2]
-            * np.array([0, 0, shape_f_t[1] - 1, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_t[2]).reshape((1, 1, -1))
-        )
-        i_f_bc = (
-            shape_f_t[1] * shape_f_t[2] * np.arange(shape_f_t[0]).reshape((-1, 1, 1))
-            + shape_f_t[2] * np.array([0, shape_f_t[1] - 1]).reshape((1, -1, 1))
-            + np.arange(shape_f_t[2]).reshape((1, 1, -1))
-        )
-        values_bc = np.empty((shape_t[0], 2, shape_t[2]))
-        values = np.empty((shape_t[0], 4, shape_t[2]))
+        values_bc = np.empty((n0, 2, n2))
+        values = np.empty((n0, 4, n2))
         if x_c is None:
             x_c = 0.5 * np.array(
                 [x_f[0] + x_f[1], x_f[1] + x_f[2], x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]]
@@ -376,12 +366,13 @@ def construct_div(shape, x_f, nu=0, axis=0):
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
 
-    i_f = (
-        shape_f_t[1] * shape_f_t[2] * np.arange(shape_t[0]).reshape((-1, 1, 1, 1))
-        + shape_f_t[2] * np.arange(shape_t[1]).reshape((1, -1, 1, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1, 1))
-        + np.array([0, shape_t[2]]).reshape((1, 1, 1, -1))
-    )
+    n0, n1, n2 = shape_t
+    # Each cell references its left face [j] and right face [j+1]
+    i0 = np.arange(n0).reshape(-1, 1, 1, 1)
+    i1 = np.arange(n1).reshape(1, -1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1, 1)
+    face_pair = np.array([0, 1]).reshape(1, 1, 1, -1)
+    i_f = np.ravel_multi_index((i0, i1 + face_pair, i2), shape_f_t)
 
     if callable(nu):
         area = nu(x_f).ravel()

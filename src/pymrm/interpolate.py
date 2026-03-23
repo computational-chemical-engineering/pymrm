@@ -598,9 +598,7 @@ def construct_boundary_value_matrices(
         raise ValueError("bound_id must be 0 or 1")
 
     # Trick: Reshape to triplet shape_t
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
     shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
@@ -623,19 +621,20 @@ def construct_boundary_value_matrices(
             x_c = 0.5 * np.array([x_f[0] + x_f[1], x_f[1] + x_f[2]])
         else:
             x_c = 0.5 * np.array([x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]])
-    i_c = (
-        shape_t[1] * shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-        + shape_t[2] * np.array([idx_c_0, idx_c_1]).reshape((1, -1, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    # Cell indices: two cells nearest the boundary
+    i_c = np.ravel_multi_index(
+        (i0, np.array([idx_c_0, idx_c_1]).reshape(1, -1, 1), i2), shape_t
     )
-    i_f = (
-        shape_t[2] * np.arange(shape_t[0]).reshape(-1, 1, 1)
-        + np.array([0, 0]).reshape((1, -1, 1))
-        + np.arange(shape_t[2]).reshape((1, 1, -1))
+    # Row indices: both entries map to row 0 (single boundary row per batch)
+    i_f = np.ravel_multi_index(
+        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, 1, n2)
     )
-    i_f_bc = shape_f_t[2] * np.arange(shape_f_t[0]).reshape((-1, 1, 1)) + np.arange(
-        shape_f_t[2]
-    ).reshape((1, 1, -1))
+    i_f_bc = np.ravel_multi_index(
+        (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
+    ).reshape(n0, 1, n2)
     values_bc = np.empty((shape_t[0], shape_t[2]))
     values = np.empty((shape_t[0], 2, shape_t[2]))
 
