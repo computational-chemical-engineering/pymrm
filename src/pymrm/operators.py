@@ -327,7 +327,7 @@ def construct_grad_bc(
         values_bc[:, -1, :] = d_fctr
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         grad_bc = csc_array(
-            (values_bc.ravel(), i_f_bc.ravel(), [0, i_f_bc.size]),
+            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
             shape=(math.prod(shape_f_t), 1),
         )
         grad_matrix = _sparse_array(
@@ -445,13 +445,48 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     values = np.empty((shape_t[1], 2))
     values[:, 0] = -area[:-1] * dvol_inv
     values[:, 1] = area[1:] * dvol_inv
+    values_raw = values  # per-axis values (n1, 2) before tiling
     values = np.tile(values.reshape((1, -1, 1, 2)), (shape_t[0], 1, shape_t[2]))
 
     num_cells = np.prod(shape_t, dtype=int)
-    div_matrix = _sparse_array(
-        (values.ravel(), (np.repeat(np.arange(num_cells), 2), i_f.ravel())),
-        shape=(num_cells, np.prod(shape_f_t, dtype=int)),
-        format=format,
-    )
+    num_face_flat = np.prod(shape_f_t, dtype=int)
+    if format == "csc":
+        # Build CSC data in column (face) order with indptr.
+        # Cell indices: shape (n0, n1, n2)
+        i_c = np.ravel_multi_index(
+            (i0[..., 0], i1[..., 0], i2[..., 0]), (n0, n1, n2)
+        )
+        # (n0, n1+1, n2, 2): slot 0 = from cell j-1, slot 1 = from cell j
+        csc_data = np.zeros((n0, n1 + 1, n2, 2))
+        csc_rows = np.empty((n0, n1 + 1, n2, 2), dtype=np.intp)
+        # Slot 0: entry from cell j-1 (right face = face j), valid j=1..n1
+        csc_data[:, 1:, :, 0] = values_raw[:, 1].reshape(1, n1, 1)
+        csc_rows[:, 1:, :, 0] = i_c
+        # Face 0 has no cell j-1; use cell 0's row so the dummy zero
+        # entry lands on a valid row that already carries a zero value.
+        csc_rows[:, 0, :, 0] = i_c[:, 0, :]
+        # Slot 1: entry from cell j (left face = face j), valid j=0..n1-1
+        csc_data[:, :-1, :, 1] = values_raw[:, 0].reshape(1, n1, 1)
+        csc_rows[:, :-1, :, 1] = i_c
+        # Face n1 has no cell j; use cell n1-1's row so the dummy zero
+        # entry lands on a valid row that already carries a zero value.
+        csc_rows[:, -1, :, 1] = i_c[:, -1, :]
+        # Uniform 2 entries per column → simple indptr
+        indptr = np.arange(0, 2 * num_face_flat + 1, 2, dtype=np.intp)
+        div_matrix = csc_array(
+            (csc_data.ravel(), csc_rows.ravel(), indptr),
+            shape=(num_cells, num_face_flat),
+        )
+    elif format == "csr":
+        # Uniform 2 entries per row (each cell references left + right face)
+        indptr = np.arange(0, 2 * num_cells + 1, 2, dtype=np.intp)
+        div_matrix = csr_array(
+            (values.ravel(), i_f.ravel(), indptr),
+            shape=(num_cells, num_face_flat),
+        )
+    else:
+        raise ValueError(
+            f"format must be 'csc' or 'csr', got {format!r}"
+        )
     div_matrix.sort_indices()
     return div_matrix

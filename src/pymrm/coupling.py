@@ -420,7 +420,7 @@ def construct_interface_matrices(
             values_filtered = values_bc.ravel()[fltr]
             row_indices_filtered = row_indices_bc.ravel()[fltr]
             interface_bc[j] = csc_array(
-                (values_filtered, row_indices_filtered, [0, row_indices_filtered.size]),
+                (values_filtered, row_indices_filtered, np.array([0, row_indices_filtered.size])),
                 shape=(shape_t[0] * shape_t[2], 1),
             )
         return (
@@ -443,7 +443,7 @@ def construct_interface_matrices(
                         (
                             values_filtered,
                             row_indices_filtered,
-                            [0, row_indices_filtered.size],
+                            np.array([0, row_indices_filtered.size]),
                         ),
                         shape=(shape_t[0] * shape_t[2], 1),
                     )

@@ -26,7 +26,7 @@ Dependencies:
 
 import math
 import numpy as np
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array
 from .helpers import unwrap_bc_coeff, _sparse_array
@@ -113,11 +113,26 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
     i_f = np.ravel_multi_index((i0, i1_int, i2), shape_f_t)
     # Upwind: shift cell index left by 1 when velocity is positive
     i_c = np.ravel_multi_index((i0, i1_int - fltr_v_pos[:, 1:-1, :], i2), shape_t)
-    conv_matrix = _sparse_array(
-        (v_t[:, 1:-1, :].ravel(), (i_f.ravel(), i_c.ravel())),
-        shape=(math.prod(shape_f_t), math.prod(shape_t)),
-        format=format,
-    )
+    if format == "csc":
+        conv_matrix = csc_array(
+            (v_t[:, 1:-1, :].ravel(), (i_f.ravel(), i_c.ravel())),
+            shape=(math.prod(shape_f_t), math.prod(shape_t)),
+        )
+    elif format == "csr":
+        # Each internal face (j=1..n1-1) has 1 entry; boundary faces have 0.
+        nnz_per_face = np.zeros(n1 + 1, dtype=np.intp)
+        nnz_per_face[1:n1] = 1
+        row_nnz = np.tile(np.repeat(nnz_per_face, n2), n0)
+        indptr = np.zeros(n0 * (n1 + 1) * n2 + 1, dtype=np.intp)
+        np.cumsum(row_nnz, out=indptr[1:])
+        conv_matrix = csr_array(
+            (v_t[:, 1:-1, :].ravel(), i_c.ravel(), indptr),
+            shape=(math.prod(shape_f_t), math.prod(shape_t)),
+        )
+    else:
+        raise ValueError(
+            f"format must be 'csc' or 'csr', got {format!r}"
+        )
     conv_matrix.sort_indices()
     return conv_matrix
 
@@ -307,7 +322,7 @@ def construct_convflux_bc(
 
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         conv_bc = csc_array(
-            (values_bc.ravel(), i_f_bc.ravel(), [0, i_f_bc.size]),
+            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
             shape=(math.prod(shape_f_t), 1),
         )
         conv_matrix = _sparse_array(
