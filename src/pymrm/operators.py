@@ -445,7 +445,7 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     values = np.empty((shape_t[1], 2))
     values[:, 0] = -area[:-1] * dvol_inv
     values[:, 1] = area[1:] * dvol_inv
-    values_raw = values  # per-axis values (n1, 2) before tiling
+    values_per_axis = values  # per-axis values (n1, 2) before tiling
     values = np.tile(values.reshape((1, -1, 1, 2)), (shape_t[0], 1, shape_t[2]))
 
     num_cells = np.prod(shape_t, dtype=int)
@@ -460,13 +460,13 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
         csc_data = np.zeros((n0, n1 + 1, n2, 2))
         csc_rows = np.empty((n0, n1 + 1, n2, 2), dtype=np.intp)
         # Slot 0: entry from cell j-1 (right face = face j), valid j=1..n1
-        csc_data[:, 1:, :, 0] = values_raw[:, 1].reshape(1, n1, 1)
+        csc_data[:, 1:, :, 0] = values_per_axis[:, 1].reshape(1, n1, 1)
         csc_rows[:, 1:, :, 0] = i_c
         # Face 0 has no cell j-1; use cell 0's row so the dummy zero
         # entry lands on a valid row that already carries a zero value.
         csc_rows[:, 0, :, 0] = i_c[:, 0, :]
         # Slot 1: entry from cell j (left face = face j), valid j=0..n1-1
-        csc_data[:, :-1, :, 1] = values_raw[:, 0].reshape(1, n1, 1)
+        csc_data[:, :-1, :, 1] = values_per_axis[:, 0].reshape(1, n1, 1)
         csc_rows[:, :-1, :, 1] = i_c
         # Face n1 has no cell j; use cell n1-1's row so the dummy zero
         # entry lands on a valid row that already carries a zero value.
