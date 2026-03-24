@@ -12,6 +12,11 @@ from pymrm.convect import upwind, minmod, vanleer
 from pymrm.grid import generate_grid
 
 
+@pytest.fixture(params=["csc", "csr"])
+def sparse_format(request):
+    return request.param
+
+
 # ---------------------------------------------------------------------------
 # Existing tests
 # ---------------------------------------------------------------------------
@@ -72,7 +77,7 @@ def test_compute_boundary_values():
     assert abs(boundary_grad - 1.0) < tol
 
 
-def test_construct_boundary_value_matrices():
+def test_construct_boundary_value_matrices(sparse_format):
     tol = 1e-12
     num_x = 2
     x_f = np.linspace(0.0, 1.0, num_x + 1)
@@ -81,7 +86,7 @@ def test_construct_boundary_value_matrices():
     # Left boundary condition
     bc_left = {"a": -1, "b": 1, "d": 1}
     matrix, matrix_bc = construct_boundary_value_matrices(
-        c.shape, x_f, bc=bc_left, bound_id=0
+        c.shape, x_f, bc=bc_left, bound_id=0, format=sparse_format
     )
     boundary_value = matrix @ c.reshape((-1, 1)) + matrix_bc
     assert np.allclose(boundary_value, 0.0, atol=tol)
@@ -89,7 +94,7 @@ def test_construct_boundary_value_matrices():
     # Right boundary condition
     bc_right = {"a": 1, "b": 1, "d": 2}
     matrix, matrix_bc = construct_boundary_value_matrices(
-        c.shape, x_f, bc=bc_right, bound_id=1
+        c.shape, x_f, bc=bc_right, bound_id=1, format=sparse_format
     )
     boundary_value = matrix @ c.reshape((-1, 1)) + matrix_bc
     assert np.allclose(boundary_value, 1.0, atol=tol)
@@ -234,7 +239,7 @@ def test_compute_boundary_values_single_cell_both_bounds():
     assert len(result) == 4
 
 
-def test_construct_boundary_value_matrices_no_xc():
+def test_construct_boundary_value_matrices_no_xc(sparse_format):
     """x_c=None: should auto-compute from x_f."""
     n = 4
     x_f = np.linspace(0.0, 1.0, n + 1)
@@ -242,20 +247,20 @@ def test_construct_boundary_value_matrices_no_xc():
     bc = {"a": 0, "b": 1, "d": 1.0}
     # Should work without providing x_c
     matrix, mat_bc = construct_boundary_value_matrices(
-        shape, x_f, x_c=None, bc=bc, bound_id=0
+        shape, x_f, x_c=None, bc=bc, bound_id=0, format=sparse_format
     )
     assert matrix.shape[0] == 1
     assert mat_bc.shape[0] == 1
 
 
-def test_construct_boundary_value_matrices_shape_d():
+def test_construct_boundary_value_matrices_shape_d(sparse_format):
     """shape_d argument enables coupling to a separate field shape."""
     n = 4
     x_f = np.linspace(0.0, 1.0, n + 1)
     shape = (n,)
     bc = {"a": 0, "b": 1, "d": 0.0}
     matrix, matrix_bc = construct_boundary_value_matrices(
-        shape, x_f, bc=bc, bound_id=0, shape_d=(1,)
+        shape, x_f, bc=bc, bound_id=0, shape_d=(1,), format=sparse_format
     )
     # shape_d=(1,) means the BC term is a single column
     assert matrix_bc.shape[1] == 1

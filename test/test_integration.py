@@ -32,6 +32,11 @@ def _make_1d_grid(n, x_left=0.0, x_right=1.0):
     return shape, x_f, x_c
 
 
+@pytest.fixture(params=["csc", "csr"])
+def sparse_format(request):
+    return request.param
+
+
 # ---------------------------------------------------------------------------
 # 1. 1D steady-state diffusion  (d²c/dx² = 0)
 # ---------------------------------------------------------------------------
@@ -42,15 +47,15 @@ class TestSteadyDiffusion1D:
     Analytical solution: c(x) = c_L + (c_R - c_L) * x.
     """
 
-    def test_linear_profile_exact(self):
+    def test_linear_profile_exact(self, sparse_format):
         n = 20
         D = 1.0
         c_L, c_R = 0.0, 1.0
         shape, x_f, x_c = _make_1d_grid(n)
 
         bc = ({"a": 0, "b": 1, "d": c_L}, {"a": 0, "b": 1, "d": c_R})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
 
         A = D * (div @ grad)
         b = -(D * (div @ grad_bc)).toarray().ravel()
@@ -59,15 +64,15 @@ class TestSteadyDiffusion1D:
         c_exact = c_L + (c_R - c_L) * x_c
         np.testing.assert_allclose(c, c_exact, atol=1e-10)
 
-    def test_non_zero_left_boundary(self):
+    def test_non_zero_left_boundary(self, sparse_format):
         n = 16
         D = 2.5
         c_L, c_R = 3.0, 7.0
         shape, x_f, x_c = _make_1d_grid(n)
 
         bc = ({"a": 0, "b": 1, "d": c_L}, {"a": 0, "b": 1, "d": c_R})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
 
         A = D * (div @ grad)
         b = -(D * (div @ grad_bc)).toarray().ravel()
@@ -76,7 +81,7 @@ class TestSteadyDiffusion1D:
         c_exact = c_L + (c_R - c_L) * x_c
         np.testing.assert_allclose(c, c_exact, atol=1e-10)
 
-    def test_neumann_bc_right(self):
+    def test_neumann_bc_right(self, sparse_format):
         """Left Dirichlet, right homogeneous Neumann (zero flux)."""
         n = 10
         D = 1.0
@@ -85,8 +90,8 @@ class TestSteadyDiffusion1D:
 
         # Right BC: a=1, b=0, d=0 → dc/dn = 0 (Neumann)
         bc = ({"a": 0, "b": 1, "d": c_L}, {"a": 1, "b": 0, "d": 0.0})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
 
         A = D * (div @ grad)
         b = -(D * (div @ grad_bc)).toarray().ravel()
@@ -107,37 +112,39 @@ class TestSteadyConvectionDiffusion1D:
     where Pe = v * L / D.
     """
 
-    def _solve_conv_diff(self, n, Pe):
+    def _solve_conv_diff(self, n, Pe, sparse_format):
         D = 1.0
         v_val = Pe * D  # so that Pe = v/D over L=1
         shape, x_f, x_c = _make_1d_grid(n)
         bc = ({"a": 0, "b": 1, "d": 0.0}, {"a": 0, "b": 1, "d": 1.0})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
-        conv, conv_bc = construct_convflux_upwind(shape, x_f, bc=bc, v=v_val)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
+        conv, conv_bc = construct_convflux_upwind(shape, x_f, bc=bc, v=v_val,
+                                                  format=sparse_format)
 
         # Steady: div @ (v*c - D*grad*c) = 0
         A = div @ conv - D * (div @ grad)
         b = -(div @ conv_bc - D * (div @ grad_bc)).toarray().ravel()
         return spsolve(A, b), x_c
 
-    def test_low_peclet(self):
+    def test_low_peclet(self, sparse_format):
         """Low Peclet number: upwind scheme approaches exact solution."""
         n = 100
         Pe = 1.0
-        c, x_c = self._solve_conv_diff(n, Pe)
+        c, x_c = self._solve_conv_diff(n, Pe, sparse_format)
         c_exact = (np.exp(Pe * x_c) - 1) / (np.exp(Pe) - 1)
         # Upwind is first-order; allow 5% relative tolerance
         np.testing.assert_allclose(c, c_exact, rtol=0.05)
 
-    def test_zero_velocity_gives_linear(self):
+    def test_zero_velocity_gives_linear(self, sparse_format):
         """Zero velocity: reduces to pure diffusion → linear profile."""
         n = 20
         shape, x_f, x_c = _make_1d_grid(n)
         bc = ({"a": 0, "b": 1, "d": 0.0}, {"a": 0, "b": 1, "d": 1.0})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
-        conv, conv_bc = construct_convflux_upwind(shape, x_f, bc=bc, v=0.0)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
+        conv, conv_bc = construct_convflux_upwind(shape, x_f, bc=bc, v=0.0,
+                                                  format=sparse_format)
         D = 1.0
         A = div @ conv - D * (div @ grad)
         b = -(div @ conv_bc - D * (div @ grad_bc)).toarray().ravel()
@@ -158,7 +165,7 @@ class TestNonlinearReactionDiffusion1D:
     where phi = L * sqrt(k/D) is the Thiele modulus.
     """
 
-    def test_thiele_modulus(self):
+    def test_thiele_modulus(self, sparse_format):
         n = 80
         D = 1.0
         k = 9.0       # phi = sqrt(k/D) = 3
@@ -168,15 +175,15 @@ class TestNonlinearReactionDiffusion1D:
 
         shape, x_f, x_c = _make_1d_grid(n, 0.0, L)
         bc = ({"a": 0, "b": 1, "d": c_L}, {"a": 0, "b": 1, "d": c_R})
-        grad, grad_bc = construct_grad(shape, x_f, bc=bc)
-        div = construct_div(shape, x_f)
+        grad, grad_bc = construct_grad(shape, x_f, bc=bc, format=sparse_format)
+        div = construct_div(shape, x_f, format=sparse_format)
 
         # Laplacian operator and BC constant term
         # sign convention: A_lap @ c + b_bc = D * div @ (grad @ c + grad_bc)
         A_lap = D * (div @ grad)
         b_bc = (D * (div @ grad_bc)).toarray().ravel()
 
-        numjac = NumJac(shape)
+        numjac = NumJac(shape, format=sparse_format)
 
         # Residual: D*d2c/dx2 - k*c = 0
         # => (A_lap - k*I) @ c + b_bc = 0
@@ -215,7 +222,7 @@ class TestSteadyDiffusion2D:
     Analytical solution: c(x, y) = x  (uniform in y).
     """
 
-    def test_2d_dirichlet_neumann(self):
+    def test_2d_dirichlet_neumann(self, sparse_format):
         n_x, n_y = 10, 8
         D = 1.0
         shape = (n_x, n_y)
@@ -224,13 +231,15 @@ class TestSteadyDiffusion2D:
 
         # x-direction: Dirichlet c(0)=0, c(1)=1
         bc_x = ({"a": 0, "b": 1, "d": 0.0}, {"a": 0, "b": 1, "d": 1.0})
-        grad_x, grad_bc_x = construct_grad(shape, x_f, bc=bc_x, axis=0)
-        div_x = construct_div(shape, x_f, axis=0)
+        grad_x, grad_bc_x = construct_grad(shape, x_f, bc=bc_x, axis=0,
+                                           format=sparse_format)
+        div_x = construct_div(shape, x_f, axis=0, format=sparse_format)
 
         # y-direction: homogeneous Neumann (no flux)
         bc_y = ({"a": 1, "b": 0, "d": 0.0}, {"a": 1, "b": 0, "d": 0.0})
-        grad_y, grad_bc_y = construct_grad(shape, y_f, bc=bc_y, axis=1)
-        div_y = construct_div(shape, y_f, axis=1)
+        grad_y, grad_bc_y = construct_grad(shape, y_f, bc=bc_y, axis=1,
+                                           format=sparse_format)
+        div_y = construct_div(shape, y_f, axis=1, format=sparse_format)
 
         # 2D Laplacian
         A = D * (div_x @ grad_x + div_y @ grad_y)
@@ -274,11 +283,11 @@ class TestTVDInterpolation:
 class TestNewtonNumJacIntegration:
     """Test that Newton + NumJac solve a nonlinear system correctly."""
 
-    def test_quadratic_system(self):
+    def test_quadratic_system(self, sparse_format):
         """Solve the system x_i^2 = i+1 for i=0..n-1."""
         n = 6
         targets = np.arange(1.0, n + 1)
-        numjac = NumJac((n,))
+        numjac = NumJac((n,), format=sparse_format)
 
         def residual(x):
             return x**2 - targets
