@@ -14,11 +14,45 @@ Functions
     Expand boundary-condition coefficients to match an arbitrary domain shape.
 ``construct_coefficient_matrix``
     Create a sparse diagonal matrix from coefficient values.
+``_sparse_array``
+    Internal helper to construct a sparse array in the requested format.
 """
 
 import math
 import numpy as np
-from scipy.sparse import diags, csc_array
+from scipy.sparse import diags, csc_array, csr_array
+
+
+_FORMATS = {"csc", "csr"}
+
+
+def _sparse_array(args, shape=None, format="csc"):
+    """Create a sparse array in the requested format.
+
+    This is an internal helper used throughout pymrm to honour the user's
+    choice of sparse storage format while keeping the public API simple.
+
+    Parameters
+    ----------
+    args : tuple
+        Arguments forwarded to the sparse-array constructor.  Accepted forms
+        are the same as for ``scipy.sparse.csc_array`` / ``csr_array``:
+        ``(data, (rows, cols))``, ``(data, indices, indptr)``, etc.
+    shape : tuple of int, optional
+        Shape of the resulting sparse matrix.
+    format : {'csc', 'csr'}, optional
+        Sparse storage format.  Default is ``'csc'``.
+
+    Returns
+    -------
+    scipy.sparse.csc_array or scipy.sparse.csr_array
+    """
+    if format not in _FORMATS:
+        raise ValueError(f"format must be one of {_FORMATS!r}, got {format!r}")
+    cls = csc_array if format == "csc" else csr_array
+    if shape is not None:
+        return cls(args, shape=shape)
+    return cls(args)
 
 
 def unwrap_bc_coeff(shape, bc_coeff, axis=0):
@@ -54,7 +88,7 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
-def construct_coefficient_matrix(coefficients, shape=None, axis=None):
+def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="csc"):
     """
     Build a sparse coefficient matrix with optional broadcasting and (row, col) coupling.
 
@@ -90,11 +124,13 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None):
         Selects mode (see above).
     axis : int, optional
         Staggered axis: length along this axis is increased by 1 for broadcasting.
+    format : {'csc', 'csr'}, optional
+        Sparse storage format.  Default is ``'csc'``.
 
     Returns
     -------
-    csc_array
-        Sparse matrix in CSC format.
+    csc_array or csr_array
+        Sparse matrix in the requested format.
 
     Notes
     -----
@@ -110,8 +146,12 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None):
     Rectangular coupling (cell centers -> axial faces):
         A = construct_coefficient_matrix(alpha, shape=((1, Nr), (Nz, Nr)), axis=0)
     """
+    fmt = format
+    if fmt not in ("csc", "csr"):
+        raise ValueError(f"format must be one of {{'csc', 'csr'}}, got {fmt!r}")
+    cls = csc_array if fmt == "csc" else csr_array
     if shape is None:
-        coeff_matrix = csc_array(diags(coefficients.ravel(), format="csc"))
+        coeff_matrix = cls(diags(coefficients.ravel(), format=fmt))
     elif all(isinstance(t, tuple) for t in shape):
         shape_rows = shape[0]
         shape_cols = shape[1]
@@ -143,8 +183,10 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None):
         num_cols = math.prod(shape_cols)
         cols = np.arange(num_cols).reshape(shape_cols)
         cols = np.broadcast_to(cols, working_shape).ravel()
-        coeff_matrix = csc_array(
-            (coefficients_copy.ravel(), (rows, cols)), shape=(num_rows, num_cols)
+        coeff_matrix = _sparse_array(
+            (coefficients_copy.ravel(), (rows, cols)),
+            shape=(num_rows, num_cols),
+            format=fmt,
         )
     else:
         if axis is not None:
@@ -155,5 +197,5 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None):
         ) + coefficients_copy.shape
         coefficients_copy = coefficients_copy.reshape(shape_coeff)
         coefficients_copy = np.broadcast_to(coefficients_copy, shape)
-        coeff_matrix = csc_array(diags(coefficients_copy.ravel(), format="csc"))
+        coeff_matrix = cls(diags(coefficients_copy.ravel(), format=fmt))
     return coeff_matrix

@@ -8,6 +8,11 @@ from pymrm import (
 )
 
 
+@pytest.fixture(params=["csc", "csr"])
+def sparse_format(request):
+    return request.param
+
+
 # ---------------------------------------------------------------------------
 # Existing tests
 # ---------------------------------------------------------------------------
@@ -91,7 +96,7 @@ def test_update_csc_array_indices_with_offset():
 # construct_interface_matrices
 # ---------------------------------------------------------------------------
 
-def test_construct_interface_matrices_basic():
+def test_construct_interface_matrices_basic(sparse_format):
     """Basic interface matrix construction should return 4 sparse arrays."""
     n1, n2 = 5, 5
     shapes = ((n1,), (n2,))
@@ -99,14 +104,14 @@ def test_construct_interface_matrices_basic():
     x_f2 = np.linspace(1, 2, n2 + 1)
     x_fs = (x_f1, x_f2)
 
-    result = construct_interface_matrices(shapes, x_fs)
+    result = construct_interface_matrices(shapes, x_fs, format=sparse_format)
     # Should return (interface_matrix_0, interface_bc_0, interface_matrix_1, interface_bc_1)
     assert len(result) == 4
     for mat in result:
         assert issparse(mat)
 
 
-def test_construct_interface_matrices_shapes():
+def test_construct_interface_matrices_shapes(sparse_format):
     """Interface matrices should have the correct shapes."""
     n1, n2 = 4, 6
     shapes = ((n1,), (n2,))
@@ -114,14 +119,15 @@ def test_construct_interface_matrices_shapes():
     x_f2 = np.linspace(1, 3, n2 + 1)
     x_fs = (x_f1, x_f2)
 
-    im0, ibc0, im1, ibc1 = construct_interface_matrices(shapes, x_fs)
+    im0, ibc0, im1, ibc1 = construct_interface_matrices(shapes, x_fs,
+                                                         format=sparse_format)
 
     # Interface matrix maps from (n1+n2,) to interface (1 point per interface)
     assert im0.shape[1] == n1 + n2
     assert im1.shape[1] == n1 + n2
 
 
-def test_construct_interface_matrices_flux_continuity():
+def test_construct_interface_matrices_flux_continuity(sparse_format):
     """Default IC ensures flux continuity at the interface."""
     n = 8
     shapes = ((n,), (n,))
@@ -129,7 +135,8 @@ def test_construct_interface_matrices_flux_continuity():
     x_f2 = np.linspace(1, 2, n + 1)
     x_fs = (x_f1, x_f2)
 
-    im0, ibc0, im1, ibc1 = construct_interface_matrices(shapes, x_fs)
+    im0, ibc0, im1, ibc1 = construct_interface_matrices(shapes, x_fs,
+                                                         format=sparse_format)
 
     # With a linear concentration profile across the interface,
     # both interface matrices should give the same interface value
@@ -153,7 +160,7 @@ def test_construct_interface_matrices_mismatched_shapes_raises():
         construct_interface_matrices(shapes, (x_f1, x_f2))
 
 
-def test_construct_interface_matrices_with_shapes_d():
+def test_construct_interface_matrices_with_shapes_d(sparse_format):
     """shapes_d enables extended return signature for coupled BC decomposition."""
     n = 4
     shapes = ((n,), (n,))
@@ -162,7 +169,7 @@ def test_construct_interface_matrices_with_shapes_d():
     x_fs = (x_f1, x_f2)
 
     result = construct_interface_matrices(
-        shapes, x_fs, shapes_d=((1,), (1,))
+        shapes, x_fs, shapes_d=((1,), (1,)), format=sparse_format
     )
     # With shapes_d, returns 6 elements
     assert len(result) == 6

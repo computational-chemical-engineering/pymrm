@@ -35,7 +35,7 @@ Dependencies:
 
 import math
 import numpy as np
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array, csr_array
 from .helpers import unwrap_bc_coeff
 
 
@@ -575,10 +575,10 @@ def compute_boundary_values(
 
 
 def construct_boundary_value_matrices(
-    shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None
+    shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None, format="csc"
 ):
     """
-    Constructs thr matrices that can be used to compute boundary values
+    Constructs the matrices that can be used to compute boundary values.
 
     Args:
         shape (tuple): Shape of the multi-dimensional array.
@@ -588,10 +588,11 @@ def construct_boundary_value_matrices(
         axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
         bound_id (int, optional): Identifier for the boundary condition. Must be 0 or 1. Default is 0.
         shape_d (tuple, optional): Shape for inhomogeneous boundary condition matrices. Default is None.
+        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
-        csc_array: homogeneous-part matrix
-        csc_array: inhomogeneous-part matrix
+        csc_array or csr_array: homogeneous-part matrix
+        csc_array or csr_array: inhomogeneous-part matrix
     """
 
     if bound_id not in (0, 1):
@@ -674,14 +675,30 @@ def construct_boundary_value_matrices(
         )
         values_bc[fltr] = 0.0
 
-    matrix = csc_array(
-        (values.ravel(), (i_f.ravel(), i_c.ravel())),
-        shape=(math.prod(shape_bc), math.prod(shape_t)),
-    )
+    if format == "csc":
+        matrix = csc_array(
+            (values.ravel(), (i_f.ravel(), i_c.ravel())),
+            shape=(math.prod(shape_bc), math.prod(shape_t)),
+        )
+    elif format == "csr":
+        # Each boundary row has 2 entries (the two nearest cells).
+        # Reorder to (n0, n2, 2) so entries are grouped by row.
+        values_csr = values.transpose(0, 2, 1)
+        cols_csr = i_c.transpose(0, 2, 1)
+        num_rows = n0 * n2
+        indptr = np.arange(0, 2 * num_rows + 1, 2, dtype=np.intp)
+        matrix = csr_array(
+            (values_csr.ravel(), cols_csr.ravel(), indptr),
+            shape=(math.prod(shape_bc), math.prod(shape_t)),
+        )
+    else:
+        raise ValueError(
+            f"format must be 'csc' or 'csr', got {format!r}"
+        )
     matrix.sort_indices()
     if shape_d is None:
         mat_bc = csc_array(
-            (values_bc.ravel(), i_f_bc.ravel(), [0, i_f_bc.size]),
+            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
             shape=(math.prod(shape_bc), 1),
         )
     else:

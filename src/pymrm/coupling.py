@@ -8,7 +8,9 @@ matrices to accommodate larger domains, and constructing interface matrices for 
 
 Key functionalities:
 - **translate_indices_to_larger_array**: Translates indices from a subdomain to a larger array.
-- **update_csc_array_indices**: Adjusts sparse matrix indices to fit a larger domain.
+- **update_array_indices**: Adjusts sparse matrix indices to fit a larger domain (format-agnostic).
+- **update_csc_array_indices**: Adjusts CSC sparse matrix indices (deprecated, use update_array_indices).
+- **update_csr_array_indices**: Adjusts CSR sparse matrix indices.
 - **construct_interface_matrices**: Constructs sparse matrices for interface conditions between coupled domains.
 
 The provided functions are particularly useful for implicit coupling approaches in computational fluid
@@ -17,9 +19,10 @@ dynamics and other numerical simulations requiring domain decomposition.
 
 import math
 import numbers
+import warnings
 import numpy as np
-from scipy.sparse import csc_array
-from pymrm.helpers import unwrap_bc_coeff
+from scipy.sparse import csc_array, csr_array
+from pymrm.helpers import unwrap_bc_coeff, _sparse_array
 
 
 def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=None):
@@ -58,9 +61,33 @@ def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=N
     return new_linear_indices
 
 
+def _parse_shape_offset(shape, new_shape, offset):
+    """Normalise *shape*, *new_shape* and *offset* into ((rows), (cols)) form.
+
+    This is a shared helper for :func:`update_csc_array_indices` and
+    :func:`update_csr_array_indices`.
+    """
+    shape = tuple(shape)
+    if all(isinstance(dim, numbers.Integral) for dim in shape):
+        shape = (shape, shape)
+    new_shape = tuple(new_shape)
+    if all(isinstance(dim, numbers.Integral) for dim in new_shape):
+        new_shape = (new_shape, new_shape)
+    if offset is None:
+        offset = (None, None)
+    else:
+        offset = tuple(offset)
+        if all(isinstance(dim, numbers.Integral) for dim in offset):
+            offset = (offset, offset)
+    return shape, new_shape, offset
+
+
 def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     """
     Update the row and column indices of a CSC-format sparse matrix to match a larger ND domain.
+
+    .. deprecated::
+        Use :func:`update_array_indices` instead, which auto-detects the sparse format.
 
     Parameters:
     -----------
@@ -78,6 +105,17 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     scipy.sparse.csc_array
         The updated sparse matrix with modified indices and shape.
     """
+    warnings.warn(
+        "update_csc_array_indices is deprecated. Use update_array_indices instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
+
+
+def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
+    """Internal implementation of CSC index update (no deprecation warning)."""
+    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
 
     # Extract matrix data and original indices
     data = sparse_mat.data
@@ -89,20 +127,6 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     # Generate original linear row and column indices
     original_linear_rows = row_indices
     original_linear_cols = np.arange(num_cols)  # Columns as a sequential array
-
-    # Translate row and column indices to the larger ND array
-    shape = tuple(shape)
-    if all(isinstance(dim, numbers.Integral) for dim in shape):
-        shape = (shape, shape)
-    new_shape = tuple(new_shape)
-    if all(isinstance(dim, numbers.Integral) for dim in new_shape):
-        new_shape = (new_shape, new_shape)
-    if offset is None:
-        offset = (None, None)
-    else:
-        offset = tuple(offset)
-        if all(isinstance(dim, numbers.Integral) for dim in offset):
-            offset = (offset, offset)
 
     if (shape[0] is None) or (new_shape[0] is None):
         new_row_indices = original_linear_rows
@@ -131,6 +155,96 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     return updated_mat
 
 
+def update_csr_array_indices(sparse_mat, shape, new_shape, offset=None):
+    """
+    Update the row and column indices of a CSR-format sparse matrix to match a larger ND domain.
+
+    Parameters:
+    -----------
+    sparse_mat : scipy.sparse.csr_array
+        The input sparse matrix in CSR format.
+    shape : tuple or ((tuple, tuple))
+        The original shape of the subdomain.
+    new_shape : tuple or ((tuple, tuple))
+        The target shape of the larger domain.
+    offset : tuple or ((tuple, tuple)), optional
+        The offset of the subdomain within the larger domain (default: None).
+
+    Returns:
+    --------
+    scipy.sparse.csr_array
+        The updated sparse matrix with modified indices and shape.
+    """
+    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
+
+    # Extract matrix data and original indices
+    data = sparse_mat.data
+    col_indices = sparse_mat.indices    # Column indices
+    row_pointers = sparse_mat.indptr    # Row pointers
+    num_rows = sparse_mat.shape[0]
+    num_cols = sparse_mat.shape[1]
+
+    original_linear_cols = col_indices
+    original_linear_rows = np.arange(num_rows)
+
+    if (shape[1] is None) or (new_shape[1] is None):
+        new_col_indices = original_linear_cols
+    else:
+        new_col_indices = translate_indices_to_larger_array(
+            original_linear_cols, shape[1], new_shape[1], offset[1]
+        )
+        num_cols = math.prod(new_shape[1])
+
+    if (shape[0] is None) or (new_shape[0] is None):
+        new_row_pointers = row_pointers
+    else:
+        new_row_indices = translate_indices_to_larger_array(
+            original_linear_rows, shape[0], new_shape[0], offset[0]
+        )
+        num_rows = math.prod(new_shape[0])
+        new_row_pointers = np.zeros(num_rows + 1, dtype=int)
+        new_row_pointers[new_row_indices + 1] = np.diff(row_pointers)
+        new_row_pointers = np.cumsum(new_row_pointers)
+
+    # Create a new sparse matrix with the corrected 2D shape
+    updated_mat = csr_array(
+        (data, new_col_indices, new_row_pointers), shape=(num_rows, num_cols)
+    )
+
+    return updated_mat
+
+
+def update_array_indices(sparse_mat, shape, new_shape, offset=None):
+    """
+    Update the row and column indices of a sparse matrix to match a larger ND domain.
+
+    Dispatches to the appropriate CSC or CSR implementation based on the format
+    of *sparse_mat*.
+
+    Parameters:
+    -----------
+    sparse_mat : scipy.sparse.csc_array or scipy.sparse.csr_array
+        The input sparse matrix.
+    shape : tuple or ((tuple, tuple))
+        The original shape of the subdomain.
+    new_shape : tuple or ((tuple, tuple))
+        The target shape of the larger domain.
+    offset : tuple or ((tuple, tuple)), optional
+        The offset of the subdomain within the larger domain (default: None).
+
+    Returns:
+    --------
+    scipy.sparse.csc_array or scipy.sparse.csr_array
+        The updated sparse matrix with modified indices and shape, in the same
+        format as the input.
+    """
+    if isinstance(sparse_mat, csr_array):
+        return update_csr_array_indices(sparse_mat, shape, new_shape, offset)
+    # Default: convert to CSC if needed, then update
+    sparse_mat = csc_array(sparse_mat)
+    return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -138,6 +252,7 @@ def construct_interface_matrices(
     ic=({"a": (1, 1), "b": (0, 0), "d": 0}, {"a": (0, 0), "b": (1, -1), "d": 0}),
     axis=0,
     shapes_d=(None, None),
+    format="csc",
 ):
     """
     Construct sparse matrices for computing interface conditions between two coupled subdomains.
@@ -149,7 +264,8 @@ def construct_interface_matrices(
     x_fs : tuple of arrays
         Face-centered grid points for the two subdomains.
     x_cs : tuple of arrays, optional
-        Cell-centered grid points for the two subdomains. If None, they are computed internally (default: (None, None)).
+        Cell-centered grid points for the two subdomains. If None, they are computed internally
+        (default: (None, None)).
     ic : tuple of dicts, optional
         Interface conditions between the two subdomains, specified as:
         - `a`: Coefficients for the normal derivative terms.
@@ -158,17 +274,21 @@ def construct_interface_matrices(
         Defaults to conditions ensuring flux continuity.
     axis : int, optional
         The axis along which the interface is constructed (default: 0).
+    shapes_d : tuple, optional
+        Shapes for decomposed boundary condition matrices (default: (None, None)).
+    format : str, optional
+        Sparse format, ``'csc'`` (default) or ``'csr'``.
 
     Returns:
     --------
-    interface_matrix_0 : scipy.sparse.csc_array
+    interface_matrix_0 : csc_array or csr_array
         Sparse matrix for computing interface values for the first subdomain.
-    interface_bc_0 : scipy.sparse.csc_array
-        Sparse matrix for boundary conditions in the first subdomain.
-    interface_matrix_1 : scipy.sparse.csc_array
+    interface_bc_0 : csc_array
+        Sparse matrix for boundary conditions in the first subdomain (always CSC for vectors).
+    interface_matrix_1 : csc_array or csr_array
         Sparse matrix for computing interface values for the second subdomain.
-    interface_bc_1 : scipy.sparse.csc_array
-        Sparse matrix for boundary conditions in the second subdomain.
+    interface_bc_1 : csc_array
+        Sparse matrix for boundary conditions in the second subdomain (always CSC for vectors).
 
     Notes:
     ------
@@ -282,9 +402,10 @@ def construct_interface_matrices(
         values_filtered = values[j].ravel()[fltr]
         row_indices_filtered = row_indices.ravel()[fltr]
         col_indices_filtered = col_indices.ravel()[fltr]
-        interface_matrix[j] = csc_array(
+        interface_matrix[j] = _sparse_array(
             (values_filtered, (row_indices_filtered, col_indices_filtered)),
             shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
+            format=format,
         )
 
     row_indices_bc = np.ravel_multi_index(
@@ -299,7 +420,7 @@ def construct_interface_matrices(
             values_filtered = values_bc.ravel()[fltr]
             row_indices_filtered = row_indices_bc.ravel()[fltr]
             interface_bc[j] = csc_array(
-                (values_filtered, row_indices_filtered, [0, row_indices_filtered.size]),
+                (values_filtered, row_indices_filtered, np.array([0, row_indices_filtered.size])),
                 shape=(shape_t[0] * shape_t[2], 1),
             )
         return (
@@ -322,7 +443,7 @@ def construct_interface_matrices(
                         (
                             values_filtered,
                             row_indices_filtered,
-                            [0, row_indices_filtered.size],
+                            np.array([0, row_indices_filtered.size]),
                         ),
                         shape=(shape_t[0] * shape_t[2], 1),
                     )
