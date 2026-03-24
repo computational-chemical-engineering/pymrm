@@ -20,10 +20,9 @@ Dependencies:
 """
 
 import numpy as np
-from scipy.sparse import csc_array, sparray
+from scipy.sparse import csc_array, csr_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from numba import njit, prange
-from pymrm.helpers import _sparse_array
 
 
 def expand_dependencies(shape_in, shape_out, dependencies):
@@ -254,17 +253,26 @@ def iterate_over_entries(
     return current_idx
 
 
-def generate_sparsity_pattern(shape_in, shape_out, dependencies):
+def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     """
     Generate row and column indices for the sparse matrix representation of a stencil pattern.
 
-    Parameters:
-    - shape_in (tuple): Shape of the input array.
-    - shape_out (tuple): Shape of the output array.
-    - dependencies (list): List of dependencies in PyMRM dependency notation.
+    Parameters
+    ----------
+    shape_in : tuple
+        Shape of the input array.
+    shape_out : tuple
+        Shape of the output array.
+    dependencies : list
+        List of dependencies in PyMRM dependency notation.
+    format : str
+        Sparse format, ``'csc'`` or ``'csr'``. Controls sort order:
+        column-major for CSC (default), row-major for CSR.
 
-    Returns:
-    - tuple: (row_indices, col_indices) for the sparse pattern.
+    Returns
+    -------
+    tuple
+        ``(row_indices, col_indices)`` for the sparse pattern.
     """
     shape_in = np.array(shape_in, dtype=np.int64)
     shape_out = np.array(shape_out, dtype=np.int64)
@@ -323,15 +331,31 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies):
             entry_index,
         )
 
-    # Sort the indices by row and then by column for canonical form
-    sorted_idx = np.unique(
-        np.concatenate(
-            (col_indices.reshape((1, -1)), row_indices.reshape((1, -1))), axis=0
-        ),
-        axis=1,
-    )
-    col_indices = sorted_idx[0, :]
-    row_indices = sorted_idx[1, :]
+    # Sort and deduplicate the indices.  The primary sort key is chosen to
+    # match the target sparse format so that the resulting index arrays are
+    # already in compressed-format order.
+    if format == "csr":
+        # Row-major: sort by (row, col) — optimal for CSR
+        sorted_idx = np.unique(
+            np.concatenate(
+                (row_indices.reshape((1, -1)), col_indices.reshape((1, -1))),
+                axis=0,
+            ),
+            axis=1,
+        )
+        row_indices = sorted_idx[0, :]
+        col_indices = sorted_idx[1, :]
+    else:
+        # Column-major: sort by (col, row) — optimal for CSC (default)
+        sorted_idx = np.unique(
+            np.concatenate(
+                (col_indices.reshape((1, -1)), row_indices.reshape((1, -1))),
+                axis=0,
+            ),
+            axis=1,
+        )
+        col_indices = sorted_idx[0, :]
+        row_indices = sorted_idx[1, :]
 
     return row_indices, col_indices
 
@@ -657,13 +681,34 @@ class NumJac:
             stencil = stencil(ndims=len(self.shape_in), **kwargs)
         self.dependencies = expand_dependencies(self.shape_in, self.shape_out, stencil)
         self.rows, self.cols = generate_sparsity_pattern(
-            self.shape_in, self.shape_out, self.dependencies
+            self.shape_in, self.shape_out, self.dependencies,
+            format=self.format,
         )
         self.gr, self.num_gr = colgroup(
             self.rows,
             self.cols,
             shape=(np.prod(self.shape_out), np.prod(self.shape_in)),
         )
+
+        # Precompute compressed sparse structure so that __call__ can
+        # construct the sparse matrix directly from (data, indices, indptr)
+        # instead of going through the slower COO → CSR/CSC conversion.
+        n_out = int(np.prod(self.shape_out))
+        n_in = int(np.prod(self.shape_in))
+        if self.format == "csr":
+            counts = np.bincount(self.rows, minlength=n_out)
+            self._indptr = np.zeros(n_out + 1, dtype=np.int64)
+            np.cumsum(counts, out=self._indptr[1:])
+            self._indices = self.cols.copy()
+        else:
+            counts = np.bincount(self.cols, minlength=n_in)
+            self._indptr = np.zeros(n_in + 1, dtype=np.int64)
+            np.cumsum(counts, out=self._indptr[1:])
+            self._indices = self.rows.copy()
+
+        # Precompute flat index into df.ravel() to replace 2D fancy
+        # indexing with a single 1D gather in __call__.
+        self._df_idx = self.gr.ravel()[self.cols] * n_out + self.rows
 
     def __call__(self, f, c, f_value=None):
         """
@@ -703,14 +748,20 @@ class NumJac:
         # df = compute_df(f_value, perturbed_values, self.num_gr)
         df = compute_df2(f, f_value, c_perturb, self.num_gr)
 
-        values = (
-            df.reshape((self.num_gr, -1))[self.gr.ravel()[self.cols], self.rows]
-            / dc.ravel()[self.cols]
-        )
-        jac = _sparse_array(
-            (values, (self.rows, self.cols)),
-            shape=(f_value.size, c.size),
-            format=self.format,
-        )
+        # Compute Jacobian values using precomputed flat index
+        values = df.ravel()[self._df_idx] / dc.ravel()[self.cols]
+
+        # Construct sparse matrix directly from (data, indices, indptr),
+        # bypassing the COO → compressed-format conversion.
+        if self.format == "csr":
+            jac = csr_array(
+                (values, self._indices, self._indptr),
+                shape=(f_value.size, c.size),
+            )
+        else:
+            jac = csc_array(
+                (values, self._indices, self._indptr),
+                shape=(f_value.size, c.size),
+            )
 
         return f_value, jac
