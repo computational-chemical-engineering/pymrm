@@ -257,16 +257,22 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     """
     Generate row and column indices for the sparse matrix representation of a stencil pattern.
 
-    Parameters:
-    - shape_in (tuple): Shape of the input array.
-    - shape_out (tuple): Shape of the output array.
-    - dependencies (list): List of dependencies in PyMRM dependency notation.
-    - format (str): Sparse format, ``'csc'`` or ``'csr'``.  Controls the
-      sort order of the returned indices: column-major for CSC (default),
-      row-major for CSR.
+    Parameters
+    ----------
+    shape_in : tuple
+        Shape of the input array.
+    shape_out : tuple
+        Shape of the output array.
+    dependencies : list
+        List of dependencies in PyMRM dependency notation.
+    format : str
+        Sparse format, ``'csc'`` or ``'csr'``. Controls sort order:
+        column-major for CSC (default), row-major for CSR.
 
-    Returns:
-    - tuple: (row_indices, col_indices) for the sparse pattern.
+    Returns
+    -------
+    tuple
+        ``(row_indices, col_indices)`` for the sparse pattern.
     """
     shape_in = np.array(shape_in, dtype=np.int64)
     shape_out = np.array(shape_out, dtype=np.int64)
