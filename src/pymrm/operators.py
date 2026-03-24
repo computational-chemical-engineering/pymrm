@@ -132,11 +132,15 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
         # Slot 0: right-side entry of cell j-1, contributes to face j (j=1..n1)
         csr_data[:, 1:, :, 0] = values[:, :, :, 1]
         csr_cols[:, 1:, :, 0] = i_c
-        csr_cols[:, 0, :, 0] = i_c[:, 0, :]      # dummy col for face 0 slot 0
+        # Face 0 has no cell j-1; use cell 0's column so the dummy zero
+        # entry lands on a valid column that already carries a zero value.
+        csr_cols[:, 0, :, 0] = i_c[:, 0, :]
         # Slot 1: left-side entry of cell j, contributes to face j (j=0..n1-1)
         csr_data[:, :-1, :, 1] = values[:, :, :, 0]
         csr_cols[:, :-1, :, 1] = i_c
-        csr_cols[:, -1, :, 1] = i_c[:, -1, :]     # dummy col for face n1 slot 1
+        # Face n1 has no cell j; use cell n1-1's column so the dummy zero
+        # entry lands on a valid column that already carries a zero value.
+        csr_cols[:, -1, :, 1] = i_c[:, -1, :]
         # Uniform 2 entries per row → simple indptr
         num_rows = n0 * (n1 + 1) * n2
         indptr = np.arange(0, 2 * num_rows + 1, 2, dtype=np.intp)
@@ -145,10 +149,8 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
             shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
         )
     else:
-        grad_matrix = _sparse_array(
-            (values.ravel(), (i_f.ravel(), np.repeat(np.arange(n0 * n1 * n2), 2))),
-            shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
-            format=format,
+        raise ValueError(
+            f"format must be 'csc' or 'csr', got {format!r}"
         )
     return grad_matrix
 
