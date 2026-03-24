@@ -43,8 +43,7 @@ def construct_grad(
 
     Returns:
         csc_array or csr_array: Gradient matrix.
-        csc_array or csr_array: Gradient contribution from boundary conditions.
-            If ``shapes_d`` is provided, returns a tuple.
+        csc_array or csr_array: Gradient BC contribution (tuple if ``shapes_d`` is provided).
     """
     if isinstance(shape, int):
         shape = (shape,)

@@ -36,7 +36,7 @@ Dependencies:
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from .helpers import unwrap_bc_coeff, _sparse_array
+from .helpers import unwrap_bc_coeff
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
