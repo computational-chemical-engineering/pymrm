@@ -21,7 +21,7 @@ Dependencies:
 
 import math
 import numpy as np
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array, csr_array
 from pymrm.helpers import unwrap_bc_coeff, _sparse_array
 from pymrm.grid import generate_grid
 
@@ -117,7 +117,31 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     values[:, -1, :, 1] = np.zeros((n0, n2))
     if format == "csc":
         grad_matrix = csc_array(
-            (values.ravel(), i_f.ravel(), range(0, i_f.size + 1, 2)),
+            (values.ravel(), i_f.ravel(), np.arange(0, i_f.size + 1, 2)),
+            shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
+        )
+    elif format == "csr":
+        # Build CSR data in row (face) order with indptr.
+        # Cell column indices: shape (n0, n1, n2)
+        i_c = np.ravel_multi_index(
+            (i0[..., 0], i1[..., 0], i2[..., 0]), (n0, n1, n2)
+        )
+        # Build (n0, n1+1, n2, 2) arrays: slot 0 = from cell j-1, slot 1 = from cell j
+        csr_data = np.zeros((n0, n1 + 1, n2, 2))
+        csr_cols = np.empty((n0, n1 + 1, n2, 2), dtype=np.intp)
+        # Slot 0: right-side entry of cell j-1, contributes to face j (j=1..n1)
+        csr_data[:, 1:, :, 0] = values[:, :, :, 1]
+        csr_cols[:, 1:, :, 0] = i_c
+        csr_cols[:, 0, :, 0] = i_c[:, 0, :]      # dummy col for face 0 slot 0
+        # Slot 1: left-side entry of cell j, contributes to face j (j=0..n1-1)
+        csr_data[:, :-1, :, 1] = values[:, :, :, 0]
+        csr_cols[:, :-1, :, 1] = i_c
+        csr_cols[:, -1, :, 1] = i_c[:, -1, :]     # dummy col for face n1 slot 1
+        # Uniform 2 entries per row → simple indptr
+        num_rows = n0 * (n1 + 1) * n2
+        indptr = np.arange(0, 2 * num_rows + 1, 2, dtype=np.intp)
+        grad_matrix = csr_array(
+            (csr_data.ravel(), csr_cols.ravel(), indptr),
             shape=(n0 * (n1 + 1) * n2, n0 * n1 * n2),
         )
     else:
