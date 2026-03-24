@@ -691,14 +691,12 @@ class NumJac:
         n_in = int(np.prod(self.shape_in))
         if self.format == "csr":
             counts = np.bincount(self.rows, minlength=n_out)
-            self._indptr = np.empty(n_out + 1, dtype=np.int64)
-            self._indptr[0] = 0
+            self._indptr = np.zeros(n_out + 1, dtype=np.int64)
             np.cumsum(counts, out=self._indptr[1:])
             self._indices = self.cols.copy()
         else:
             counts = np.bincount(self.cols, minlength=n_in)
-            self._indptr = np.empty(n_in + 1, dtype=np.int64)
-            self._indptr[0] = 0
+            self._indptr = np.zeros(n_in + 1, dtype=np.int64)
             np.cumsum(counts, out=self._indptr[1:])
             self._indices = self.rows.copy()
 

@@ -560,7 +560,10 @@ def test_numjac_csr_csc_with_precomputed_f_value():
     """CSR and CSC agree when f_value is precomputed."""
     shape = (8,)
     x = np.linspace(0.5, 4.0, 8)
-    f = lambda c: c ** 2  # noqa: E731
+
+    def f(c):
+        return c ** 2
+
     f_val = f(x)
     nj_csr = NumJac(shape=shape, format="csr")
     nj_csc = NumJac(shape=shape, format="csc")
