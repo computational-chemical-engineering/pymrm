@@ -1,66 +1,77 @@
+pymrm package
+=============
+
 Submodules
-==========
+----------
 
 pymrm.convect module
 --------------------
 
 .. automodule:: pymrm.convect
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
+
+pymrm.coupling module
+---------------------
+
+.. automodule:: pymrm.coupling
+   :members:
+   :show-inheritance:
+   :undoc-members:
 
 pymrm.grid module
 -----------------
 
 .. automodule:: pymrm.grid
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 pymrm.helpers module
 --------------------
 
 .. automodule:: pymrm.helpers
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 pymrm.interpolate module
 ------------------------
 
 .. automodule:: pymrm.interpolate
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 pymrm.numjac module
 -------------------
 
 .. automodule:: pymrm.numjac
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 pymrm.operators module
 ----------------------
 
 .. automodule:: pymrm.operators
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 pymrm.solve module
 ------------------
 
 .. automodule:: pymrm.solve
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:
 
 Module contents
 ---------------
 
 .. automodule:: pymrm
    :members:
-   :undoc-members:
    :show-inheritance:
+   :undoc-members:

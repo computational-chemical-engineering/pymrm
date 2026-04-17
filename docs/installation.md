@@ -82,7 +82,7 @@ PyMRM is available on PyPI and includes all necessary dependencies.
 ## Verifying the Installation
 
 1. **Test the Installation**:
-   - Navigate to the `examples` folder in the PyMRM repository or download example notebooks from the [PyMRM documentation](https://multiscale-modelling-multiphase-flows.github.io/pymrm-book).
+   - Navigate to the `examples` folder in the PyMRM repository or download example notebooks from the [PyMRM documentation](https://computational-chemical-engineering.github.io/pymrm-book).
    - Open a notebook in VS Code or Jupyter Notebook and execute the cells to verify that PyMRM and its dependencies are working correctly.
 
 2. **Optional: Test in Spyder**:
@@ -94,4 +94,4 @@ PyMRM is available on PyPI and includes all necessary dependencies.
 
 ## Conclusion
 
-You have successfully set up your environment for using PyMRM. Whether you use VS Code or Spyder, you are now ready to start modeling multiphase reactors. For further guidance, refer to the [PyMRM documentation](https://multiscale-modelling-multiphase-flows.github.io/pymrm-book).
+You have successfully set up your environment for using PyMRM. Whether you use VS Code or Spyder, you are now ready to start modeling multiphase reactors. For further guidance, refer to the [PyMRM documentation](https://computational-chemical-engineering.github.io/pymrm-book).
