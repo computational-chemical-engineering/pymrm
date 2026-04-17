@@ -1,4 +1,4 @@
-pyMRM
+pymrm
 =====
 
 .. toctree::
