@@ -1,38 +1,27 @@
-"""
-Grid Generation Submodule for pymrm
------------------------------------
-
-This submodule provides essential functions for creating structured grids
-used in multiphase reactor modeling. It includes uniform and non-uniform
-grid generation methods.
-
-Functions:
-- non_uniform_grid: Generates a non-uniform grid with refined control over spacing.
-- generate_grid: Constructs face-centered and optionally cell-centered grid positions.
-
-Authors:
-- E.A.J.F. Peters (TU/e)
-"""
+"""Grid-generation utilities for one-dimensional coordinates."""
 
 import numpy as np
 
 
 def non_uniform_grid(left_bound, right_bound, num_points, dx_inf, factor):
-    """
-    Generate a non-uniform grid of points in the interval [left_bound, right_bound].
+    """Generate a one-dimensional stretched face grid.
 
-    This grid allows gradual spacing adjustments, refining or coarsening the mesh
-    based on a stretching factor.
+    Parameters
+    ----------
+    left_bound, right_bound : float
+        Domain bounds.
+    num_points : int
+        Number of returned face coordinates, including both boundaries.
+    dx_inf : float
+        Asymptotic cell width used in the stretching expression.
+    factor : float
+        Geometric stretching factor. Values larger than ``1`` stretch cells;
+        values between ``0`` and ``1`` compress cells.
 
-    Args:
-        left_bound (float): Start of the domain interval.
-        right_bound (float): End of the domain interval.
-        num_points (int): Number of face positions (including boundaries).
-        dx_inf (float): Asymptotic grid spacing for distant points.
-        factor (float): Stretching factor (>1 for expansion, <1 for compression).
-
-    Returns:
-        np.ndarray: Array of non-uniformly spaced grid points.
+    Returns
+    -------
+    numpy.ndarray
+        Monotonic array of face coordinates with length ``num_points``.
     """
     a = np.log(factor)
     unif = np.arange(num_points)
@@ -44,19 +33,35 @@ def non_uniform_grid(left_bound, right_bound, num_points, dx_inf, factor):
 
 
 def generate_grid(size, x_f=None, generate_x_c=False, x_c=None):
-    """
-    Generate a structured grid with face and optional cell-centered positions.
+    """Return face coordinates and optionally cell-center coordinates.
 
-    Args:
-        size (int): Number of cells in the grid.
-        x_f (np.ndarray, optional): Face-centered grid points. If None, a uniform grid is created.
-        generate_x_c (bool, optional): If True, generates cell-centered positions.
-        x_c (np.ndarray, optional): User-defined cell-centered positions (optional).
+    Parameters
+    ----------
+    size : int
+        Number of cells along the axis.
+    x_f : array_like, optional
+        Face coordinates. Accepted inputs are:
 
-    Returns:
-        np.ndarray or tuple[np.ndarray, np.ndarray]:
-            - Face positions (x_f)
-            - Cell-centered positions (x_c) if `generate_x_c` is True
+        * ``None`` or an empty array: build a uniform grid on ``[0, 1]``;
+        * an array of length ``size + 1``: interpreted directly as face
+          coordinates;
+        * an array-like of length ``2``: interpreted as ``(xmin, xmax)`` and
+          used to build a uniform grid.
+    generate_x_c : bool, optional
+        If ``True``, also return cell-center coordinates.
+    x_c : array_like, optional
+        Explicit cell-center coordinates. When provided, length must equal
+        ``size``.
+
+    Returns
+    -------
+    numpy.ndarray or tuple[numpy.ndarray, numpy.ndarray]
+        Face coordinates, and optionally cell-center coordinates.
+
+    Raises
+    ------
+    ValueError
+        If provided coordinates are inconsistent with ``size``.
     """
     if x_f is None or len(x_f) == 0:
         # Default to a uniform grid between 0 and 1 if x_f is not provided

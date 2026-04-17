@@ -1,28 +1,4 @@
-"""
-convection.py
-
-This submodule of pymrm provides functions to construct convective flux matrices using
-upwind schemes and apply Total Variation Diminishing (TVD) limiters for numerical stability.
-
-Functions:
-- construct_convflux_upwind: Constructs the convective flux matrix using the upwind scheme.
-- construct_convflux_upwind_int: Constructs the internal convective flux matrix.
-- construct_convflux_bc: Constructs the convective flux matrix for boundary conditions.
-- upwind: Upwind TVD limiter.
-- minmod: Minmod TVD limiter.
-- osher: Osher TVD limiter.
-- clam: CLAM TVD limiter.
-- muscl: MUSCL TVD limiter.
-- smart: SMART TVD limiter.
-- stoic: STOIC TVD limiter.
-- vanleer: Van Leer TVD limiter.
-
-Dependencies:
-- numpy
-- scipy.sparse (for csc_array)
-- pymrm.grid (for optional grid generation)
-- pymrm.helpers (for boundary condition handling)
-"""
+"""Convective-flux operators and TVD limiter functions."""
 
 import math
 import numpy as np
@@ -36,23 +12,33 @@ def construct_convflux_upwind(
     shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
     format="csc"
 ):
-    """
-    Constructs the convective flux matrix using the upwind scheme.
+    """Construct a first-order upwind convective-flux operator.
 
-    Args:
-        shape (tuple or int): Shape of the multi-dimensional array. If an integer is provided, it is treated as 1D.
-        x_f (ndarray): Face positions.
-        x_c (ndarray, optional): Cell positions. If not provided, it will be calculated based on the face array.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries
-            for left and right boundaries. Default is (None, None).
-        v (float or ndarray): Velocities on face positions. Can be a scalar or an array.
-        axis (int, optional): The axis along which the convection takes place. Default is 0.
-        shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...] or int
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, arithmetic midpoints are used.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary-condition dictionaries with keys ``a``, ``b``,
+        and ``d``.
+    v : float or array_like, optional
+        Face velocity field. Scalars and broadcastable arrays are accepted.
+    axis : int, optional
+        Convection axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Optional source-vector shapes for boundary inhomogeneities.
+    format : {'csc', 'csr'}, optional
+        Sparse format for returned operator matrices.
 
-    Returns:
-        csc_array or csr_array: Convective flux matrix for internal faces.
-        csc_array or csr_array: Convective flux matrix for boundary conditions.
+    Returns
+    -------
+    tuple
+        Without ``shapes_d``: ``(conv_matrix, conv_bc)``.
+        With ``shapes_d``: ``(conv_matrix, conv_bc_left, conv_bc_right)``.
     """
     if isinstance(shape, int):
         shape = (shape,)
@@ -84,17 +70,23 @@ def construct_convflux_upwind(
 
 
 def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
-    """
-    Constructs the convective flux matrix for internal faces using the upwind scheme.
+    """Construct the internal-face upwind advection operator.
 
-    Args:
-        shape (tuple): Shape of the multi-dimensional array.
-        v (float or ndarray): Velocity array. Can be a scalar or an array.
-        axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...]
+        Cell-centered field shape.
+    v : float or array_like, optional
+        Face velocity field.
+    axis : int, optional
+        Convection axis.
+    format : {'csc', 'csr'}, optional
+        Sparse format of the returned matrix.
 
-    Returns:
-        csc_array or csr_array: Convective flux matrix for internal faces.
+    Returns
+    -------
+    scipy.sparse.csc_array or scipy.sparse.csr_array
+        Sparse matrix mapping cell-centered values to interior face fluxes.
     """
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -141,24 +133,34 @@ def construct_convflux_bc(
     shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
     format="csc"
 ):
-    """
-    Constructs the convective flux matrix for boundary faces using the upwind scheme.
+    """Construct boundary-face upwind corrections and source terms.
 
-    Args:
-        shape (tuple): Shape of the multi-dimensional array.
-        x_f (ndarray): Face positions.
-        x_c (ndarray, optional): Cell-centered positions. If not provided,
-            it is calculated based on the face array.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries
-            for left and right boundaries. Default is (None, None).
-        v (float or ndarray): Velocity array. Can be a scalar or an array.
-        axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
-        shapes_d (tuple, optional): Shapes for boundary condition matrices. Default is (None, None).
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...]
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary-condition dictionaries with keys ``a``, ``b``,
+        and ``d``.
+    v : float or array_like, optional
+        Face velocity field.
+    axis : int, optional
+        Convection axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Optional source-vector shapes for inhomogeneous boundary terms.
+    format : {'csc', 'csr'}, optional
+        Sparse format for returned operator matrices.
 
-    Returns:
-        csc_array or csr_array: Convective flux matrix for internal faces.
-        csc_array or csr_array: Convective flux matrix for boundary conditions.
+    Returns
+    -------
+    tuple
+        ``(conv_matrix_bc, conv_bc)`` when ``shapes_d`` is not supplied, or
+        ``(conv_matrix_left, conv_bc_left, conv_matrix_right, conv_bc_right)``
+        otherwise.
     """
 
     # Trick: Reshape to triplet shape_t
@@ -388,33 +390,13 @@ def construct_convflux_bc(
 
 
 def upwind(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the upwind TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Return zero correction (first-order upwind limiter)."""
     normalized_concentration_diff = np.zeros_like(normalized_c_c)
     return normalized_concentration_diff
 
 
 def minmod(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the Minmod TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the Minmod TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         (normalized_x_d - normalized_x_c)
@@ -426,17 +408,7 @@ def minmod(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def osher(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the Osher TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the Osher TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
@@ -449,17 +421,7 @@ def osher(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def clam(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the CLAM TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the CLAM TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
@@ -472,17 +434,7 @@ def clam(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def muscl(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the MUSCL TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the MUSCL TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
@@ -500,17 +452,7 @@ def muscl(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def smart(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the SMART TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the SMART TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
@@ -544,17 +486,7 @@ def smart(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def stoic(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the STOIC TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the STOIC TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
@@ -603,17 +535,7 @@ def stoic(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def vanleer(normalized_c_c, normalized_x_c, normalized_x_d):
-    """
-    Applies the van Leer TVD limiter to reduce oscillations in numerical schemes.
-
-    Args:
-        normalized_c_c (ndarray): Normalized concentration at cell centers.
-        normalized_x_c (ndarray): Normalized position of cell centers.
-        normalized_x_d (ndarray): Normalized position of downwind face.
-
-    Returns:
-        ndarray: Normalized concentration difference (c_norm_d - c_norm_C).
-    """
+    """Compute the van-Leer TVD correction in normalized-variable space."""
     normalized_concentration_diff = np.maximum(
         0,
         normalized_c_c

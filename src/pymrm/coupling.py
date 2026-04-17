@@ -1,21 +1,4 @@
-"""
-Coupling Subpackage for pymrm
-=============================
-
-This subpackage provides utilities for constructing and managing the coupling of multiple subdomains
-in a computational model. It supports translating indices between different domains, updating sparse
-matrices to accommodate larger domains, and constructing interface matrices for implicit coupling.
-
-Key functionalities:
-- **translate_indices_to_larger_array**: Translates indices from a subdomain to a larger array.
-- **update_array_indices**: Adjusts sparse matrix indices to fit a larger domain (format-agnostic).
-- **update_csc_array_indices**: Adjusts CSC sparse matrix indices (deprecated, use update_array_indices).
-- **update_csr_array_indices**: Adjusts CSR sparse matrix indices.
-- **construct_interface_matrices**: Constructs sparse matrices for interface conditions between coupled domains.
-
-The provided functions are particularly useful for implicit coupling approaches in computational fluid
-dynamics and other numerical simulations requiring domain decomposition.
-"""
+"""Sparse-matrix utilities for multi-domain coupling and interface assembly."""
 
 import math
 import numbers
@@ -26,24 +9,23 @@ from pymrm.helpers import unwrap_bc_coeff, _sparse_array
 
 
 def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=None):
-    """
-    Translate linear indices from a subarray to their corresponding indices in a larger array.
+    """Map flat indices from a local array shape to a larger embedding shape.
 
-    Parameters:
-    -----------
-    linear_indices : array-like
-        Linear indices in the subarray.
-    shape : tuple
-        Shape of the subarray.
-    new_shape : tuple
-        Shape of the larger ND array.
-    offset : tuple, optional
-        Offset of the subarray’s top-left corner in the larger array (default: None).
+    Parameters
+    ----------
+    linear_indices : array_like
+        Flat indices defined in ``shape``.
+    shape : tuple[int, ...]
+        Local array shape.
+    new_shape : tuple[int, ...]
+        Embedding array shape.
+    offset : tuple[int, ...], optional
+        Offset of the local array origin in the embedding array.
 
-    Returns:
-    --------
-    np.ndarray
-        Linear indices in the larger ND array.
+    Returns
+    -------
+    numpy.ndarray
+        Flat indices in ``new_shape``.
     """
 
     # Convert linear indices to multi-indices based on the original subarray shape
@@ -83,27 +65,10 @@ def _parse_shape_offset(shape, new_shape, offset):
 
 
 def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """
-    Update the row and column indices of a CSC-format sparse matrix to match a larger ND domain.
+    """Update CSC matrix row/column indexing for embedding in a larger domain.
 
     .. deprecated::
-        Use :func:`update_array_indices` instead, which auto-detects the sparse format.
-
-    Parameters:
-    -----------
-    sparse_mat : scipy.sparse.csc_array
-        The input sparse matrix in CSC format.
-    shape : tuple or ((tuple, tuple))
-        The original shape of the subdomain.
-    new_shape : tuple or ((tuple, tuple))
-        The target shape of the larger domain.
-    offset : tuple or ((tuple, tuple)), optional
-        The offset of the subdomain within the larger domain (default: None).
-
-    Returns:
-    --------
-    scipy.sparse.csc_array
-        The updated sparse matrix with modified indices and shape.
+       Use :func:`update_array_indices` for automatic format dispatch.
     """
     warnings.warn(
         "update_csc_array_indices is deprecated. Use update_array_indices instead.",
@@ -114,7 +79,7 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
 
 
 def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """Internal implementation of CSC index update (no deprecation warning)."""
+    """Internal CSC implementation for :func:`update_csc_array_indices`."""
     shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
 
     # Extract matrix data and original indices
@@ -156,25 +121,7 @@ def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
 
 
 def update_csr_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """
-    Update the row and column indices of a CSR-format sparse matrix to match a larger ND domain.
-
-    Parameters:
-    -----------
-    sparse_mat : scipy.sparse.csr_array
-        The input sparse matrix in CSR format.
-    shape : tuple or ((tuple, tuple))
-        The original shape of the subdomain.
-    new_shape : tuple or ((tuple, tuple))
-        The target shape of the larger domain.
-    offset : tuple or ((tuple, tuple)), optional
-        The offset of the subdomain within the larger domain (default: None).
-
-    Returns:
-    --------
-    scipy.sparse.csr_array
-        The updated sparse matrix with modified indices and shape.
-    """
+    """Update CSR matrix row/column indexing for embedding in a larger domain."""
     shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
 
     # Extract matrix data and original indices
@@ -215,28 +162,23 @@ def update_csr_array_indices(sparse_mat, shape, new_shape, offset=None):
 
 
 def update_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """
-    Update the row and column indices of a sparse matrix to match a larger ND domain.
+    """Update sparse-matrix indices for a new embedding shape.
 
-    Dispatches to the appropriate CSC or CSR implementation based on the format
-    of *sparse_mat*.
+    Parameters
+    ----------
+    sparse_mat : scipy.sparse.sparray
+        Input matrix. CSR and CSC are supported.
+    shape, new_shape : tuple or tuple[tuple, tuple]
+        Original and target logical shapes for rows and columns. A single tuple
+        applies to both rows and columns.
+    offset : tuple or tuple[tuple, tuple], optional
+        Optional row/column offsets of the local block in the larger domain.
 
-    Parameters:
-    -----------
-    sparse_mat : scipy.sparse.csc_array or scipy.sparse.csr_array
-        The input sparse matrix.
-    shape : tuple or ((tuple, tuple))
-        The original shape of the subdomain.
-    new_shape : tuple or ((tuple, tuple))
-        The target shape of the larger domain.
-    offset : tuple or ((tuple, tuple)), optional
-        The offset of the subdomain within the larger domain (default: None).
-
-    Returns:
-    --------
-    scipy.sparse.csc_array or scipy.sparse.csr_array
-        The updated sparse matrix with modified indices and shape, in the same
-        format as the input.
+    Returns
+    -------
+    scipy.sparse.sparray
+        Matrix with updated shape and indices, preserving the input format where
+        possible.
     """
     if isinstance(sparse_mat, csr_array):
         return update_csr_array_indices(sparse_mat, shape, new_shape, offset)
@@ -254,47 +196,33 @@ def construct_interface_matrices(
     shapes_d=(None, None),
     format="csc",
 ):
-    """
-    Construct sparse matrices for computing interface conditions between two coupled subdomains.
+    """Construct implicit interface-coupling matrices for two adjacent domains.
 
-    Parameters:
-    -----------
-    shapes : tuple of tuples
+    Parameters
+    ----------
+    shapes : tuple[tuple[int, ...], tuple[int, ...]]
         Shapes of the two subdomains.
-    x_fs : tuple of arrays
-        Face-centered grid points for the two subdomains.
-    x_cs : tuple of arrays, optional
-        Cell-centered grid points for the two subdomains. If None, they are computed internally
-        (default: (None, None)).
-    ic : tuple of dicts, optional
-        Interface conditions between the two subdomains, specified as:
-        - `a`: Coefficients for the normal derivative terms.
-        - `b`: Coefficients for the solution terms.
-        - `d`: Source term at the interface.
-        Defaults to conditions ensuring flux continuity.
+    x_fs : tuple[array_like, array_like]
+        Face coordinates for each subdomain along ``axis``.
+    x_cs : tuple[array_like | None, array_like | None], optional
+        Cell-center coordinates for each subdomain.
+    ic : tuple[dict, dict], optional
+        Two interface equations. Each dictionary may define ``a``, ``b``, and
+        ``d`` terms with coefficients for both subdomains.
     axis : int, optional
-        The axis along which the interface is constructed (default: 0).
-    shapes_d : tuple, optional
-        Shapes for decomposed boundary condition matrices (default: (None, None)).
-    format : str, optional
-        Sparse format, ``'csc'`` (default) or ``'csr'``.
+        Interface-normal axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Optional source-vector shapes for decomposed inhomogeneous terms.
+    format : {'csc', 'csr'}, optional
+        Sparse format for the homogeneous interface matrices.
 
-    Returns:
-    --------
-    interface_matrix_0 : csc_array or csr_array
-        Sparse matrix for computing interface values for the first subdomain.
-    interface_bc_0 : csc_array
-        Sparse matrix for boundary conditions in the first subdomain (always CSC for vectors).
-    interface_matrix_1 : csc_array or csr_array
-        Sparse matrix for computing interface values for the second subdomain.
-    interface_bc_1 : csc_array
-        Sparse matrix for boundary conditions in the second subdomain (always CSC for vectors).
-
-    Notes:
-    ------
-    This function constructs a fully implicit coupling between subdomains by ensuring the interface conditions
-    are directly included in the global system of equations. It prevents the need for iterative coupling
-    between domains, improving numerical stability.
+    Returns
+    -------
+    tuple
+        Without ``shapes_d``:
+        ``(mat0, bc0, mat1, bc1)``.
+        With ``shapes_d``:
+        ``(mat0, bc00, bc01, mat1, bc10, bc11)``.
     """
 
     if not all(

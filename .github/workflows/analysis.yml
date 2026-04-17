@@ -21,6 +21,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Configure git safe.directory for container
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: test flake 8
       run: scripts/run_linter.sh
@@ -42,6 +44,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Configure git safe.directory for container
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
     - name: Install myst-parser
       run: pip install myst-parser
     - name: Ensure _static directory exists
@@ -64,36 +68,3 @@ jobs:
       with:
         name: Documentation
         path: docs/sphinx/_build/html*
-
-  publish-analysis:
-    # For details checkout https://github.com/marketplace/actions/publish-test-results
-    runs-on: ubuntu-latest
-    container:
-      image: davevader/pymrm_linux:1.0
-# workaround, potentially leave the user as root in dockerfile
-# see here: https://github.com/actions/checkout/issues/956
-      options: --user root
-
-    name: Publish Tests Results
-    needs: [linter]
-    permissions:
-      checks: write
-      # only needed unless run with comment_mode: off
-      pull-requests: write
-      # only needed for private repository
-      contents: read
-      # only needed for private repository
-      issues: read
-    if: always()
-
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Publish Analysis
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          files: |
-            artifacts/linter/*.xml

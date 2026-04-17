@@ -1,9 +1,4 @@
-# solve.py
-"""
-The `solve` module provides numerical solvers for nonlinear systems, including
-Newton-Raphson methods for efficiently solving systems of equations arising in
-multiphase reactor modeling.
-"""
+"""Nonlinear-solver utilities used by :mod:`pymrm`."""
 
 import numpy as np
 from scipy.sparse import linalg
@@ -21,42 +16,42 @@ def newton(
     lin_solver_kwargs=None,
     callback=None,
 ):
-    """
-    Perform Newton-Raphson iterations to solve nonlinear systems of equations.
+    """Solve ``function(x) = 0`` with Newton iterations.
 
-    This method iteratively refines an initial guess to find the root of a system
-    of nonlinear equations. It supports various linear solvers for handling the
-    Jacobian matrix.
+    Parameters
+    ----------
+    function : callable
+        Callable with signature ``function(x, *args) -> (residual, jacobian)``.
+    initial_guess : numpy.ndarray
+        Starting point of the iterations.
+    args : tuple, optional
+        Extra positional arguments passed to ``function``.
+    tol : float, optional
+        Stopping tolerance on the infinity norm of the Newton update.
+    maxfev : int, optional
+        Maximum number of Newton iterations.
+    solver : {'spsolve', 'cg', 'bicgstab'} or callable, optional
+        Linear solver used for each Newton step. If ``None``, the routine picks
+        ``'spsolve'`` for smaller systems and ``'bicgstab'`` for larger systems.
+        A callable solver must accept ``(jac_matrix, rhs, **kwargs)`` and return
+        the solution vector.
+    lin_solver_kwargs : dict, optional
+        Keyword arguments forwarded to the selected linear solver.
+    callback : callable, optional
+        Optional hook called as ``callback(x, residual)`` after each iteration.
 
-    Args:
-        function (callable): A function that takes the current solution estimate
-            and additional arguments, and returns a tuple containing the residual
-            vector and the Jacobian matrix.
-        initial_guess (ndarray): Initial guess for the solution vector.
-        args (tuple, optional): Additional arguments to pass to the `function`.
-            Default is an empty tuple.
-        tol (float, optional): Convergence tolerance for the solution. Iterations
-            stop when the infinity norm of the update vector is less than `tol`.
-            Default is 1.49012e-08.
-        maxfev (int, optional): Maximum number of iterations allowed. Default is 100.
-        solver (str or callable, optional): Linear solver to use for solving the Jacobian system.
-            Options are 'spsolve', 'cg', or 'bicgstab', or a custom callable. If not specified,
-            'spsolve' is used for small systems (n < 50000), and 'bicgstab' for larger systems.
-        lin_solver_kwargs (dict, optional): Dictionary of keyword arguments to pass to the linear solver.
-            For example, {'tol': 1e-5, 'maxiter': 1000} for iterative solvers.
-        callback (callable, optional): A function called after each iteration with
-            the current solution estimate and residual vector as arguments.
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        Result object with fields ``x``, ``success``, ``nit``, ``fun``, and
+        ``message``.
 
-    Returns:
-        OptimizeResult: An object containing the following fields:
-            - x (ndarray): The solution vector.
-            - success (bool): Whether the solver converged.
-            - nit (int): Number of iterations performed.
-            - fun (ndarray): The residual vector at the solution.
-            - message (str): A message describing the termination status.
-
-    Raises:
-        ValueError: If an unsupported solver method is specified.
+    Raises
+    ------
+    ValueError
+        If ``solver`` is not one of the supported names and is not callable.
+    RuntimeError
+        If an iterative linear solver fails to converge.
     """
     n = initial_guess.size
     if solver is None:
@@ -118,27 +113,19 @@ def newton(
 
 
 def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
-    """
-    Apply bounds and an approach factor to an array of values.
+    """Project values onto bounds, optionally with a relaxed approach rule.
 
-    This function modifies the input array `values` in-place by applying lower
-    and upper bounds. If an approach factor is specified, values outside the
-    bounds are adjusted proportionally to the factor.
-
-    Args:
-        values (ndarray): The array of values to be modified.
-        dummy: Not used in the current implementation but reserved for future extensions.
-        lower_bounds (float or ndarray, optional): The lower bounds for the values.
-            Can be a scalar or an array of the same shape as `values`. Default is 0.
-        upper_bounds (float or ndarray, optional): The upper bounds for the values.
-            Can be a scalar or an array of the same shape as `values`. Default is None.
-        factor (float, optional): The approach factor. If 0, values are clipped
-            directly to the bounds. If non-zero, values outside the bounds are
-            adjusted proportionally. Default is 0.
-
-    Notes:
-        - The function modifies the `values` array in-place.
-        - If `lower_bounds` or `upper_bounds` are not specified, they are ignored.
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Values to modify in place.
+    dummy : Any
+        Placeholder argument kept for API compatibility.
+    lower_bounds, upper_bounds : float or numpy.ndarray, optional
+        Lower and upper bounds. Scalars and broadcastable arrays are supported.
+    factor : float, optional
+        Relaxation factor for out-of-bound entries. ``0`` applies strict clipping.
+        Non-zero values apply a linear approach update toward the violated bound.
     """
     if factor == 0:
         np.clip(values, lower_bounds, upper_bounds, out=values)
