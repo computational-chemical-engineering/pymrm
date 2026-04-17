@@ -55,11 +55,11 @@ language = 'en'
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 ```
-Then run `sphinx-apidoc` in the root directory
-```bash
-sphinx-apidoc -o docs/sphinx src/pymrm/
-```
-Following that, at the generated modules.rst to the index.rst in the specified folder
+The API `*.rst` pages (`modules.rst` and `pymrm.rst`) are generated automatically by
+the Sphinx build configuration (`conf.py`) during `make html`, so they should not be
+manually generated or committed.
+
+Ensure `modules` is present in the `index.rst` toctree:
 ```bash
 .. toctree::
    :maxdepth: 2
