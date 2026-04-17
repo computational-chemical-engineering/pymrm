@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/pymrm.svg)](https://pypi.org/project/pymrm/)
 [![License](https://img.shields.io/github/license/computational-chemical-engineering/pymrm)](https://github.com/computational-chemical-engineering/pymrm/blob/main/LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![DOI](https://zenodo.org/badge/901029258.svg)](https://zenodo.org/badge/latestdoi/901029258)
+[![DOI](https://zenodo.org/badge/latestdoi/901029258.svg)](https://zenodo.org/badge/latestdoi/901029258)
 
 
 ## Overview
@@ -43,4 +43,3 @@ coefficient matrices.
 ## Contributing
 
 Contributions are welcome! For suggestions or enhancements, please contact us or submit a pull request.
-
