@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 title: "pymrm: Python package for Multiphase Reactor Modeling"
-version: "2.2.2"
+version: "2.2.3"
 message: "If you use pymrm in your work, please cite the version you used."
 authors:
   - family-names: Peters
