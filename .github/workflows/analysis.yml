@@ -21,6 +21,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Configure git safe.directory
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: test flake 8
       run: scripts/run_linter.sh
@@ -42,6 +44,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Configure git safe.directory
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
     - name: Install myst-parser
       run: pip install myst-parser
     - name: Ensure _static directory exists
