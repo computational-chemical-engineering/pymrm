@@ -24,7 +24,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Configure git safe.directory
+    - name: Configure git safe.directory for container
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: Install dependencies
