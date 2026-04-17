@@ -8,6 +8,7 @@
 import os
 import sys
 from pathlib import Path
+from sphinx.ext.apidoc import main as apidoc_main
 sys.path.insert(0, os.path.abspath('../..'))    # this path should point at the root directory
 sys.path.insert(0, str(Path('../..', 'src').resolve()))  # patch so we don't need to install the repository for sphinx to work
 
@@ -43,3 +44,13 @@ language = 'en'
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
+
+
+def run_apidoc(_):
+    docs_dir = Path(__file__).resolve().parent
+    package_dir = docs_dir.parent.parent / 'src' / 'pymrm'
+    apidoc_main(['-f', '-o', str(docs_dir), str(package_dir)])
+
+
+def setup(app):
+    app.connect('builder-inited', run_apidoc)
