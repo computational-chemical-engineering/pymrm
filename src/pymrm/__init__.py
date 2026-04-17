@@ -1,50 +1,14 @@
-"""
-pymrm: A Python Package for Multiphase Reactor Modeling
+"""Top-level package for :mod:`pymrm`.
 
-This package provides a comprehensive set of tools for modeling multiphase reactors,
-including grid generation, numerical operators, convection schemes, interpolation methods,
-nonlinear solvers, and utility functions.
+The package provides numerical building blocks for multiphase reactor models,
+including:
 
-Submodules:
-- grid: Functions for generating uniform and non-uniform grids.
-- operator: Construction of gradient and divergence operators for finite volume methods.
-- convection: High-resolution convection schemes and TVD limiters.
-- interpolate: Interpolation techniques between staggered and cell-centered grids.
-- solve: Nonlinear solvers and numerical approaches.
-- helpers: Utility functions supporting core operations.
-- numjac: Numerical Jacobian construction for nonlinear systems.
-
-Example Usage:
-.. code-block:: python
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from pymrm import construct_grad, construct_div
-
-    # Define the grid
-    shape = (100,)
-    x_f = np.linspace(0, 1, shape[0]+1)
-    x_c = 0.5*(x_f[1:] + x_f[:-1])
-
-    # Set boundary conditions
-    bc_L = {a: 0, b:1, d:1}
-    bc_R = {a: 0, b:1, d:0}
-    grad_mat, grad_bc = construct_grad(shape, x_f, x_c, bc=(bc_L, bc_R))
-    div_mat = construct_div(shape, x_f)
-    lapl_mat = div_mat @ grad_mat
-    lapl_bc = div_mat @ grad_bc
-
-    c = np.zeros(shape)
-    c[:] = lapl_mat.solve(lapl_bc)
-    plt.plot(x_c, c)
-
-Authors:
-- E.A.J.F. Peters
-- M. van Sint Annaland
-- M. Galanti
-- D.R. Rieder
-
-License: MIT License
+* grid generation utilities;
+* sparse gradient, divergence, and convective-flux operators;
+* interpolation routines between cell-centered and staggered layouts;
+* numerical Jacobian approximation tools;
+* nonlinear solver helpers for implicit schemes; and
+* coupling helpers for multi-domain/interface formulations.
 """
 
 from .grid import generate_grid, non_uniform_grid

@@ -1,23 +1,4 @@
-"""
-numjac.py
-
-This module provides utilities for computing numerical Jacobians for multidimensional arrays.
-It includes functions for generating sparsity patterns, grouping columns by non-overlapping rows,
-and precomputing perturbations for efficient Jacobian computation.
-
-Key Features:
-- Expand dependencies into a uniform list of tuples in PyMRM dependency notation.
-- Generate sparsity patterns for stencil-based numerical Jacobians.
-- Group columns of sparse matrices by non-overlapping rows for efficient computation.
-- Precompute perturbed values and compute differences in function values for Jacobian estimation.
-- A `NumJac` class for encapsulating numerical Jacobian computation with customizable stencils.
-
-Dependencies:
-- NumPy
-- SciPy
-- Numba
-
-"""
+"""Numerical Jacobian construction with sparse stencil support."""
 
 import numpy as np
 from scipy.sparse import csc_array, csr_array, sparray
@@ -26,17 +7,20 @@ from numba import njit, prange
 
 
 def expand_dependencies(shape_in, shape_out, dependencies):
-    """
-    Expand a given set of dependencies into a uniform list of tuples in the
-    PyMRM dependency notation, fully expanded.
+    """Expand compact dependency definitions into fully explicit tuples.
 
-    Parameters:
-    - shape_in (tuple): Shape of the input array.
-    - shape_out (tuple): Shape of the output array.
-    - dependencies (list or tuple): List of dependencies in PyMRM dependency notation.
+    Parameters
+    ----------
+    shape_in, shape_out : tuple[int, ...]
+        Input and output field shapes.
+    dependencies : tuple or list
+        Dependency specification in PyMRM notation.
 
-    Returns:
-    - list: Fully expanded list of dependencies in the form (index_in, index_out, fixed_axes_list, periodic_axes_list).
+    Returns
+    -------
+    list[tuple]
+        Expanded dependencies in the canonical form
+        ``(index_in, index_out, fixed_axes, periodic_axes)``.
     """
 
     # Helper functions
@@ -265,7 +249,7 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
         Shape of the output array.
     dependencies : list
         List of dependencies in PyMRM dependency notation.
-    format : str
+    format : {'csc', 'csr'}
         Sparse format, ``'csc'`` or ``'csr'``. Controls sort order:
         column-major for CSC (default), row-major for CSR.
 
@@ -392,16 +376,22 @@ def group_columns_by_non_overlap_numba(indptr, indices):
 
 
 def colgroup(*args, shape=None, try_reorder=True):
-    """
-    Group columns of a sparse matrix by non-overlapping rows.
+    """Group structurally independent columns for simultaneous perturbations.
 
-    Parameters:
-    - args: Sparse matrix or row/column indices.
-    - shape (tuple, optional): Shape of the sparse matrix.
-    - try_reorder (bool, optional): Whether to attempt reordering for fewer groups.
+    Parameters
+    ----------
+    *args
+        Either ``(sparse_matrix,)`` or ``(rows, cols)`` index arrays.
+    shape : tuple[int, int], optional
+        Matrix shape when row/column arrays are supplied.
+    try_reorder : bool, optional
+        If ``True``, attempt Reverse Cuthill-McKee reordering to reduce the
+        number of groups.
 
-    Returns:
-    - tuple: (group array, number of groups).
+    Returns
+    -------
+    tuple[numpy.ndarray, int]
+        Column group labels and the number of groups.
     """
     if isinstance(args[0], sparray):
         S = csc_array(args[0])
@@ -440,17 +430,23 @@ def colgroup(*args, shape=None, try_reorder=True):
 def stencil_block_diagonals(
     ndims=1, axes_diagonals=[], axes_blocks=[-1], periodic_axes=[]
 ):
-    """
-    Generate a stencil pattern for block diagonals.
+    """Generate a block-diagonal or block-banded stencil description.
 
-    Parameters:
-    - ndims (int): Number of dimensions.
-    - axes_diagonals (list): Axes for diagonal dependencies.
-    - axes_blocks (list): Axes for block dependencies.
-    - periodic_axes (list): Axes with periodic boundaries.
+    Parameters
+    ----------
+    ndims : int, optional
+        Number of spatial dimensions.
+    axes_diagonals : list[int], optional
+        Axes for which ``[-1, 0, 1]`` neighbor offsets are included.
+    axes_blocks : list[int], optional
+        Axes over which full-block coupling (``slice(None)``) is applied.
+    periodic_axes : list[int], optional
+        Axes with periodic indexing.
 
-    Returns:
-    - list: Stencil pattern in PyMRM dependency notation.
+    Returns
+    -------
+    list[tuple]
+        Dependency specification in PyMRM notation.
     """
     if ndims < len(axes_diagonals) or ndims < len(axes_blocks):
         raise ValueError(
@@ -563,18 +559,10 @@ def compute_df2(f, f_value, c_values, num_gr):
 
 
 class NumJac:
-    """
-    Class for computing numerical Jacobians for multidimensional arrays.
+    """Numerical Jacobian evaluator based on grouped finite differences.
 
-    Attributes:
-    - shape_in (tuple): Shape of the input array.
-    - shape_out (tuple): Shape of the output array.
-    - eps_jac (float): Perturbation size for numerical Jacobian.
-    - dependencies (list): Stencil pattern in PyMRM dependency notation.
-    - rows (np.ndarray): Row indices for the sparse Jacobian.
-    - cols (np.ndarray): Column indices for the sparse Jacobian.
-    - gr (np.ndarray): Group array for column grouping.
-    - num_gr (int): Number of groups.
+    The class builds a sparse Jacobian structure from a stencil/dependency
+    description and reuses that structure across repeated evaluations.
     """
 
     def __init__(
@@ -587,17 +575,24 @@ class NumJac:
         format="csc",
         **kwargs,
     ):
-        """
-        Initialize the NumJac class.
+        """Create a Jacobian approximator.
 
-        Parameters:
-        - shape (tuple, optional): Shape of the multidimensional array (used when shape_in == shape_out).
-        - shape_in (tuple, optional): Shape of the input array (used when shape != shape_out).
-        - shape_out (tuple, optional): Shape of the output array (used when shape != shape_out).
-        - stencil (callable, optional): Function to generate the stencil. Default is stencil_block_diagonals.
-        - eps_jac (float, optional): Perturbation size for numerical Jacobian. Default is 1e-6.
-        - format (str, optional): Sparse format for the Jacobian, ``'csc'`` (default) or ``'csr'``.
-        - **kwargs: Additional keyword arguments passed to the stencil function.
+        Parameters
+        ----------
+        shape : tuple[int, ...], optional
+            Convenience argument for square mappings where
+            ``shape_in == shape_out == shape``.
+        shape_in, shape_out : tuple[int, ...], optional
+            Input and output shapes for non-square mappings.
+        stencil : callable or list or tuple, optional
+            Stencil specification or factory callable. When callable, it is
+            invoked with ``ndims`` and ``**kwargs``.
+        eps_jac : float, optional
+            Relative perturbation magnitude used in finite differences.
+        format : {'csc', 'csr'}, optional
+            Sparse format for produced Jacobian matrices.
+        **kwargs
+            Additional options passed to the stencil callable.
         """
         if shape is not None and (shape_in is not None or shape_out is not None):
             raise ValueError(
@@ -737,15 +732,9 @@ class NumJac:
         dc[dc > (-self.eps_jac)] = self.eps_jac
         dc = (c + dc) - c
 
-        # Precompute perturbations using Numba
-        # c_perturb = precompute_perturbations_numba(c, dc, self.num_gr, self.gr)
         c_perturb = np.tile(c[np.newaxis, ...], (self.num_gr,) + (1,) * c.ndim)
         c_perturb.ravel()[c.size * self.gr.ravel() + np.arange(c.size)] += dc.ravel()
 
-        # Evaluate function f on perturbed values
-        # perturbed_values = np.array([f(c_perturb[k, ...]) for k in range(self.num_gr)])
-        # Compute dfdc using Numba
-        # df = compute_df(f_value, perturbed_values, self.num_gr)
         df = compute_df2(f, f_value, c_perturb, self.num_gr)
 
         # Compute Jacobian values using precomputed flat index

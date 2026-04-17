@@ -1,37 +1,4 @@
-"""
-Interpolate Submodule for pymrm
-
-This submodule provides functions for interpolating values between staggered
-and cell-centered grids, which is essential in finite-volume and finite-difference
-schemes for solving partial differential equations. It includes standard linear
-interpolation and Total Variation Diminishing (TVD) schemes to prevent numerical
-oscillations in convective transport problems.
-
-Functions:
------------
-- interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0)
-    Linearly interpolate staggered grid values to cell-centered values.
-
-- interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0)
-    Linearly interpolate cell-centered values to staggered grid positions.
-
-- interp_cntr_to_stagg_tvd(cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0)
-    Perform TVD interpolation from cell-centered values to staggered positions.
-
-- create_staggered_array(array, shape, axis, x_f=None, x_c=None)
-    Generate staggered arrays for face-centered values.
-
-- compute_boundary_values(cell_centered_values, x_f, x_c=None, bc=None, axis=0)
-    Compute boundary values and gradients for cell-centered values.
-
-- (shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None)
-    Construct matrices that provide values on domain boundaries based on cell-centered values.
-
-Dependencies:
--------------
-- numpy: For array manipulations.
-- pymrm.helpers: For boundary condition handling (`unwrap_bc_coeff`).
-"""
+"""Interpolation utilities between cell-centered and staggered grids."""
 
 import math
 import numpy as np
@@ -40,17 +7,23 @@ from .helpers import unwrap_bc_coeff
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
-    """
-    Linearly interpolate values from staggered positions to cell-centered positions.
+    """Interpolate face/staggered values to cell centers.
 
-    Args:
-        staggered_values (ndarray): Array of values at staggered positions.
-        x_f (ndarray): Positions of cell faces.
-        x_c (ndarray, optional): Positions of cell centers. If None, midpoints are used.
-        axis (int, optional): Axis along which to interpolate. Default is 0.
+    Parameters
+    ----------
+    staggered_values : numpy.ndarray
+        Values defined on staggered (face) locations.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, midpoint interpolation is used.
+    axis : int, optional
+        Interpolation axis.
 
-    Returns:
-        ndarray: Interpolated values at cell-centered positions.
+    Returns
+    -------
+    numpy.ndarray
+        Cell-centered values with one fewer element along ``axis``.
     """
     shape_f = list(staggered_values.shape)
     if axis < 0:
@@ -78,17 +51,23 @@ def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
 
 
 def interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0):
-    """
-    Linearly interpolate values from cell-centered positions to staggered positions.
+    """Interpolate cell-centered values to face/staggered locations.
 
-    Args:
-        cell_centered_values (ndarray): Array of values at cell-centered positions.
-        x_f (ndarray): Positions of cell faces.
-        x_c (ndarray, optional): Positions of cell centers. If None, midpoints are used.
-        axis (int, optional): Axis along which to interpolate. Default is 0.
+    Parameters
+    ----------
+    cell_centered_values : numpy.ndarray
+        Values defined at cell centers.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, midpoint locations are used.
+    axis : int, optional
+        Interpolation axis.
 
-    Returns:
-        ndarray: Interpolated values at staggered positions.
+    Returns
+    -------
+    numpy.ndarray
+        Staggered values with one additional element along ``axis``.
     """
     shape = list(cell_centered_values.shape)
     if axis < 0:
@@ -128,22 +107,32 @@ def interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0):
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
-    """
-    Perform TVD interpolation from cell-centered positions to staggered positions.
+    """Perform TVD interpolation from cell centers to faces.
 
-    Args:
-        cell_centered_values (ndarray): Array of values at cell-centered positions.
-        x_f (ndarray): Positions of cell faces.
-        x_c (ndarray, optional): Positions of cell centers. If None, midpoints are used.
-        bc (tuple, optional): Boundary conditions as dictionaries with keys 'a', 'b', and 'd'.
-        v (ndarray or float, optional): Velocity field for upwinding. Default is 0.
-        tvd_limiter (callable, optional): TVD limiter function. Default is None.
-        axis (int, optional): Axis along which to interpolate. Default is 0.
+    Parameters
+    ----------
+    cell_centered_values : numpy.ndarray
+        Cell-centered values.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, midpoint locations are used.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary-condition dictionaries with keys ``a``, ``b``,
+        and ``d``.
+    v : float or array_like, optional
+        Face velocity used to determine upwind/downwind directions.
+    tvd_limiter : callable, optional
+        Limiter function with signature ``phi(c_norm, x_norm_c, x_norm_d)``. If
+        ``None``, the routine returns linear upwind interpolation without TVD
+        correction.
+    axis : int, optional
+        Interpolation axis.
 
-    Returns:
-        tuple:
-            - ndarray: Interpolated values at staggered positions.
-            - ndarray: Delta values for TVD corrections.
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        Interpolated staggered values and TVD correction term.
     """
     shape = list(cell_centered_values.shape)
     if axis < 0:
@@ -315,18 +304,24 @@ def interp_cntr_to_stagg_tvd(
 
 
 def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
-    """
-    Generate a staggered array by broadcasting or interpolating face-centered values.
+    """Create a face/staggered field from scalar, centered, or staggered input.
 
-    Args:
-        array (ndarray): Input array to be staggered.
-        shape (tuple): Shape of the non-staggered cell-centered field.
-        axis (int): Axis along which staggering is applied.
-        x_f (ndarray, optional): Positions of cell faces. Default is None.
-        x_c (ndarray, optional): Positions of cell centers. Default is None.
+    Parameters
+    ----------
+    array : array_like
+        Input values. May be scalar, centered, or already staggered.
+    shape : tuple[int, ...] or int
+        Target centered-field shape.
+    axis : int
+        Staggering axis.
+    x_f, x_c : array_like, optional
+        Face and center coordinates used when centered input must be
+        interpolated to faces.
 
-    Returns:
-        ndarray: Staggered array aligned with face positions.
+    Returns
+    -------
+    numpy.ndarray
+        Broadcasted/interpolated array with staggered shape.
     """
     if not isinstance(shape, (list, tuple)):
         shape_f = [shape]
@@ -368,26 +363,31 @@ def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
 def compute_boundary_values(
     cell_centered_values, x_f, x_c=None, bc=None, axis=0, bound_id=None
 ):
-    """
-    Compute boundary values and gradients for cell-centered values.
+    """Compute boundary values and boundary-normal gradients.
 
-    Args:
-        cell_centered_values (ndarray): Array of values at cell-centered positions.
-        x_f (ndarray): Positions of cell faces.
-        x_c (ndarray, optional): Positions of cell centers. If None, midpoints are used.
-        bc (tuple, optional): Boundary conditions as dictionaries with keys 'a', 'b', and 'd'.
-        axis (int, optional): Axis along which to compute boundary values. Default is 0.
-        bound_id (int, optional): Identifier for the boundary condition. Must be None, 0 or 1. Default is None.
+    Parameters
+    ----------
+    cell_centered_values : numpy.ndarray
+        Cell-centered solution values.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates.
+    bc : dict or tuple[dict | None, dict | None], optional
+        Boundary-condition data. For a single boundary query (``bound_id`` set),
+        a single dictionary is accepted. For both boundaries, pass a
+        two-element tuple.
+    axis : int, optional
+        Axis normal to the boundary.
+    bound_id : {0, 1} or None, optional
+        Boundary selector. ``None`` returns both boundaries.
 
-    Returns:
-        if bound_id is 0 or 1:
-            ndarray: Boundary values at the boundary.
-            ndarray: Gradients at the boundary.
-        if bound_id is None:
-            ndarray: Boundary values at the 0-boundary.
-            ndarray: Gradients at the 0-boundary.
-            ndarray: Boundary values at the 1-boundary.
-            ndarray: Gradients at the 1-boundary.
+    Returns
+    -------
+    tuple
+        If ``bound_id`` is ``None``:
+        ``(value_left, grad_left, value_right, grad_right)``.
+        Otherwise: ``(value, grad)`` for the requested boundary.
     """
     shape = list(cell_centered_values.shape)
     if axis < 0:
@@ -577,22 +577,32 @@ def compute_boundary_values(
 def construct_boundary_value_matrices(
     shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None, format="csc"
 ):
-    """
-    Constructs the matrices that can be used to compute boundary values.
+    """Build matrices that evaluate boundary values from cell-centered unknowns.
 
-    Args:
-        shape (tuple): Shape of the multi-dimensional array.
-        x_f (ndarray): Face positions.
-        x_c (ndarray, optional): Cell-centered positions. If not provided, it is calculated based on the face array.
-        bc (dictionary, optional): Boundary condition as dictionary with keys 'a', 'b', 'd'. Default is None.
-        axis (int, optional): The axis along which the numerical differentiation is performed. Default is 0.
-        bound_id (int, optional): Identifier for the boundary condition. Must be 0 or 1. Default is 0.
-        shape_d (tuple, optional): Shape for inhomogeneous boundary condition matrices. Default is None.
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...]
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates near the selected boundary.
+    bc : dict, optional
+        Boundary-condition dictionary with keys ``a``, ``b``, and ``d``.
+    axis : int, optional
+        Boundary-normal axis.
+    bound_id : {0, 1}, optional
+        ``0`` for the lower/left boundary, ``1`` for upper/right.
+    shape_d : tuple[int, ...], optional
+        Shape of external inhomogeneous source unknowns.
+    format : {'csc', 'csr'}, optional
+        Sparse format for the homogeneous matrix.
 
-    Returns:
-        csc_array or csr_array: homogeneous-part matrix
-        csc_array or csr_array: inhomogeneous-part matrix
+    Returns
+    -------
+    tuple
+        ``(matrix, mat_bc)`` where ``matrix`` maps cell-centered values to
+        boundary values and ``mat_bc`` maps inhomogeneous boundary terms.
     """
 
     if bound_id not in (0, 1):

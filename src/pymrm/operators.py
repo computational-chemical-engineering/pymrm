@@ -1,23 +1,4 @@
-"""
-Operators Submodule for pymrm
-
-This submodule provides numerical operators for spatial discretization,
-including gradient and divergence operators.
-These operators are essential for constructing finite difference
-and finite volume schemes used in multiphase reactor modeling.
-
-Functions:
-- construct_grad: Constructs the gradient matrix for spatial differentiation.
-- construct_grad_int: Constructs the gradient matrix for internal faces.
-- construct_grad_bc: Constructs the gradient matrix for boundary faces.
-- construct_div: Constructs the divergence matrix for flux calculations.
-
-Dependencies:
-- numpy
-- scipy.sparse
-- pymrm.grid (for optional grid generation)
-- pymrm.helpers (for boundary condition handling)
-"""
+"""Sparse gradient and divergence operators for finite-volume discretisation."""
 
 import math
 import numpy as np
@@ -29,21 +10,32 @@ from pymrm.grid import generate_grid
 def construct_grad(
     shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None), format="csc"
 ):
-    """
-    Construct the gradient matrix for spatial differentiation.
+    """Construct the full gradient operator including boundary contributions.
 
-    Parameters:
-        shape (tuple or int): Shape of the domain. If an integer is provided, it is converted to a tuple.
-        x_f (ndarray): Face positions.
-        x_c (ndarray, optional): Cell center coordinates. If not provided, they are calculated.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries. Default is (None, None).
-        axis (int, optional): Axis of differentiation. Default is 0.
-        shapes_d (tuple, optional): Shapes for boundary condition contributions. Default is (None, None).
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...] or int
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates along ``axis``. If omitted, they are generated
+        as arithmetic midpoints.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary-condition dictionaries with coefficients
+        ``'a'``, ``'b'``, and ``'d'``.
+    axis : int, optional
+        Differentiation axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Optional output shapes for inhomogeneous boundary source vectors.
+    format : {'csc', 'csr'}, optional
+        Sparse format used for returned operator matrices.
 
-    Returns:
-        csc_array or csr_array: Gradient matrix.
-        csc_array or csr_array: Gradient BC contribution (tuple if ``shapes_d`` is provided).
+    Returns
+    -------
+    tuple
+        Without ``shapes_d``: ``(grad_matrix, grad_bc)``.
+        With ``shapes_d``: ``(grad_matrix, grad_bc_left, grad_bc_right)``.
     """
     if isinstance(shape, int):
         shape = (shape,)
@@ -74,18 +66,25 @@ def construct_grad(
 
 
 def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
-    """
-    Construct the gradient matrix for internal faces.
+    """Construct the interior-face gradient operator.
 
-    Parameters:
-        shape (tuple): Shape of the domain.
-        x_f (ndarray): Face coordinates.
-        x_c (ndarray, optional): Cell center coordinates. If not provided, they are calculated.
-        axis (int, optional): Axis of differentiation. Default is 0.
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...]
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, arithmetic midpoints are used.
+    axis : int, optional
+        Differentiation axis.
+    format : {'csc', 'csr'}, optional
+        Output sparse format.
 
-    Returns:
-        csc_array or csr_array: Gradient matrix for internal faces.
+    Returns
+    -------
+    scipy.sparse.csc_array or scipy.sparse.csr_array
+        Matrix that maps cell-centered values to face-normal gradients.
     """
     if axis < 0:
         axis += len(shape)
@@ -157,21 +156,32 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
 def construct_grad_bc(
     shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None), format="csc"
 ):
-    """
-    Construct the gradient matrix for boundary faces.
+    """Construct boundary-face gradient corrections and source terms.
 
-    Parameters:
-        shape (tuple): Shape of the domain.
-        x_f (ndarray): Face coordinates.
-        x_c (ndarray, optional): Cell center coordinates. If not provided, they are calculated.
-        bc (tuple, optional): Boundary conditions as a tuple of dictionaries. Default is (None, None).
-        axis (int, optional): Axis of differentiation. Default is 0.
-        shapes_d (tuple, optional): Shapes for boundary condition contributions. Default is (None, None).
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...]
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary-condition dictionaries with keys ``a``, ``b``,
+        and ``d``.
+    axis : int, optional
+        Differentiation axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Optional source-vector shapes for left/right boundary contributions.
+    format : {'csc', 'csr'}, optional
+        Sparse format for returned operator matrices.
 
-    Returns:
-        csc_array/csr_array or tuple: Gradient matrix for boundary faces and contributions from
-            inhomogeneous boundary conditions.  If ``shapes_d`` is provided, returns a tuple of matrices.
+    Returns
+    -------
+    tuple
+        ``(grad_matrix_bc, grad_bc)`` when ``shapes_d`` is not supplied, or
+        ``(grad_matrix_left, grad_bc_left, grad_matrix_right, grad_bc_right)``
+        otherwise.
     """
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -388,19 +398,26 @@ def construct_grad_bc(
 
 
 def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
-    """
-    Construct the divergence matrix for flux calculations.
+    """Construct a divergence matrix that maps face fluxes to cell balances.
 
-    Parameters:
-        shape (tuple or int): Shape of the domain. If an integer is provided, it is converted to a tuple.
-        x_f (ndarray): Face positions.
-        nu (int or callable, optional): Geometry factor (0: flat, 1: cylindrical,
-            2: spherical, or a callable for custom geometry). Default is 0.
-        axis (int, optional): Axis along which divergence is computed. Default is 0.
-        format (str, optional): Sparse format, ``'csc'`` (default) or ``'csr'``.
+    Parameters
+    ----------
+    shape : tuple[int, ...] or int
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    nu : int or callable, optional
+        Geometry descriptor. ``0`` gives Cartesian, ``1`` cylindrical,
+        ``2`` spherical, and a callable ``nu(x)`` enables custom metrics.
+    axis : int, optional
+        Axis for flux divergence.
+    format : {'csc', 'csr'}, optional
+        Sparse format of the returned operator.
 
-    Returns:
-        csc_array or csr_array: Divergence matrix.
+    Returns
+    -------
+    scipy.sparse.csc_array or scipy.sparse.csr_array
+        Divergence operator.
     """
     if isinstance(shape, int):
         shape = (shape,)
