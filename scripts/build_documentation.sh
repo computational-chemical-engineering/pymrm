@@ -5,6 +5,7 @@
 
 pip install myst-parser # workaround. Should be included in Docker image?
 pip install -e .
+sphinx-apidoc -f -o docs/sphinx src/pymrm
 cd docs/sphinx
 mkdir -p _static
 make html 2>documentation_errors.txt
