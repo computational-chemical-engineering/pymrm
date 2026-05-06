@@ -1,8 +1,9 @@
 """Nonlinear-solver utilities used by :mod:`pymrm`."""
 
 import numpy as np
+from scipy import sparse
 from scipy.sparse import linalg
-from scipy.linalg import norm
+from scipy.linalg import norm, solve as dense_solve
 from scipy.optimize import OptimizeResult
 
 
@@ -64,11 +65,17 @@ def newton(
     if solver == "spsolve":
 
         def linsolver(jac_matrix, g, **kwargs):
-            return linalg.spsolve(jac_matrix, g, **kwargs)
+            if sparse.issparse(jac_matrix):
+                return linalg.spsolve(jac_matrix, g, **kwargs)
+            return dense_solve(np.asarray(jac_matrix), np.asarray(g), **kwargs)
 
     elif solver == "cg":
 
         def linsolver(jac_matrix, g, **kwargs):
+            if not sparse.issparse(jac_matrix):
+                raise ValueError(
+                    "solver='cg' requires a sparse Jacobian or a custom solver."
+                )
             Jac_iLU = linalg.spilu(jac_matrix)
             M = linalg.LinearOperator((n, n), Jac_iLU.solve)
             dx_neg, info = linalg.cg(jac_matrix, g, M=M, **kwargs)
@@ -79,6 +86,10 @@ def newton(
     elif solver == "bicgstab":
 
         def linsolver(jac_matrix, g, **kwargs):
+            if not sparse.issparse(jac_matrix):
+                raise ValueError(
+                    "solver='bicgstab' requires a sparse Jacobian or a custom solver."
+                )
             Jac_iLU = linalg.spilu(jac_matrix)
             M = linalg.LinearOperator((n, n), Jac_iLU.solve)
             dx_neg, info = linalg.bicgstab(jac_matrix, g, M=M, **kwargs)

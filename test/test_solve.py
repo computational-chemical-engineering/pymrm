@@ -44,6 +44,17 @@ def test_newton_convergence_result():
     assert "Converged" in sol.message
 
 
+def test_newton_dense_jacobian_default_solver():
+    """Newton should use a dense direct solve for dense Jacobians."""
+
+    def f_dense(x):
+        return np.array([x[0] ** 2 - 2]), np.array([[2 * x[0]]])
+
+    sol = newton(f_dense, np.array([1.0]))
+    assert sol.success
+    assert sol.x[0] == pytest.approx(np.sqrt(2), rel=1e-6)
+
+
 def test_newton_solver_cg():
     """Newton with CG linear solver should converge."""
     sol = newton(_f_sqrt2, np.array([1.5]), solver="cg")
