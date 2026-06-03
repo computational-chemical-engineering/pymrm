@@ -31,9 +31,13 @@ def newton(
         Stopping tolerance on the infinity norm of the Newton update.
     maxfev : int, optional
         Maximum number of Newton iterations.
-    solver : {'spsolve', 'cg', 'bicgstab'} or callable, optional
+    solver : {'spsolve', 'cg', 'bicgstab', 'splu'} or callable, optional
         Linear solver used for each Newton step. If ``None``, the routine picks
         ``'spsolve'`` for smaller systems and ``'bicgstab'`` for larger systems.
+        When ``'splu'`` is selected, the Jacobian returned by ``function`` is
+        expected to be an already-decomposed ``SuperLU`` object (as returned by
+        :func:`scipy.sparse.linalg.splu`), and the solve step calls its
+        ``.solve()`` method directly.
         A callable solver must accept ``(jac_matrix, rhs, **kwargs)`` and return
         the solution vector.
     lin_solver_kwargs : dict, optional
@@ -96,6 +100,11 @@ def newton(
             if info != 0:
                 raise RuntimeError(f"BICGSTAB did not converge, info={info}")
             return dx_neg
+
+    elif solver == "splu":
+
+        def linsolver(jac_matrix, g, **kwargs):
+            return jac_matrix.solve(g)
 
     elif callable(solver):
 
