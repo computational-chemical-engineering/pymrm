@@ -42,7 +42,8 @@ Dirichlet wall values.  The full-field flat index decomposes as:
         {\\text{ns contrib.}}
 
 where :math:`d[a]` is the C-order stride of axis ``a`` and the two
-    contributions are **independent** (an outer sum over crossings x ns layers).
+contributions are **independent** (an outer sum over crossings x ns layers).
+
 Sign convention
 ---------------
 The modified matrix ``M`` and source ``g`` satisfy ``value = M @ c + g``
