@@ -51,7 +51,6 @@ from .coupling import (
 from .helpers import construct_coefficient_matrix
 from .ibm import (
     IBM,
-    IBMSide,
     construct_ibm,
     apply_ibm,
     apply_ibm_vector,
@@ -93,7 +92,6 @@ __all__ = [
     "stencil_block_diagonals",
     "construct_coefficient_matrix",
     "IBM",
-    "IBMSide",
     "construct_ibm",
     "apply_ibm",
     "apply_ibm_vector",

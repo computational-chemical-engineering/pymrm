@@ -1,4 +1,4 @@
-"""Tests for the directional ghost-cell immersed boundary method (:mod:`pymrm.ibm`)."""
+"""Tests for the directional ghost-cell IBM (:mod:`pymrm.ibm`)."""
 
 import numpy as np
 import pytest
@@ -14,76 +14,72 @@ from pymrm.grid import generate_grid
 # ---------------------------------------------------------------------------
 
 def _uniform_1d(n=10, x_wall=0.63):
-    """Uniform 1-D grid on [0, 1] with a planar immersed wall at ``x_wall``.
-
-    Fluid is ``x < x_wall`` (``sdf > 0``); solid is ``x > x_wall``.
-    """
+    """Uniform 1-D grid on [0, 1] with a planar wall at *x_wall*."""
     x_f = np.linspace(0.0, 1.0, n + 1)
     _, x_c = generate_grid(n, x_f, generate_x_c=True)
     sdf = x_wall - x_c
-    return x_f, x_c, sdf
+    return x_c, sdf
 
 
 def _ref_point_value(theta):
-    """Reference equidistant point-value coefficients (center, opp, wall)."""
     d = theta * (1.0 + theta)
-    c_center = 2.0 * (theta**2 - 1.0) / d
-    c_opp = theta * (1.0 - theta) / d
-    c_wall = 2.0 / d
-    return c_center, c_opp, c_wall
+    return 2.0 * (theta**2 - 1.0) / d, theta * (1.0 - theta) / d, 2.0 / d
+
+
+def _extraction_csr(n, rows, cols):
+    A = lil_array((n, n))
+    for r, c in zip(rows, cols):
+        A[r, c] += 1.0
+    return csr_array(A)
 
 
 # ---------------------------------------------------------------------------
-# Classification
+# Geometry and classification
 # ---------------------------------------------------------------------------
 
-def test_classification_two_sided():
-    x_f, x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f)
+def test_classification_basic():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c)
 
-    # Fluid cells: x_c < 0.63 -> indices 0..5 ; cut fluid cell is 5, ghost 6.
-    assert ibm.outside.n_points == 1
-    assert ibm.outside.row[0] == 5
-    assert ibm.outside.ghost[0] == 6
-    assert ibm.outside.opp[0] == 4
-    assert ibm.outside.direction[0] == 1
-
-    # Inside (solid) cut cell is 6, ghost is the fluid cell 5.
-    assert ibm.inside.n_points == 1
-    assert ibm.inside.row[0] == 6
-    assert ibm.inside.ghost[0] == 5
-    assert ibm.inside.direction[0] == -1
+    assert ibm.n_crossings == 1
+    assert ibm.row_out[0] == 5
+    assert ibm.ghost_out[0] == 6
+    assert ibm.opp_out[0] == 4
+    assert ibm.direction[0] == 1
+    assert ibm.row_in[0] == 6
+    assert ibm.ghost_in[0] == 5
+    # Pure spatial: no non-spatial dims
+    assert ibm.ns_size == 1
+    assert ibm.n_cells == ibm.n_spatial_cells
 
 
-def test_crossing_key_alignment():
-    x_f, x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f)
-    # Outside and inside points on the same face share the crossing key.
-    assert sorted(ibm.outside.crossing_key.tolist()) == sorted(
-        ibm.inside.crossing_key.tolist()
-    )
+def test_crossing_keys_unique():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c)
+    assert ibm.crossing_key.size == np.unique(ibm.crossing_key).size
+
+
+def test_coords_on_wall():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c)
+    assert 0.55 < ibm.coords[0, 0] < 0.65
 
 
 # ---------------------------------------------------------------------------
-# Coefficient correctness
+# Lagrange coefficient correctness
 # ---------------------------------------------------------------------------
 
 def test_equidistant_reduction_matches_reference():
-    # Wall at 0.63 on a uniform grid h=0.1 -> theta = 0.8 for cut cell 5.
-    x_f, x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f, rescale=False)
-    s = ibm.outside
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c, rescale=False)
     theta = (0.63 - x_c[5]) / (x_c[6] - x_c[5])
     c_center, c_opp, c_wall = _ref_point_value(theta)
-    assert s.coef_c[0] == pytest.approx(c_center)
-    assert s.coef_o[0] == pytest.approx(c_opp)
-    assert s.coef_w_self[0] == pytest.approx(c_wall)
+    assert ibm.coef_c_out[0] == pytest.approx(c_center)
+    assert ibm.coef_o_out[0] == pytest.approx(c_opp)
+    assert ibm.coef_w_out[0] == pytest.approx(c_wall)
 
 
 def test_reconstruction_second_order_convergence():
-    # The 3-node point-value reconstruction is exact for quadratics, so the
-    # ghost-value error for a smooth field decreases at ~3rd order in h. Keep
-    # theta = 0.5 fixed across refinements so the error constant is stable.
     def field(x):
         return np.exp(1.3 * x)
 
@@ -92,53 +88,43 @@ def test_reconstruction_second_order_convergence():
         x_f = np.linspace(0.0, 1.0, n + 1)
         _, x_c = generate_grid(n, x_f, generate_x_c=True)
         k = n // 2
-        h = x_c[k + 1] - x_c[k]
-        x_wall = x_c[k] + 0.5 * h  # theta = 0.5 for cut cell k
+        x_wall = x_c[k] + 0.5 * (x_c[k + 1] - x_c[k])
         sdf = x_wall - x_c
-        ibm = construct_ibm(sdf, x_f, rescale=False)
-        s = ibm.outside
+        ibm = construct_ibm(sdf, x_c, rescale=False)
+
         u = field(x_c)
-        u_wall = field(s.coords[:, 0])
-
-        # Extraction operator: row c reads the ghost neighbor value.
-        n_cells = x_c.size
-        A = lil_array((n_cells, n_cells))
-        for c, g in zip(s.row, s.ghost):
-            A[c, g] = 1.0
-        A = csr_array(A)
-
-        A_mod, bc = apply_ibm(A, ibm, side="outside", values=u_wall)
+        u_wall = field(ibm.coords[:, 0])
+        A = _extraction_csr(x_c.size, ibm.row_out, ibm.ghost_out)
+        A_mod, bc = apply_ibm(A, ibm, values_outside=u_wall,
+                               values_inside=np.zeros(ibm.n_crossings))
         recon = (A_mod @ u) + bc
-        err = abs(recon[k] - field(x_c[k + 1]))
-        errors.append(err)
+        errors.append(abs(recon[k] - field(x_c[k + 1])))
 
-    errors = np.array(errors)
-    orders = np.log(errors[:-1] / errors[1:]) / np.log(2.0)
+    orders = np.log(np.array(errors[:-1]) / np.array(errors[1:])) / np.log(2.0)
     assert np.all(orders > 2.5)
 
 
 def test_nonuniform_quadratic_exact():
-    # On a non-uniform grid the reconstruction must be exact for a quadratic.
     n = 15
-    x_f = np.sort(np.concatenate(([0.0, 1.0], np.random.default_rng(0).uniform(0, 1, n - 1))))
+    x_f = np.sort(np.concatenate(
+        ([0.0, 1.0], np.random.default_rng(0).uniform(0, 1, n - 1))
+    ))
     _, x_c = generate_grid(n, x_f, generate_x_c=True)
-    x_wall = 0.6123
-    sdf = x_wall - x_c
-    ibm = construct_ibm(sdf, x_f, rescale=False)
-    s = ibm.outside
+    sdf = 0.6123 - x_c
+    ibm = construct_ibm(sdf, x_c, rescale=False)
 
     def quad(x):
         return 1.0 - 2.0 * x + 3.0 * x**2
 
     u = quad(x_c)
-    u_wall = quad(s.coords[:, 0])
+    u_wall = quad(ibm.coords[:, 0])
+    opp_safe = np.where(ibm.opp_out >= 0, ibm.opp_out, 0)
     recon = (
-        s.coef_c * u[s.row]
-        + s.coef_o * np.where(s.opp >= 0, u[np.where(s.opp >= 0, s.opp, 0)], 0.0)
-        + s.coef_w_self * u_wall
+        ibm.coef_c_out * u[ibm.row_out]
+        + ibm.coef_o_out * np.where(ibm.opp_out >= 0, u[opp_safe], 0.0)
+        + ibm.coef_w_out * u_wall
     )
-    expected = quad(x_c[s.ghost])
-    assert np.allclose(recon, expected)
+    assert np.allclose(recon, quad(x_c[ibm.ghost_out]))
 
 
 # ---------------------------------------------------------------------------
@@ -146,96 +132,160 @@ def test_nonuniform_quadratic_exact():
 # ---------------------------------------------------------------------------
 
 def test_sandwich_structure_and_exactness():
-    # A single solid cell surrounded by fluid -> inside side is a sandwich.
     n = 11
     x_f = np.linspace(0.0, 1.0, n + 1)
     _, x_c = generate_grid(n, x_f, generate_x_c=True)
     solid_cell = 5
-    # SDF negative only at the single solid cell.
     dx = x_c[1] - x_c[0]
     sdf = np.abs(x_c - x_c[solid_cell]) - 0.5 * dx
     assert sdf[solid_cell] < 0 and sdf[solid_cell - 1] > 0 and sdf[solid_cell + 1] > 0
 
-    ibm = construct_ibm(sdf, x_f, rescale=False)
-    s = ibm.inside
-    # Two eliminations for the single solid cell, both sandwich (sib set, no opp).
-    assert s.n_points == 2
-    assert np.all(s.row == solid_cell)
-    assert np.all(s.sib >= 0)
-    assert np.all(s.opp == -1)
-    assert np.all(s.coef_w_sib != 0.0)
+    ibm = construct_ibm(sdf, x_c, rescale=False)
 
-    # Quadratic exactness of the two-wall reconstruction of the fluid ghosts.
+    assert ibm.n_crossings == 2
+    assert np.all(ibm.row_in == solid_cell)
+    assert np.all(ibm.sib_in >= 0)
+    assert np.all(ibm.opp_in == -1)
+    assert np.all(ibm.coef_w_sib_in != 0.0)
+    assert np.all(ibm.sib_out == -1)
+
     def quad(x):
         return 2.0 + 0.5 * x - 1.5 * x**2
 
-    u_wall = quad(s.coords[:, 0])
+    u_wall = quad(ibm.coords[:, 0])
     u_center = quad(x_c[solid_cell])
-    for k in range(s.n_points):
+    for k in range(ibm.n_crossings):
         recon = (
-            s.coef_c[k] * u_center
-            + s.coef_w_self[k] * u_wall[k]
-            + s.coef_w_sib[k] * u_wall[s.sib[k]]
+            ibm.coef_c_in[k] * u_center
+            + ibm.coef_w_in[k] * u_wall[k]
+            + ibm.coef_w_sib_in[k] * u_wall[ibm.sib_in[k]]
         )
-        assert recon == pytest.approx(quad(x_c[s.ghost[k]]))
+        assert recon == pytest.approx(quad(x_c[ibm.ghost_in[k]]))
 
 
 # ---------------------------------------------------------------------------
-# Application: matrix / vector / source-matrix
+# apply_ibm: source vector / matrix / vector consistency
 # ---------------------------------------------------------------------------
-
-def _extraction_matrix(ibm, side):
-    s = ibm.side(side)
-    n = s.n_cells
-    A = lil_array((n, n))
-    for c, g in zip(s.row, s.ghost):
-        A[c, g] += 1.0
-    return csr_array(A)
-
 
 def test_source_matrix_equals_vector():
-    x_f, x_c, sdf = _uniform_1d(n=12, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f)
-    A = _extraction_matrix(ibm, "outside")
-    d = np.array([0.7])  # one IBM point
+    x_c, sdf = _uniform_1d(n=12, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c)
+    A = _extraction_csr(x_c.size, ibm.row_out, ibm.ghost_out)
 
-    _, g_vec = apply_ibm(A, ibm, side="outside", values=d)
-    _, G = apply_ibm(A, ibm, side="outside", return_bc="matrix")
-    assert np.allclose(G @ d, g_vec)
+    d = np.full(ibm.n_crossings, 0.7)
+    _, g_vec = apply_ibm(A, ibm, values_outside=d,
+                          values_inside=np.zeros(ibm.n_crossings))
+    _, G_out, G_in = apply_ibm(A, ibm, return_bc="matrix")
+    assert np.allclose(np.asarray(G_out @ d).ravel(), g_vec)
 
 
-def test_apply_vector_row_scaling_consistency():
-    # For a constant matrix, scaling an independent RHS with apply_ibm_vector
-    # must equal the row scaling folded into the modified matrix.
-    x_f, x_c, sdf = _uniform_1d(n=12, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f, rescale=True)
-    s = ibm.outside
-    A = _extraction_matrix(ibm, "outside")
-    A_mod, _ = apply_ibm(A, ibm, side="outside")
-
-    b = np.ones(s.n_cells)
-    b_scaled = apply_ibm_vector(b, ibm, side="outside")
-    # The scaled RHS on cut rows equals row_scale; unchanged elsewhere.
-    assert b_scaled[s.row[0]] == pytest.approx(s.row_scale[s.row[0]])
+def test_apply_ibm_vector_consistency():
+    x_c, sdf = _uniform_1d(n=12, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c, rescale=True)
+    b = np.ones(ibm.n_cells)
+    b_scaled = apply_ibm_vector(b, ibm)
+    cut_out = ibm.row_out[0]
+    assert b_scaled[cut_out] == pytest.approx(ibm.row_scale_out[cut_out])
     assert b_scaled[0] == pytest.approx(1.0)
 
 
-def test_two_sided_independent_values():
-    x_f, x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
-    ibm = construct_ibm(sdf, x_f)
-    A_out = _extraction_matrix(ibm, "outside")
-    A_in = _extraction_matrix(ibm, "inside")
+def test_values_none_defaults():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c, rescale=False)
+    A = csr_array(np.eye(ibm.n_cells))
 
-    _, g_out = apply_ibm(A_out, ibm, side="outside", values=np.array([1.0]))
-    _, g_in = apply_ibm(A_in, ibm, side="inside", values=np.array([9.0]))
-    # Sources land on the respective cut cells and differ.
-    assert g_out[ibm.outside.row[0]] != 0.0
-    assert g_in[ibm.inside.row[0]] != 0.0
-    assert g_out[ibm.outside.row[0]] != g_in[ibm.inside.row[0]]
+    _, g_zero = apply_ibm(A, ibm)
+    assert np.all(g_zero == 0.0)
+
+    d = np.full(ibm.n_crossings, 3.0)
+    _, g_shared_out = apply_ibm(A, ibm, values_outside=d)
+    _, g_shared_in = apply_ibm(A, ibm, values_inside=d)
+    _, g_both = apply_ibm(A, ibm, values_outside=d, values_inside=d)
+    assert np.allclose(g_shared_out, g_both)
+    assert np.allclose(g_shared_in, g_both)
+
+
+def test_two_sided_independent_values():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c, rescale=False)
+    n = ibm.n_cells
+    A_out = _extraction_csr(n, ibm.row_out, ibm.ghost_out)
+    A_in = _extraction_csr(n, ibm.row_in, ibm.ghost_in)
+    A = (csr_array(A_out) + csr_array(A_in)).tocsr()
+
+    _, g = apply_ibm(A, ibm, values_outside=np.array([1.0]),
+                      values_inside=np.array([9.0]))
+    assert g[ibm.row_out[0]] != 0.0
+    assert g[ibm.row_in[0]] != 0.0
+    assert g[ibm.row_out[0]] != g[ibm.row_in[0]]
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: immersed Dirichlet diffusion reproduces a linear field exactly
+# Non-spatial axes (ns dimensions)
+# ---------------------------------------------------------------------------
+
+def test_axes_and_shape_pure_spatial():
+    """Explicitly specifying axes for a pure spatial case gives same result."""
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm_default = construct_ibm(sdf, x_c)
+    ibm_explicit = construct_ibm(sdf, x_c, axes=(0,), shape=(sdf.size,))
+    assert ibm_default.n_crossings == ibm_explicit.n_crossings
+    assert ibm_default.ns_size == 1
+    assert ibm_explicit.ns_size == 1
+
+
+def test_ns_dimension_block_structure():
+    """With a component axis, each IBM crossing spans Nc rows in the full grid."""
+    n, Nc = 12, 3
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    x_wall = 0.63
+    sdf = x_wall - x_c
+
+    ibm = construct_ibm(sdf, x_c, axes=(0,), shape=(n, Nc))
+    assert ibm.ns_size == Nc
+    assert ibm.n_cells == n * Nc
+    assert ibm.n_spatial_cells == n
+
+    # For a block-diagonal matrix (Nc decoupled diffusion problems), the source
+    # vector for per-component wall values should equal Nc independent 1D IBM applies.
+    A_blk = csr_array(np.eye(n * Nc))
+    val_out_ns = np.array([[1.0, 2.0, 3.0]])  # shape (1 crossing, 3 components)
+    _, g_ns = apply_ibm(A_blk, ibm, values_outside=val_out_ns,
+                         values_inside=np.zeros((1, Nc)))
+
+    # Reference: construct a separate pure 1D IBM and apply for each component
+    ibm_1d = construct_ibm(sdf, x_c)  # pure spatial
+    A_1d = csr_array(np.eye(n))
+    for c in range(Nc):
+        _, g_1d = apply_ibm(A_1d, ibm_1d, values_outside=np.array([val_out_ns[0, c]]),
+                              values_inside=np.zeros(1))
+        # Pick rows corresponding to component c: full_row[k, c] = row_out[k] * Nc + c
+        full_row_k_c = int(ibm.row_out[0]) * Nc + c
+        assert g_ns[full_row_k_c] == pytest.approx(g_1d[ibm_1d.row_out[0]])
+
+
+def test_ns_source_matrix_shape():
+    n, Nc = 10, 4
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    sdf = 0.63 - x_c
+    ibm = construct_ibm(sdf, x_c, axes=(0,), shape=(n, Nc))
+
+    A = csr_array(np.eye(ibm.n_cells))
+    _, G_out, G_in = apply_ibm(A, ibm, return_bc="matrix")
+    assert G_out.shape == (ibm.n_cells, ibm.n_crossings * Nc)
+    assert G_in.shape == (ibm.n_cells, ibm.n_crossings * Nc)
+
+    # Source via matrix equals source via vector
+    vals = np.random.default_rng(0).random((ibm.n_crossings, Nc))
+    _, g_vec = apply_ibm(A, ibm, values_outside=vals, values_inside=np.zeros_like(vals))
+    g_mat = np.asarray(G_out @ vals.ravel()).ravel()
+    assert np.allclose(g_mat, g_vec)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: 1-D immersed Dirichlet diffusion
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("rescale", [True, False])
@@ -243,16 +293,13 @@ def test_linear_diffusion_exact(rescale):
     n = 20
     x_f = np.linspace(0.0, 1.0, n + 1)
     _, x_c = generate_grid(n, x_f, generate_x_c=True)
-    x_wall = 0.63
-    sdf = x_wall - x_c
-    ibm = construct_ibm(sdf, x_f, rescale=rescale)
-    s = ibm.outside
-    cut = int(s.row[0])
+    sdf = 0.63 - x_c
+    ibm = construct_ibm(sdf, x_c, rescale=rescale)
+    cut = int(ibm.row_out[0])
 
     def exact(x):
         return 2.0 + 3.0 * x
 
-    # Assemble: cell 0 pinned, fluid interior Laplacian, solid rows identity.
     A = lil_array((n, n))
     b = np.zeros(n)
     A[0, 0] = 1.0
@@ -265,36 +312,58 @@ def test_linear_diffusion_exact(rescale):
         A[i, i] = 1.0
     A = csr_array(A)
 
-    u_wall = exact(s.coords[:, 0])
-    A_mod, bc = apply_ibm(A, ibm, side="outside", values=u_wall)
-    b_mod = apply_ibm_vector(b, ibm, side="outside")
+    u_wall = exact(ibm.coords[:, 0])
+    A_mod, bc = apply_ibm(A, ibm, values_outside=u_wall,
+                           values_inside=np.zeros(ibm.n_crossings))
+    b_mod = apply_ibm_vector(b, ibm)
     u = spsolve(A_mod.tocsc(), b_mod - bc)
 
-    fluid = np.arange(cut + 1)
-    assert np.allclose(u[fluid], exact(x_c[fluid]), atol=1e-9)
+    assert np.allclose(u[:cut + 1], exact(x_c[:cut + 1]), atol=1e-9)
 
 
 # ---------------------------------------------------------------------------
-# 2-D smoke test
+# 2-D smoke test with explicit axes
 # ---------------------------------------------------------------------------
 
 def test_2d_construct_and_apply():
     nx, ny = 12, 10
-    x_f = np.linspace(0.0, 1.0, nx + 1)
-    y_f = np.linspace(0.0, 1.0, ny + 1)
-    _, x_c = generate_grid(nx, x_f, generate_x_c=True)
-    _, y_c = generate_grid(ny, y_f, generate_x_c=True)
-    X, Y = np.meshgrid(x_c, y_c, indexing="ij")
-    # Circular solid.
+    x_f0 = np.linspace(0.0, 1.0, nx + 1)
+    x_f1 = np.linspace(0.0, 1.0, ny + 1)
+    _, x_c0 = generate_grid(nx, x_f0, generate_x_c=True)
+    _, x_c1 = generate_grid(ny, x_f1, generate_x_c=True)
+    X, Y = np.meshgrid(x_c0, x_c1, indexing="ij")
     sdf = np.sqrt((X - 0.5) ** 2 + (Y - 0.5) ** 2) - 0.25
 
-    ibm = construct_ibm(sdf, [x_f, y_f])
-    assert ibm.outside.n_points > 0
-    assert ibm.inside.n_points > 0
-    assert ibm.outside.coords.shape[1] == 2
+    ibm = construct_ibm(sdf, [x_c0, x_c1], axes=(0, 1))
+    assert ibm.n_crossings > 0
+    assert ibm.coords.shape == (ibm.n_crossings, 2)
+    assert ibm.ns_size == 1
+    assert ibm.n_cells == nx * ny
 
-    n = sdf.size
+    n = ibm.n_cells
     A = csr_array(np.eye(n))
-    A_mod, G = apply_ibm(A, ibm, side="outside", return_bc="matrix")
+    A_mod, G_out, G_in = apply_ibm(A, ibm, return_bc="matrix")
     assert A_mod.shape == (n, n)
-    assert G.shape == (n, ibm.outside.n_points)
+    assert G_out.shape == (n, ibm.n_crossings)
+    assert G_in.shape == (n, ibm.n_crossings)
+
+
+def test_2d_with_components():
+    """2-D spatial + 1 component axis: shape (Nx, Ny, Nc) with axes=(0, 1)."""
+    nx, ny, Nc = 8, 7, 2
+    _, x_c0 = generate_grid(nx, [0.0, 1.0], generate_x_c=True)
+    _, x_c1 = generate_grid(ny, [0.0, 1.0], generate_x_c=True)
+    X, Y = np.meshgrid(x_c0, x_c1, indexing="ij")
+    sdf = np.sqrt((X - 0.5) ** 2 + (Y - 0.5) ** 2) - 0.25
+
+    ibm = construct_ibm(sdf, [x_c0, x_c1], axes=(0, 1), shape=(nx, ny, Nc))
+    assert ibm.ns_size == Nc
+    assert ibm.n_cells == nx * ny * Nc
+    assert ibm.n_spatial_cells == nx * ny
+    assert ibm.ns_shape == (Nc,)
+
+    n = ibm.n_cells
+    A = csr_array(np.eye(n))
+    A_mod, g = apply_ibm(A, ibm, values_outside=np.ones((ibm.n_crossings, Nc)))
+    assert A_mod.shape == (n, n)
+    assert g.shape == (n,)
