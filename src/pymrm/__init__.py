@@ -49,6 +49,13 @@ from .coupling import (
     construct_interface_matrices,
 )
 from .helpers import construct_coefficient_matrix
+from .ibm import (
+    IBM,
+    IBMSide,
+    construct_ibm,
+    apply_ibm,
+    apply_ibm_vector,
+)
 from ._version import __version__
 
 __all__ = [
@@ -85,5 +92,10 @@ __all__ = [
     "NumJac",
     "stencil_block_diagonals",
     "construct_coefficient_matrix",
+    "IBM",
+    "IBMSide",
+    "construct_ibm",
+    "apply_ibm",
+    "apply_ibm_vector",
     "__version__",
 ]
