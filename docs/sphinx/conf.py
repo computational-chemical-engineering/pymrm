@@ -34,6 +34,12 @@ extensions = [
     'myst_parser',
 ]
 
+# Render NumPy-style "Attributes" sections as inline ``:ivar:`` fields rather
+# than separate ``.. attribute::`` objects.  For dataclasses (whose annotated
+# fields are also picked up by ``:undoc-members:``) this avoids "duplicate
+# object description" warnings.
+napoleon_use_ivar = True
+
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
