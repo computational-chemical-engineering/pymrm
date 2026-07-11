@@ -50,6 +50,13 @@ def run_apidoc(_):
     docs_dir = Path(__file__).resolve().parent
     package_dir = docs_dir.parent.parent / 'src' / 'pymrm'
     apidoc_main(['-f', '-o', str(docs_dir), str(package_dir)])
+    package_rst = docs_dir / 'pymrm.rst'
+    if package_rst.exists():
+        content = package_rst.read_text(encoding='utf-8')
+        marker = "\nModule contents\n---------------\n\n.. automodule:: pymrm\n"
+        if marker in content:
+            content = content.split(marker, 1)[0].rstrip() + "\n"
+            package_rst.write_text(content, encoding='utf-8')
 
 
 def setup(app):
