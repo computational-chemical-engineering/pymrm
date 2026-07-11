@@ -7,8 +7,10 @@ including:
 * sparse gradient, divergence, and convective-flux operators;
 * interpolation routines between cell-centered and staggered layouts;
 * numerical Jacobian approximation tools;
-* nonlinear solver helpers for implicit schemes; and
-* coupling helpers for multi-domain/interface formulations.
+* nonlinear solver helpers for implicit schemes;
+* coupling helpers for multi-domain/interface formulations; and
+* immersed-boundary operators with SDF-based domain segmentation and a
+  particle front end (exact per-particle walls/normals, contact policies).
 """
 
 from .grid import generate_grid, non_uniform_grid
@@ -55,6 +57,40 @@ from .ibm import (
     apply_ibm,
     apply_ibm_vector,
 )
+from .ibm_recon import (
+    IBMNormalDerivative,
+    construct_ibm_normal_derivative,
+    construct_ibm_normal_derivative_ops,
+    interface_normals,
+    gfd_normal_derivative_weights,
+)
+from .ibm_coupling import (
+    construct_ibm_interface_values,
+    apply_ibm_interface,
+    construct_ibm_boundary_values,
+)
+from .segmentation import (
+    Segmentation,
+    segment_domain,
+    crossing_segments,
+    segment_values,
+    wall_contact,
+    wall_patch,
+    wall_values,
+    combine_interface_conditions,
+    segment_field,
+)
+from .particles import (
+    Particle,
+    Sphere,
+    Circle,
+    Box,
+    AnalyticParticle,
+    GridParticle,
+    ParticleIBMInfo,
+    construct_ibm_particles,
+    contact_conditions,
+)
 from ._version import __version__
 
 __all__ = [
@@ -95,5 +131,31 @@ __all__ = [
     "construct_ibm",
     "apply_ibm",
     "apply_ibm_vector",
+    "IBMNormalDerivative",
+    "construct_ibm_normal_derivative",
+    "construct_ibm_normal_derivative_ops",
+    "interface_normals",
+    "gfd_normal_derivative_weights",
+    "construct_ibm_interface_values",
+    "apply_ibm_interface",
+    "construct_ibm_boundary_values",
+    "Segmentation",
+    "segment_domain",
+    "crossing_segments",
+    "segment_values",
+    "wall_contact",
+    "wall_patch",
+    "wall_values",
+    "combine_interface_conditions",
+    "segment_field",
+    "Particle",
+    "Sphere",
+    "Circle",
+    "Box",
+    "AnalyticParticle",
+    "GridParticle",
+    "ParticleIBMInfo",
+    "construct_ibm_particles",
+    "contact_conditions",
     "__version__",
 ]

@@ -21,11 +21,24 @@ symmetrically for the solid row).  This is the same Lagrange construction
 used by :func:`pymrm.operators.construct_grad_bc` for domain boundary
 conditions.
 
+The classification and wall positions may equally be supplied by an assembly
+of analytic shapes rather than a sampled field: :func:`pymrm.construct_ibm_particles`
+produces the very same :class:`IBM` object (with exact per-particle wall
+positions and normals) and everything downstream — :func:`apply_ibm`,
+:mod:`pymrm.ibm_recon`, :mod:`pymrm.ibm_coupling` — is unchanged.
+
 Multi-dimensional fields
 ------------------------
 The field on which the IBM operator acts may have *non-spatial* axes
 (components, phases, species, etc.) in addition to the spatial axes specified
 by the ``axes`` argument to :func:`construct_ibm`.
+
+Per-crossing data (Dirichlet wall values, interface-condition coefficients)
+follows a *canonical point shape* ``(n_crossings, *ns_shape)`` — the field
+shape with the spatial axes removed and the crossing axis leading.  Any input
+NumPy can broadcast to that shape is accepted, mirroring how wall boundary
+conditions broadcast over the non-spatial axes; see
+:func:`_normalize_point_values`.
 
 The geometric Lagrange coefficients are identical for every *non-spatial
 layer* at a given spatial crossing.  The modification of the operator matrix
@@ -42,7 +55,8 @@ Dirichlet wall values.  The full-field flat index decomposes as:
         {\\text{ns contrib.}}
 
 where :math:`d[a]` is the C-order stride of axis ``a`` and the two
-    contributions are **independent** (an outer sum over crossings x ns layers).
+contributions are **independent** (an outer sum over crossings and ns layers).
+
 Sign convention
 ---------------
 The modified matrix ``M`` and source ``g`` satisfy ``value = M @ c + g``
@@ -262,27 +276,52 @@ def _ns_contributions(shape, axes):
     return contrib
 
 
-def _expand_row_scale(scale_spatial, ibm):
-    """Expand a per-spatial-cell scale to every cell in the full field.
+def _is_pure_spatial(ibm):
+    """True when full-field flat indices equal spatial flat indices.
 
-    Parameters
-    ----------
-    scale_spatial : ndarray, shape (n_spatial_cells,)
-    ibm : IBM
+    This holds when there are no non-spatial axes and the spatial axes are the
+    leading axes in canonical order, so the spatial→full index expansion is the
+    identity and can be skipped entirely.
+    """
+    return ibm.ns_size == 1 and ibm.axes == tuple(range(len(ibm.spatial_shape)))
+
+
+def _expand_full(ibm, spatial_flat):
+    """Expand spatial flat indices to full-field flat indices.
+
+    Returns an array of shape ``(len(spatial_flat), ns_size)``.  Only the cells
+    actually needed are expanded (never the whole grid), and the common purely
+    spatial case is a no-op reshape.
+    """
+    spatial_flat = np.asarray(spatial_flat, dtype=np.intp)
+    if _is_pure_spatial(ibm):
+        return spatial_flat[:, np.newaxis]
+    sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
+    ns_c = _ns_contributions(ibm.shape, ibm.axes)
+    return sc[:, np.newaxis] + ns_c[np.newaxis, :]
+
+
+def _combined_cut_scale(ibm):
+    """Full-field rows and factors of the per-row IBM conditioning scale.
+
+    Only cut-cell rows differ from unity, so this returns just those rows
+    (already expanded to full-field flat indices) and their scale factors,
+    rather than a dense length-``n_cells`` vector.
 
     Returns
     -------
-    ndarray, shape (n_cells,)
+    rows : ndarray of intp, shape (n_scaled,)
+        Full-field flat row indices whose scale differs from 1.
+    factors : ndarray of float, shape (n_scaled,)
+        Matching scale factors.
     """
-    ns = ibm.ns_size
-    ns_c = _ns_contributions(ibm.shape, ibm.axes)
-    sc_all = _spatial_contributions(
-        np.arange(ibm.n_spatial_cells, dtype=np.intp), ibm.shape, ibm.axes
-    )
-    full_flat = (sc_all[:, np.newaxis] + ns_c[np.newaxis, :]).ravel()
-    full_scale = np.ones(ibm.n_cells)
-    full_scale[full_flat] = np.repeat(scale_spatial, ns)
-    return full_scale
+    combined = ibm.row_scale_out * ibm.row_scale_in      # (n_spatial_cells,)
+    cut = np.flatnonzero(combined != 1.0)
+    if cut.size == 0:
+        return np.empty(0, dtype=np.intp), np.empty(0)
+    rows = _expand_full(ibm, cut)                        # (n_cut, ns)
+    factors = np.broadcast_to(combined[cut][:, np.newaxis], rows.shape)
+    return rows.ravel(), factors.ravel()
 
 
 # ---------------------------------------------------------------------------
@@ -290,24 +329,29 @@ def _expand_row_scale(scale_spatial, ibm):
 # ---------------------------------------------------------------------------
 
 def _neighbor(arr, axis, offset):
-    """Return the axis-shifted copy of *arr* and a boolean validity mask."""
+    """Return the axis-shifted copy of *arr* and a boolean validity mask.
+
+    The shifted-in (invalid) border is left uninitialised: every caller masks
+    those cells out with the returned ``valid`` array, so their values are
+    never read.  Avoiding a full ``arr.copy()`` and ``np.ones`` allocation
+    roughly halves the memory traffic of this routine, which dominates
+    :func:`construct_ibm` on large 3-D grids.
+    """
     n = arr.shape[axis]
-    out = arr.copy()
-    valid = np.ones(arr.shape, dtype=bool)
+    out = np.empty_like(arr)
+    valid = np.zeros(arr.shape, dtype=bool)
     dst = [slice(None)] * arr.ndim
     src = [slice(None)] * arr.ndim
-    inv = [slice(None)] * arr.ndim
     if offset > 0:
         dst[axis] = slice(0, n - offset)
         src[axis] = slice(offset, n)
-        inv[axis] = slice(n - offset, n)
     else:
         o = -offset
         dst[axis] = slice(o, n)
         src[axis] = slice(0, n - o)
-        inv[axis] = slice(0, o)
-    out[tuple(dst)] = arr[tuple(src)]
-    valid[tuple(inv)] = False
+    dst = tuple(dst)
+    out[dst] = arr[tuple(src)]
+    valid[dst] = True
     return out, valid
 
 
@@ -319,13 +363,35 @@ def _lagrange3(n0, n1, n2, p):
     return l0, l1, l2
 
 
-def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
+def _sdf_theta_fn(sdf, strides):
+    """Directed face-crossing fractions from a signed-distance field.
+
+    Returns a callable ``theta_fn(cells, axis, direction)`` giving, for each
+    cut cell, the fractional wall position ``theta in (0, 1]`` along the
+    segment from the cell centre towards its neighbour at
+    ``cells + direction * strides[axis]``, from linear interpolation of the
+    SDF (clipped to ``[_THETA_MIN, _THETA_MAX]``).
+    """
+    flat_sdf = np.asarray(sdf, dtype=float).ravel()
+
+    def theta_fn(cells, axis, direction):
+        sdf_c = flat_sdf[cells]
+        sdf_g = flat_sdf[cells + direction * strides[axis]]
+        return np.clip(sdf_c / (sdf_c - sdf_g), _THETA_MIN, _THETA_MAX)
+
+    return theta_fn
+
+
+def _build_side(theta_fn, spatial_shape, x_c, strides, region, other, rescale):
     """Build an :class:`_IBMSide` for one region of the immersed interface.
 
     Parameters
     ----------
-    sdf : ndarray, shape = spatial_shape
-        Cell-centred signed-distance field.
+    theta_fn : callable
+        ``theta_fn(cells, axis, direction) -> theta`` giving the fractional
+        wall position along the segment from each cut cell towards its
+        region-switching neighbour (see :func:`_sdf_theta_fn`).  Queried only
+        for faces between *region* and *other* cells.
     spatial_shape : tuple
         Spatial grid shape.
     x_c : list of ndarray
@@ -339,9 +405,8 @@ def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
     rescale : bool
         Whether to compute per-row conditioning scale.
     """
-    ndim_s = sdf.ndim
-    n_spatial = sdf.size
-    flat_sdf = sdf.ravel()
+    ndim_s = len(spatial_shape)
+    n_spatial = math.prod(spatial_shape)
 
     cols = {k: [] for k in (
         "row", "ghost", "opp", "coef_c", "coef_o",
@@ -351,17 +416,16 @@ def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
 
     warned = False
     for a in range(ndim_s):
+        # Only the region masks are shifted (cheap bool arrays); the wall
+        # positions are queried per cut cell through ``theta_fn`` further down,
+        # avoiding two full float-array shifts per axis.
         other_p, valid_p = _neighbor(other, a, +1)
         other_m, valid_m = _neighbor(other, a, -1)
-        sdf_p, _ = _neighbor(sdf, a, +1)
-        sdf_m, _ = _neighbor(sdf, a, -1)
 
         for direction in (+1, -1):
             gmask = (region & valid_p & other_p) if direction == +1 else (region & valid_m & other_m)
             omask = (region & valid_m & other_m) if direction == +1 else (region & valid_p & other_p)
             opp_valid = valid_m if direction == +1 else valid_p
-            sdf_g_arr = sdf_p if direction == +1 else sdf_m
-            sdf_o_arr = sdf_m if direction == +1 else sdf_p
 
             cells = np.flatnonzero(gmask.ravel())
             if cells.size == 0:
@@ -369,13 +433,19 @@ def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
             multi = np.unravel_index(cells, spatial_shape)
             ia = multi[a]
 
-            sdf_c = flat_sdf[cells]
-            sdf_g = sdf_g_arr.ravel()[cells]
-            theta = np.clip(sdf_c / (sdf_c - sdf_g), _THETA_MIN, _THETA_MAX)
+            # Ghost neighbour is in-domain for every cut cell (gmask ⊆ valid).
+            step = direction * strides[a]
+            theta = theta_fn(cells, a, direction)
 
             xc = x_c[a][ia]
             xg = x_c[a][ia + direction]
-            xo = x_c[a][ia - direction]
+            # The opposite cell at ``ia - direction`` feeds only the 'normal'
+            # (3-point) and 'sandwich' reconstructions, both of which require it
+            # to be in-domain (``opp_valid`` / ``omask``).  For 'fallback' cut
+            # cells the solid sits against the domain boundary, so ``ia -
+            # direction`` is out of bounds and ``xo`` is never used; clip the
+            # gather index to keep it in range instead of indexing past the edge.
+            xo = x_c[a][np.clip(ia - direction, 0, spatial_shape[a] - 1)]
             xw = xc + theta * (xg - xc)
 
             sandwich = omask.ravel()[cells]
@@ -396,10 +466,10 @@ def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
                 opp_lin[normal] = cells[normal] - direction * strides[a]
 
             if np.any(sandwich):
-                sdf_o = sdf_o_arr.ravel()[cells][sandwich]
-                theta_o = np.clip(
-                    sdf_c[sandwich] / (sdf_c[sandwich] - sdf_o), _THETA_MIN, _THETA_MAX
-                )
+                # Opposite neighbour is in-domain for sandwich cells (omask ⊆
+                # valid on the opposite side); its wall sits on the opposite
+                # face, i.e. the crossing in the -direction.
+                theta_o = theta_fn(cells[sandwich], a, -direction)
                 xw_o = xc[sandwich] + theta_o * (xo[sandwich] - xc[sandwich])
                 m0, m1, m2 = _lagrange3(xw_o, xc[sandwich], xw[sandwich], xg[sandwich])
                 coef_w_sib[sandwich] = m0
@@ -460,17 +530,23 @@ def _build_side(sdf, spatial_shape, x_c, strides, region, other, rescale):
         axis = direction_arr = crossing_key = np.empty(0, dtype=np.intp)
         coords = np.empty((0, ndim_s))
 
-    # Link sandwich siblings within this side.
+    # Link sandwich siblings within this side.  A sibling is the entry with the
+    # same (row, axis) but the opposite direction; find it by matching a packed
+    # integer key with a sorted search instead of a Python-level dict loop.
     sib = np.full(row.size, -1, dtype=np.intp)
     if np.any(is_sw):
-        lookup = {}
-        for idx in range(row.size):
-            lookup[(int(row[idx]), int(axis[idx]), int(direction_arr[idx]))] = idx
-        for idx in np.flatnonzero(is_sw):
-            partner = lookup.get(
-                (int(row[idx]), int(axis[idx]), -int(direction_arr[idx])), -1
-            )
-            sib[idx] = partner
+        dir_bit = (direction_arr > 0).astype(np.intp)
+        base = (row * ndim_s + axis) * 2
+        key_self = base + dir_bit             # this entry's key
+        key_want = base + (1 - dir_bit)       # its opposite-direction sibling
+        order = np.argsort(key_self, kind="stable")
+        keys_sorted = key_self[order]
+        sw = np.flatnonzero(is_sw)
+        pos = np.searchsorted(keys_sorted, key_want[sw])
+        in_range = pos < keys_sorted.size
+        match = np.zeros(sw.size, dtype=bool)
+        match[in_range] = keys_sorted[pos[in_range]] == key_want[sw][in_range]
+        sib[sw[match]] = order[pos[match]]
 
     # Per-row conditioning scale (per spatial cell).
     row_scale = np.ones(n_spatial)
@@ -507,10 +583,26 @@ def _remap_sib(sib_old, sort_idx):
     return sib_new
 
 
-def _row_scaling_matrix(full_scale, n):
-    """Sparse diagonal row-scaling operator as a ``csr_array``."""
-    idx = np.arange(n, dtype=np.intp)
-    return csr_array((full_scale, (idx, idx)), shape=(n, n))
+def _scale_csr_rows(mat, rows, factors):
+    """Multiply selected CSR rows of *mat* by per-row *factors*, in place.
+
+    This replaces a full diagonal ``S @ mat`` product (which touches every
+    stored entry) by writing only the non-zeros of the handful of scaled rows,
+    turning an ``O(nnz)`` operation into ``O(nnz in scaled rows)``.  *mat* must
+    be a CSR array that owns its ``data`` buffer.
+    """
+    if rows.size == 0:
+        return
+    indptr = mat.indptr
+    lengths = indptr[rows + 1] - indptr[rows]
+    total = int(lengths.sum())
+    if total == 0:
+        return
+    # Vectorised gather of the non-zero positions of the selected rows.
+    seg_end = np.cumsum(lengths)
+    offsets = np.arange(total) - np.repeat(seg_end - lengths, lengths)
+    nnz_idx = np.repeat(indptr[rows], lengths) + offsets
+    mat.data[nnz_idx] *= np.repeat(factors, lengths)
 
 
 # ---------------------------------------------------------------------------
@@ -559,8 +651,29 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
     to the same physical wall crossing.
     """
     sdf = np.asarray(sdf, dtype=float)
-    ndim_s = sdf.ndim
-    spatial_shape = sdf.shape
+    strides = np.array(
+        [math.prod(sdf.shape[a + 1:]) for a in range(sdf.ndim)], dtype=np.intp
+    )
+    return _construct_ibm_core(sdf < 0.0, _sdf_theta_fn(sdf, strides), x_c,
+                               axes, shape, rescale)
+
+
+def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
+    """Shared IBM construction from a solid mask and a wall-position provider.
+
+    ``solid`` is the boolean cell-classification on the spatial grid;
+    ``theta_fn(cells, axis, direction)`` supplies the fractional wall position
+    for directed region-switching faces (see :func:`_build_side`).  The SDF
+    entry point :func:`construct_ibm` and the particle entry point in
+    :mod:`pymrm.particles` both delegate here.
+
+    With ``pair=False`` the unpaired sides are returned as
+    ``(out_side, in_side, meta)`` so a caller can append extra crossings
+    (e.g. particle contact crossings) before :func:`_pair_sides_to_ibm`.
+    """
+    solid = np.asarray(solid, dtype=bool)
+    ndim_s = solid.ndim
+    spatial_shape = solid.shape
 
     # Normalise x_c to a list of 1-D arrays.
     if isinstance(x_c, np.ndarray) and x_c.ndim == 1:
@@ -569,7 +682,7 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
         x_c = [np.asarray(xci, dtype=float) for xci in x_c]
     if len(x_c) != ndim_s:
         raise ValueError(
-            f"len(x_c)={len(x_c)} must equal sdf.ndim={ndim_s}"
+            f"len(x_c)={len(x_c)} must equal the spatial dimension {ndim_s}"
         )
 
     # Normalise axes and shape.
@@ -584,7 +697,7 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
         shape = tuple(shape)
         if tuple(shape[a] for a in axes) != spatial_shape:
             raise ValueError(
-                f"sdf.shape={spatial_shape} is inconsistent with "
+                f"spatial shape {spatial_shape} is inconsistent with "
                 f"shape={shape} at axes={axes}"
             )
 
@@ -599,12 +712,26 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
         [math.prod(spatial_shape[a + 1:]) for a in range(ndim_s)], dtype=np.intp
     )
 
-    solid = sdf < 0.0
     fluid = ~solid
 
-    out_s = _build_side(sdf, spatial_shape, x_c, strides, fluid, solid, rescale)
-    in_s = _build_side(sdf, spatial_shape, x_c, strides, solid, fluid, rescale)
+    out_s = _build_side(theta_fn, spatial_shape, x_c, strides, fluid, solid, rescale)
+    in_s = _build_side(theta_fn, spatial_shape, x_c, strides, solid, fluid, rescale)
 
+    meta = dict(spatial_shape=tuple(spatial_shape), shape=shape, axes=axes,
+                ns_shape=ns_shape, ns_size=ns_size, n_cells=n_cells,
+                n_spatial_cells=n_spatial_cells)
+    if not pair:
+        return out_s, in_s, meta
+    return _pair_sides_to_ibm(out_s, in_s, **meta)
+
+
+def _pair_sides_to_ibm(out_s, in_s, *, spatial_shape, shape, axes, ns_shape,
+                       ns_size, n_cells, n_spatial_cells):
+    """Pair the two :class:`_IBMSide` objects into an :class:`IBM`.
+
+    Outside and inside entries are matched by sorting on the canonical face
+    key; every face must appear exactly once on each side.
+    """
     # Pair outside and inside crossings by sorting on the canonical face key.
     sort_out = np.argsort(out_s.crossing_key, kind="stable")
     sort_in = np.argsort(in_s.crossing_key, kind="stable")
@@ -666,40 +793,69 @@ def _read_entries(mat, rows, cols):
     return np.asarray(mat[rows, cols]).ravel()
 
 
-def _normalize_values(values_outside, values_inside, npnt, ns):
-    """Normalise IBM wall values to shape ``(npnt, ns)``.
+def _normalize_point_values(value, npnt, ns_shape, name):
+    """Normalise a per-crossing quantity to a float array of shape ``(npnt, ns_size)``.
 
-    Rules
-    -----
-    * Both ``None`` → zeros.
-    * One ``None`` → same as the other.
-    * Scalar or 1-D array of length ``npnt`` → broadcast over ns.
-    * Shape ``(npnt, ns)`` → used as-is.
+    Point data behaves exactly like an array of *canonical* shape
+    ``(npnt, *ns_shape)`` — the field shape with the spatial axes removed and
+    the crossing axis leading.  Any input NumPy can broadcast to that shape is
+    accepted, and nothing else (strict NumPy semantics).  Examples for a field
+    with ``ns_shape == (np, nc)``:
+
+    * scalar → same value everywhere;
+    * ``(nc,)`` → per component;
+    * ``(np, 1)`` → per phase;
+    * ``(np, nc)`` → per phase-and-component;
+    * ``(npnt, 1, 1)`` → per crossing;
+    * ``(npnt, np, nc)`` → fully specified.
+
+    The result is materialised and C-order reshaped to ``(npnt, ns_size)``,
+    where ``ns_size`` flattens ``ns_shape`` in C order — matching the layer
+    index ``j`` used throughout this module.
+
+    Note that a bare 1-D array of length ``npnt`` is **not** treated as
+    per-crossing when non-spatial axes are present (it would collide with a
+    ``(nc,)`` per-component array); reshape to ``(npnt, 1, ..., 1)`` instead.
     """
-    def _coerce(v, name):
-        if v is None:
-            return None
-        v = np.asarray(v, dtype=float)
-        if v.ndim == 0:
-            return np.full((npnt, ns), float(v))
-        if v.ndim == 1:
-            if v.size != npnt:
-                raise ValueError(
-                    f"{name} length {v.size} != n_crossings {npnt}"
-                )
-            return np.broadcast_to(v[:, np.newaxis], (npnt, ns)).copy()
-        if v.shape == (npnt, ns):
-            return v
+    ns_size = math.prod(ns_shape) if ns_shape else 1
+    target = (npnt,) + tuple(ns_shape)
+    v = np.asarray(value, dtype=float)
+    try:
+        b = np.broadcast_to(v, target)
+    except ValueError:
+        hint = ""
+        if v.ndim == 1 and v.size == npnt and ns_shape:
+            idx = ", ".join(["None"] * len(ns_shape))
+            singleton = (npnt,) + (1,) * len(ns_shape)
+            hint = (
+                f"; a 1-D array of length n_crossings={npnt} is not treated as "
+                f"per-crossing when non-spatial axes are present — reshape to "
+                f"{singleton} (e.g. value[:, {idx}]) for per-crossing values"
+            )
         raise ValueError(
-            f"{name} shape {v.shape} incompatible with "
-            f"(n_crossings={npnt}, ns_size={ns})"
-        )
+            f"{name}: shape {v.shape} is not broadcastable to the canonical "
+            f"point shape (n_crossings, *ns_shape) = {target}{hint}"
+        ) from None
+    return np.ascontiguousarray(b).reshape(npnt, ns_size)
 
-    a = _coerce(values_outside, "values_outside")
-    b = _coerce(values_inside, "values_inside")
+
+def _normalize_values(values_outside, values_inside, npnt, ns_shape):
+    """Normalise IBM wall values for both sides to shape ``(npnt, ns_size)``.
+
+    Each non-``None`` value is broadcast to the canonical point shape
+    ``(npnt, *ns_shape)`` by :func:`_normalize_point_values`.  ``None``
+    handling: both ``None`` → zeros; one ``None`` → mirror the other.
+    """
+    ns_size = math.prod(ns_shape) if ns_shape else 1
+    a = (None if values_outside is None
+         else _normalize_point_values(values_outside, npnt, ns_shape,
+                                      "values_outside"))
+    b = (None if values_inside is None
+         else _normalize_point_values(values_inside, npnt, ns_shape,
+                                      "values_inside"))
 
     if a is None and b is None:
-        z = np.zeros((npnt, ns))
+        z = np.zeros((npnt, ns_size))
         return z, z.copy()
     if a is None:
         return b.copy(), b
@@ -730,15 +886,16 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     ibm : IBM
         Immersed-boundary data from :func:`construct_ibm`.
     values_outside : array_like, optional
-        Dirichlet wall values for the *outside* (fluid) cut cells.
-        Accepted shapes:
-
-        * ``None``: use the same values as ``values_inside``; if both are
-          ``None`` the source is zero.
-        * scalar or 1-D array of length ``n_crossings``: broadcast over all
-          non-spatial layers.
-        * 2-D array of shape ``(n_crossings, ns_size)``: one value per
-          crossing and non-spatial layer.
+        Dirichlet wall values for the *outside* (fluid) cut cells.  ``None``
+        (the default) uses the same values as ``values_inside``; if both are
+        ``None`` the source is zero.  Otherwise any array broadcastable to the
+        canonical point shape ``(n_crossings, *ns_shape)`` is accepted (strict
+        NumPy semantics), e.g. a scalar, a ``(nc,)`` per-component array, a
+        ``(n_crossings, 1, ..., 1)`` per-crossing array, or the fully specified
+        ``(n_crossings, *ns_shape)``.  See :func:`_normalize_point_values`.
+        A bare 1-D array of length ``n_crossings`` is only per-crossing for a
+        purely spatial field; when non-spatial axes are present reshape it to
+        ``(n_crossings, 1, ..., 1)``.
     values_inside : array_like, optional
         Dirichlet wall values for the *inside* (solid) cut cells.  Same
         shapes accepted as ``values_outside``.
@@ -751,27 +908,39 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
 
     Returns
     -------
-    mat_mod : scipy.sparse.csr_array
-        Modified operator matrix, shape ``(n_cells, n_cells)``.
-    bc : ndarray or tuple
-        When ``return_bc='vector'``: source vector, shape ``(n_cells,)``.
-        When ``return_bc='matrix'``: tuple ``(G_out, G_in)`` of
-        ``csr_array`` source matrices, shape
-        ``(n_cells, n_crossings * ns_size)``.
+    The number of return values depends on *return_bc*:
+
+    * ``return_bc='vector'`` → ``(mat_mod, g)``:
+
+      - ``mat_mod`` : ``scipy.sparse.csr_array``, shape ``(n_cells, n_cells)``
+        -- the modified operator matrix;
+      - ``g`` : ndarray, shape ``(n_cells,)`` -- the source vector for the
+        supplied wall values (``value = mat_mod @ c + g``).
+
+    * ``return_bc='matrix'`` → ``(mat_mod, G_out, G_in)``:
+
+      - ``mat_mod`` : as above;
+      - ``G_out``, ``G_in`` : ``csr_array``, shape
+        ``(n_cells, n_crossings * ns_size)`` -- source matrices with
+        ``g = G_out @ values_outside.ravel() + G_in @ values_inside.ravel()``.
     """
     n_full = ibm.n_cells
     ns = ibm.ns_size
     npnt = ibm.n_crossings
 
-    val_out, val_in = _normalize_values(values_outside, values_inside, npnt, ns)
+    val_out, val_in = _normalize_values(values_outside, values_inside, npnt,
+                                        ibm.ns_shape)
 
     A = csr_array(mat)
 
     # --- Full flat index expansion ---
+    pure_spatial = _is_pure_spatial(ibm)
     ns_c = _ns_contributions(ibm.shape, ibm.axes)  # (ns,)
 
     def expand(spatial_flat):
         """Spatial flat → full flat matrix of shape (len, ns)."""
+        if pure_spatial:
+            return np.asarray(spatial_flat, dtype=np.intp)[:, np.newaxis]
         sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
         return sc[:, np.newaxis] + ns_c[np.newaxis, :]
 
@@ -832,13 +1001,9 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     )
     mat_mod = (A + correction.tocsr()).tocsr()
 
-    # --- Row scaling ---
-    combined_scale_s = ibm.row_scale_out * ibm.row_scale_in  # (n_spatial_cells,)
-    full_scale = _expand_row_scale(combined_scale_s, ibm)
-    scaled = np.any(full_scale != 1.0)
-    if scaled:
-        S = _row_scaling_matrix(full_scale, n_full)
-        mat_mod = (S @ mat_mod).tocsr()
+    # --- Row scaling (only cut-cell rows differ from unity) ---
+    scale_rows, scale_vals = _combined_cut_scale(ibm)
+    _scale_csr_rows(mat_mod, scale_rows, scale_vals)
 
     # --- Source matrices G_out and G_in, shape (n_full, npnt * ns) ---
     n_cols = npnt * ns
@@ -872,9 +1037,8 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
         shape=(n_full, n_cols),
     ).tocsr()
 
-    if scaled:
-        G_out = (S @ G_out).tocsr()
-        G_in = (S @ G_in).tocsr()
+    _scale_csr_rows(G_out, scale_rows, scale_vals)
+    _scale_csr_rows(G_in, scale_rows, scale_vals)
 
     if return_bc == "matrix":
         return mat_mod, G_out, G_in
@@ -912,6 +1076,7 @@ def apply_ibm_vector(vec, ibm):
         raise ValueError(
             f"vec size {vec.size} != n_cells {ibm.n_cells}"
         )
-    combined_scale_s = ibm.row_scale_out * ibm.row_scale_in
-    full_scale = _expand_row_scale(combined_scale_s, ibm)
-    return full_scale * vec
+    out = vec.copy()
+    scale_rows, scale_vals = _combined_cut_scale(ibm)
+    out[scale_rows] *= scale_vals
+    return out

@@ -2,10 +2,10 @@
 
 import numpy as np
 import pytest
-from scipy.sparse import csr_array, lil_array
+from scipy.sparse import csr_array, lil_array, coo_array
 from scipy.sparse.linalg import spsolve
 
-from pymrm.ibm import construct_ibm, apply_ibm, apply_ibm_vector
+from pymrm.ibm import construct_ibm, apply_ibm, apply_ibm_vector, _expand_full
 from pymrm.grid import generate_grid
 
 
@@ -31,6 +31,39 @@ def _extraction_csr(n, rows, cols):
     for r, c in zip(rows, cols):
         A[r, c] += 1.0
     return csr_array(A)
+
+
+def _circle_2d(n=12, radius=0.25, center=(0.5, 0.5)):
+    """2-D uniform grid on [0,1]^2 with a solid disk (sdf < 0 inside)."""
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    xx, yy = np.meshgrid(x_c, x_c, indexing="ij")
+    sdf = np.hypot(xx - center[0], yy - center[1]) - radius
+    return [x_c, x_c], sdf
+
+
+def _two_slabs_1d(n=20):
+    """1-D grid with two solid slabs -> four wall crossings."""
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    sdf = np.minimum(np.abs(x_c - 0.275) - 0.075, np.abs(x_c - 0.70) - 0.10)
+    return x_c, sdf
+
+
+def _ghost_extraction_full(ibm, value=1.0):
+    """CSR with *value* at every (full_row, full_ghost) ghost position.
+
+    Gives ``apply_ibm`` a nonzero ghost entry to fold on every crossing and
+    non-spatial layer, so the resulting source vector is nonzero and identical
+    across layers (each layer decouples into a copy of the spatial problem).
+    """
+    fr = np.concatenate([_expand_full(ibm, ibm.row_out).ravel(),
+                         _expand_full(ibm, ibm.row_in).ravel()])
+    fg = np.concatenate([_expand_full(ibm, ibm.ghost_out).ravel(),
+                         _expand_full(ibm, ibm.ghost_in).ravel()])
+    data = np.full(fr.size, float(value))
+    return coo_array((data, (fr, fg)),
+                     shape=(ibm.n_cells, ibm.n_cells)).tocsr()
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +318,106 @@ def test_ns_source_matrix_shape():
 
 
 # ---------------------------------------------------------------------------
+# Multi-dimensional point-value broadcasting (strict numpy semantics)
+# ---------------------------------------------------------------------------
+
+def _interleaved_ibm(n=12, npn=2, ncn=3):
+    """IBM on an interleaved field (nx, np, ny, nc), spatial axes (0, 2)."""
+    x_c, sdf = _circle_2d(n=n)
+    ibm = construct_ibm(sdf, x_c, axes=(0, 2), shape=(n, npn, n, ncn),
+                        rescale=False)
+    return ibm
+
+
+@pytest.mark.parametrize("make_val", [
+    lambda npnt, npn, ncn, rng: 3.0,
+    lambda npnt, npn, ncn, rng: rng.random(ncn),            # (nc,)
+    lambda npnt, npn, ncn, rng: rng.random((npn, 1)),       # (np, 1)
+    lambda npnt, npn, ncn, rng: rng.random((npn, ncn)),     # (np, nc)
+    lambda npnt, npn, ncn, rng: rng.random((npnt, 1, 1)),   # per crossing
+    lambda npnt, npn, ncn, rng: rng.random((npnt, npn, ncn)),  # full
+])
+def test_broadcast_shapes_match_explicit(make_val):
+    """Any accepted shape equals its explicit (npnt, np, nc) broadcast."""
+    npn, ncn = 2, 3
+    ibm = _interleaved_ibm(n=12, npn=npn, ncn=ncn)
+    A = _ghost_extraction_full(ibm)
+    npnt = ibm.n_crossings
+    rng = np.random.default_rng(3)
+    val = make_val(npnt, npn, ncn, rng)
+    explicit = np.broadcast_to(np.asarray(val, dtype=float),
+                               (npnt, npn, ncn)).copy()
+    _, g1 = apply_ibm(A, ibm, values_outside=val)
+    _, g2 = apply_ibm(A, ibm, values_outside=explicit)
+    assert np.allclose(g1, g2)
+
+
+def test_broadcast_layer_ordering():
+    """Canonical (np, nc) lands each value on the correct (p, c) layer rows.
+
+    With a constant ghost matrix each non-spatial layer is an independent copy
+    of the spatial problem, so the source at spatial cell *s*, layer *j* must be
+    ``val_flat[j] * g_unit[s]`` with ``j`` the C-order index over (np, nc).
+    """
+    npn, ncn = 2, 3
+    x_c, sdf = _circle_2d(n=12)
+    ibm_s = construct_ibm(sdf, x_c, rescale=False)          # pure spatial
+    A_s = _ghost_extraction_full(ibm_s)
+    _, g_unit = apply_ibm(A_s, ibm_s, values_outside=1.0, values_inside=1.0)
+
+    ibm = construct_ibm(sdf, x_c, axes=(0, 2), shape=(12, npn, 12, ncn),
+                        rescale=False)
+    A = _ghost_extraction_full(ibm)
+    rng = np.random.default_rng(5)
+    val = rng.random((npn, ncn))
+    _, g_ns = apply_ibm(A, ibm, values_outside=val, values_inside=val)
+
+    frows = _expand_full(ibm, np.arange(ibm.n_spatial_cells))   # (n_spatial, ns)
+    g_grid = g_ns[frows]                                        # (n_spatial, ns)
+    expected = g_unit[:, None] * val.reshape(-1)[None, :]
+    assert np.allclose(g_grid, expected)
+
+
+def test_broadcast_bare_1d_with_ns_axes_errors():
+    """A bare (npnt,) array is rejected (with a hint) when ns axes are present."""
+    ibm = _interleaved_ibm(n=12, npn=2, ncn=3)
+    A = _ghost_extraction_full(ibm)
+    npnt = ibm.n_crossings
+    assert npnt != 3          # otherwise it would broadcast onto the nc axis
+    with pytest.raises(ValueError, match="per-crossing"):
+        apply_ibm(A, ibm, values_outside=np.ones(npnt))
+    with pytest.raises(ValueError, match="broadcastable"):
+        apply_ibm(A, ibm, values_outside=np.ones((npnt, 7)))
+
+
+def test_broadcast_collision_uses_numpy_semantics():
+    """When nc == n_crossings a 1-D array follows numpy (per last axis)."""
+    x_c, sdf = _two_slabs_1d(n=20)
+    ibm0 = construct_ibm(sdf, x_c)
+    npnt = ibm0.n_crossings
+    assert npnt >= 2
+    ibm = construct_ibm(sdf, x_c, axes=(0,), shape=(20, npnt), rescale=False)
+    A = _ghost_extraction_full(ibm)
+    v = np.arange(1.0, npnt + 1.0)                    # (npnt,) == (ncn,)
+
+    _, g_bare = apply_ibm(A, ibm, values_outside=v)
+    _, g_percomp = apply_ibm(A, ibm, values_outside=v.reshape(1, npnt))
+    _, g_percross = apply_ibm(A, ibm, values_outside=v.reshape(npnt, 1))
+    assert np.allclose(g_bare, g_percomp)             # numpy: aligns to last axis
+    assert not np.allclose(g_bare, g_percross)        # NOT per-crossing
+
+
+def test_pure_spatial_value_backcompat():
+    """Pure-spatial fields keep the scalar / (npnt,) per-crossing behaviour."""
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c, rescale=False)       # ns_shape == ()
+    A = _ghost_extraction_full(ibm)
+    _, g_scalar = apply_ibm(A, ibm, values_outside=2.0)
+    _, g_1d = apply_ibm(A, ibm, values_outside=np.full(ibm.n_crossings, 2.0))
+    assert np.allclose(g_scalar, g_1d)
+
+
+# ---------------------------------------------------------------------------
 # End-to-end: 1-D immersed Dirichlet diffusion
 # ---------------------------------------------------------------------------
 
@@ -367,3 +500,63 @@ def test_2d_with_components():
     A_mod, g = apply_ibm(A, ibm, values_outside=np.ones((ibm.n_crossings, Nc)))
     assert A_mod.shape == (n, n)
     assert g.shape == (n,)
+
+
+# ---------------------------------------------------------------------------
+# Solid adjacent to the domain boundary (first-order fallback)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("solid_cell", [-1, 0])
+def test_boundary_adjacent_solid_fallback(solid_cell):
+    """A cut cell whose opposite neighbour is outside the domain must use the
+    first-order fallback instead of indexing past the grid edge.
+
+    With the solid pressed against a domain wall, the inside reconstruction has
+    no opposite same-side cell (``opp == -1``); it must fall back to a two-point
+    (cut cell + wall) formula.  Regression test for an out-of-bounds gather of
+    the opposite-cell coordinate at the upper boundary.
+    """
+    n = 10
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    sdf = np.ones(n)
+    sdf[solid_cell] = -1.0                       # single solid cell at a wall
+
+    with pytest.warns(RuntimeWarning, match="first-order"):
+        ibm = construct_ibm(sdf, x_c)
+
+    assert ibm.n_crossings == 1
+    k = 0
+    assert ibm.opp_in[k] == -1                   # no opposite same-side cell
+    assert ibm.coef_o_in[k] == 0.0
+    assert ibm.coef_w_sib_in[k] == 0.0
+
+    # The two-point fallback reconstructs the fluid ghost value from the solid
+    # cut cell and the wall value; it is exact for a linear field.
+    a, b = 0.4, -1.3
+    u = a + b * x_c
+    u_wall = a + b * ibm.coords[k, 0]
+    recon = ibm.coef_c_in[k] * u[ibm.row_in[k]] + ibm.coef_w_in[k] * u_wall
+    assert recon == pytest.approx(u[ibm.ghost_in[k]])
+
+
+def test_boundary_adjacent_solid_2d_no_crash():
+    """A solid touching a domain wall (cut cells in the outer layer) builds."""
+    nx, ny = 20, 20
+    _, x_c0 = generate_grid(nx, np.linspace(0.0, 1.0, nx + 1), generate_x_c=True)
+    _, x_c1 = generate_grid(ny, np.linspace(0.0, 1.0, ny + 1), generate_x_c=True)
+    # one-cell-thick solid strip pressed against the bottom wall (row 0): its
+    # inside reconstruction has the fluid ghost inward and no cell outward.
+    sdf = np.ones((nx, ny))
+    sdf[8:12, 0] = -1.0
+
+    with pytest.warns(RuntimeWarning, match="first-order"):
+        ibm = construct_ibm(sdf, [x_c0, x_c1], axes=(0, 1))
+
+    assert ibm.n_crossings > 0
+    assert np.any(ibm.opp_in == -1)              # inside fallback exercised
+    n = ibm.n_cells
+    A_mod, g = apply_ibm(csr_array(np.eye(n)), ibm,
+                         values_inside=np.zeros(ibm.n_crossings))
+    assert np.all(np.isfinite(A_mod.toarray()))
+    assert np.all(np.isfinite(g))
