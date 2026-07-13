@@ -560,3 +560,118 @@ def test_boundary_adjacent_solid_2d_no_crash():
                          values_inside=np.zeros(ibm.n_crossings))
     assert np.all(np.isfinite(A_mod.toarray()))
     assert np.all(np.isfinite(g))
+
+
+# ---------------------------------------------------------------------------
+# reconstruct_ghost_values / fill_ghost_values
+# ---------------------------------------------------------------------------
+
+from pymrm.ibm import reconstruct_ghost_values, fill_ghost_values
+
+
+def test_ghost_values_quadratic_exact_1d():
+    # second-order Lagrange (opp, row, wall) reproduces quadratics exactly
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+
+    def f(x):
+        return 1.0 + 2.0 * x + 3.0 * x**2
+
+    ibm = construct_ibm(sdf, x_c)
+    u = f(x_c)
+    u[sdf <= 0.0] = 0.0  # solid values must not be used
+    w = f(ibm.coords[:, 0])
+    ghosts, vals = reconstruct_ghost_values(ibm, x_c, u, wall_values=w)
+    assert np.allclose(vals[:, ], f(x_c[ghosts]))
+
+
+def test_ghost_values_theta_switch_first_order():
+    # wall extremely close to the cut-cell center: second-order Lagrange
+    # would blow up; the first-order (opp, wall) reconstruction stays
+    # bounded and is exact for linear fields
+    n = 10
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    x_wall = x_c[5] + 1.0e-3 * (x_c[6] - x_c[5])
+    sdf = x_wall - x_c
+
+    def f(x):
+        return 0.3 + 1.7 * x
+
+    ibm = construct_ibm(sdf, x_c)
+    u = f(x_c)
+    u[sdf <= 0.0] = 0.0
+    w = f(ibm.coords[:, 0])
+    ghosts, vals = reconstruct_ghost_values(ibm, x_c, u, wall_values=w,
+                                            theta_min=0.25)
+    assert np.allclose(vals[:, ], f(x_c[ghosts]))
+    # bounded also for a strongly curved field (no 1/theta blow-up)
+    u2 = np.exp(3.0 * x_c)
+    u2[sdf <= 0.0] = 0.0
+    _, vals2 = reconstruct_ghost_values(ibm, x_c, u2,
+                                        wall_values=np.exp(3.0 * x_wall),
+                                        theta_min=0.25)
+    assert np.all(np.abs(vals2) < 10.0 * np.exp(3.0))
+
+
+def test_ghost_values_no_opp_linear():
+    # cut cell at the domain edge has no opposite neighbour: linear
+    # (row, wall) reconstruction, exact for linear fields
+    n = 4
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    x_wall = 0.30  # fluid region = first cell only -> no opp
+    sdf = x_wall - x_c
+
+    def f(x):
+        return 2.0 - 0.8 * x
+
+    with pytest.warns(RuntimeWarning, match="domain boundary"):
+        ibm = construct_ibm(sdf, x_c)
+    assert (ibm.opp_out < 0).any()
+    u = f(x_c)
+    u[sdf <= 0.0] = 0.0
+    w = f(ibm.coords[:, 0])
+    ghosts, vals = reconstruct_ghost_values(ibm, x_c, u, wall_values=w)
+    assert np.allclose(vals[:, ], f(x_c[ghosts]))
+
+
+def test_fill_ghost_values_2d_circle():
+    # 2-D disc: filled ghost ring approximates a smooth field near the wall
+    n = 40
+    x_f = np.linspace(-1.0, 1.0, n + 1)
+    _, x_c = generate_grid(n, x_f, generate_x_c=True)
+    XX, YY = np.meshgrid(x_c, x_c, indexing="ij")
+    r = np.sqrt(XX**2 + YY**2)
+    sdf = 0.75 - r  # fluid inside the disc
+
+    def f(x, y):
+        return 1.0 + 0.5 * x - 0.3 * y
+
+    ibm = construct_ibm(sdf, [x_c, x_c])
+    u = f(XX, YY)
+    u[sdf <= 0.0] = 0.0
+    # wall values from the exact field at the crossing coordinates
+    w = f(ibm.coords[:, 0], ibm.coords[:, 1])
+    filled = fill_ghost_values(ibm, [x_c, x_c], u, wall_values=w)
+    ghosts = np.unique(ibm.ghost_out)
+    err = np.abs(filled.ravel()[ghosts]
+                 - f(XX.ravel()[ghosts], YY.ravel()[ghosts]))
+    # direction-averaged reconstructions of a linear field on a curved wall
+    # are first-order consistent; on this grid the error is well below h
+    assert err.max() < 0.05
+    # untouched cells unchanged
+    untouched = np.setdiff1d(np.arange(u.size), ghosts)
+    assert np.array_equal(filled.ravel()[untouched], u.ravel()[untouched])
+
+
+def test_ghost_values_multicomponent_trailing_axis():
+    x_c, sdf = _uniform_1d(n=10, x_wall=0.63)
+    ibm = construct_ibm(sdf, x_c)
+    u = np.stack([1.0 + 2.0 * x_c, 3.0 - x_c], axis=-1)  # (n, 2)
+    u[sdf <= 0.0] = 0.0
+    w = np.stack([1.0 + 2.0 * ibm.coords[:, 0], 3.0 - ibm.coords[:, 0]],
+                 axis=-1)
+    ghosts, vals = reconstruct_ghost_values(ibm, x_c, u, wall_values=w)
+    expect = np.stack([1.0 + 2.0 * x_c[ghosts], 3.0 - x_c[ghosts]], axis=-1)
+    assert vals.shape == (ibm.n_crossings, 2)
+    assert np.allclose(vals, expect)

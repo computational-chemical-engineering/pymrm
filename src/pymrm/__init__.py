@@ -56,6 +56,8 @@ from .ibm import (
     construct_ibm,
     apply_ibm,
     apply_ibm_vector,
+    reconstruct_ghost_values,
+    fill_ghost_values,
 )
 from .ibm_recon import (
     IBMNormalDerivative,
@@ -131,6 +133,8 @@ __all__ = [
     "construct_ibm",
     "apply_ibm",
     "apply_ibm_vector",
+    "reconstruct_ghost_values",
+    "fill_ghost_values",
     "IBMNormalDerivative",
     "construct_ibm_normal_derivative",
     "construct_ibm_normal_derivative_ops",
