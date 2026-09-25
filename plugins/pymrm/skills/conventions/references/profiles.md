@@ -12,11 +12,25 @@ verifier apply to every profile.
 | | default | efficiency | flexibility | readability | teaching |
 |---|---|---|---|---|---|
 | Purpose | a model the user will run and extend | many solves: sweeps, optimisation, fitting, large grids | a model that will grow: more species, phases, closures | a model others must read and trust | a model that explains the method |
-| Assembly (see `assembly-styles.md`) | A; B for multi-domain | A; constant parts factorised once (`splu`, `solver="splu"`); B only with constant blocks placed once | A or hybrid; closures (kinetics, properties, correlations) passed in as callables | A | A, every Jacobian term a named matrix; B shown explicitly when the model has domains |
+| Assembly (see `assembly-styles.md`) | A; B for multi-domain | A, or B with the placed pattern precomputed; factorise once (`splu`, `solver="splu"`) only when the WHOLE Jacobian is constant (linear model, fixed time step), otherwise it is a chord iteration: check the final residual | A or hybrid; closures (kinetics, properties, correlations) passed in as callables | A | A, every Jacobian term a named matrix; B shown explicitly when the model has domains |
 | Code form | class-based module + driver notebook (style guide 2.2) | class-based; vectorised; no Python loops over cells; timing reported | class with injected closures and a parameter object; unit tests per closure | class-based, short methods named after physics, few abstractions | notebook-first; small steps with markdown between them; derivation of each discrete term |
-| Grid and solver | uniform, refined until converged | non-uniform grids where profiles are steep; minimal n meeting the accuracy target; warm starts only for speed, never for reported numbers | as default | as default | uniform; the grid-refinement study is part of the lesson |
+| Grid and solver | uniform, refined until converged | non-uniform grids where profiles are steep; the minimal n that meets the accuracy target, found by a nested refinement study (below); warm starts for speed only (below) | as default | as default | uniform; the grid-refinement study is part of the lesson |
 | Comments | physical equation beside each bc and balance | same, plus cost notes where a choice is made for speed | interfaces documented: what a closure receives and returns | physical meaning over mechanics | why each step, plus a sparsity plot or a printed small Jacobian |
 | Extra output | model card | timing and scaling table (evaluations, solves, wall time vs n) | a short "how to extend" section | none | exercises or questions for the reader, if asked |
+
+Rules that hold in every profile:
+
+- **Refining a non-uniform grid.** `non_uniform_grid(left, right, n, dx_inf,
+  factor)` with `dx_inf` and `factor` held fixed is NOT a refinement: going from
+  41 to 81 faces shrank the first cell 6.7 times and the last by 2 %. For a
+  nested refinement, double the cells, halve `dx_inf` and take the square root of
+  `factor` (the faces of the coarse grid then reappear in the fine one). Observed
+  orders are only meaningful on such a sequence.
+- **Warm starts.** Sweeps and fits report their outputs, so a warm-started
+  result is a reported number. Before reporting a warm-started sweep, either show
+  the solution is unique in the swept range or spot-check several points from a
+  cold, documented start and confirm they agree. With possible multiplicity the
+  branch rules of `build-model` apply.
 
 Combining: a user may give two priorities ("teaching, but it must run a
 parameter sweep"). Take the first as the profile and apply the second only

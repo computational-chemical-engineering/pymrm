@@ -35,7 +35,8 @@ to this skill's directory.
 Infer the mode from the request; ask only if it is genuinely unclear. When in
 doubt between estimate and model, start with estimate: it is cheap, and its
 phase 2 is the first half of a model anyway. A consult can turn into a build at
-any point; carry the decisions into `brief.md`.
+any time: model mode then starts at phase 1 with the consult's decisions in
+`brief.md`, and phases 2 and 3, including the approval gate, still apply.
 
 **When the user has already specified the model** (equations or a complete
 physical statement, all parameter values, the quantity wanted) and asks for the

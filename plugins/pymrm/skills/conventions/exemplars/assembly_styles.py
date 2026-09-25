@@ -14,6 +14,9 @@ Style B, block assembly: each field and each coupling is its own block on its
     own sub-shape (here (n, 1)), with analytic local derivatives, placed into the
     monolithic state with update_array_indices. This is how multi-field and
     multi-domain models with different operators per field are built.
+Style B, fixed pattern: the same blocks, but the placed sparsity pattern is
+    computed once and each call only scatters values into it: the fastest
+    variant when local derivatives are analytic.
 Style C, full-residual NumJac: NumJac differentiates the whole residual; its
     stencil must cover every coupling (neighbours along r, both fields).
 
@@ -33,7 +36,7 @@ import time
 import warnings
 
 import numpy as np
-from scipy.sparse import diags_array
+from scipy.sparse import csc_array, diags_array
 
 from pymrm import NumJac, construct_div, construct_grad, newton, update_array_indices
 
@@ -122,6 +125,40 @@ class BlockAssembly:
         return g.reshape((-1, 1)), jac.tocsc()
 
 
+class BlockPattern(BlockAssembly):
+    """Style B, fast: the placed sparsity pattern is computed once; each call only
+    scatters new values into it. No index remapping and no sparse sums per call."""
+
+    def __init__(self, n_r=200):
+        super().__init__(n_r)
+        n_cells = np.arange(n_r)
+        flat_c, flat_t = 2 * n_cells, 2 * n_cells + 1  # flat index of (cell, field) in (n, 2)
+        const = self.jac_const.tocoo()
+        # every entry that will ever be written: constant part, then the four local blocks
+        rows = np.concatenate([const.row, flat_c, flat_c, flat_t, flat_t])
+        cols = np.concatenate([const.col, flat_c, flat_t, flat_c, flat_t])
+        n_rows = self.jac_const.shape[0]
+        keys = cols.astype(np.int64) * n_rows + rows  # CSC order: by column, then row
+        unique_keys, self.position = np.unique(keys, return_inverse=True)
+        self.indices = (unique_keys % n_rows).astype(np.int32)
+        self.indptr = np.searchsorted(unique_keys // n_rows, np.arange(n_rows + 1)).astype(np.int32)
+        self.nnz = unique_keys.size
+        self.const_values = const.data
+
+    def residual(self, u):
+        u = u.reshape(self.shape)
+        c, temp = u[:, 0], u[:, 1]
+        r = _rate(c, temp)
+        dr_dc = PHI2 * np.exp(GAMMA * (1.0 - 1.0 / temp))
+        dr_dt = r * GAMMA / temp**2
+        g = np.empty(self.shape)
+        g[:, 0] = self.jac_cc_transport @ c + self.g_c_bc + r
+        g[:, 1] = self.jac_tt_transport @ temp + self.g_t_bc - BETA * r
+        values = np.concatenate([self.const_values, dr_dc, dr_dt, -BETA * dr_dc, -BETA * dr_dt])
+        data = np.bincount(self.position, weights=values, minlength=self.nnz)
+        return g.reshape((-1, 1)), csc_array((data, self.indices, self.indptr), shape=self.jac_const.shape)
+
+
 class FullResidual:
     """Style C: NumJac on the whole residual; the stencil must cover every coupling."""
 
@@ -154,18 +191,21 @@ def time_residual(model, u, repeats=5):
 
 def run_checks(verbose=True, n_r=200):
     models = {"A operator sum": OperatorSum(n_r), "B block assembly": BlockAssembly(n_r),
-              "C full-residual NumJac": FullResidual(n_r)}
+              "B block, fixed pattern": BlockPattern(n_r), "C full-residual NumJac": FullResidual(n_r)}
     solutions = {name: solve(model) for name, model in models.items()}
     u_a = solutions["A operator sum"][0]
 
     results = {
         "max_solution_diff_B": np.max(np.abs(solutions["B block assembly"][0] - u_a)),
         "max_solution_diff_C": np.max(np.abs(solutions["C full-residual NumJac"][0] - u_a)),
+        "max_solution_diff_B_pattern": np.max(np.abs(solutions["B block, fixed pattern"][0] - u_a)),
     }
     u_test = 0.5 * (u_a + 1.0)  # a common state away from the solution
     jacs = {name: model.residual(u_test)[1].toarray() for name, model in models.items()}
     scale = np.max(np.abs(jacs["B block assembly"]))
     results["jac_diff_A_vs_B"] = np.max(np.abs(jacs["A operator sum"] - jacs["B block assembly"])) / scale
+    results["jac_diff_Bpattern_vs_B"] = np.max(np.abs(jacs["B block, fixed pattern"]
+                                                      - jacs["B block assembly"])) / scale
     results["jac_diff_C_vs_B"] = np.max(np.abs(jacs["C full-residual NumJac"] - jacs["B block assembly"])) / scale
     results["prater_structural_residual"] = np.max(np.abs((u_a[:, 1] - 1.0) - BETA * (1.0 - u_a[:, 0])))
 
@@ -183,6 +223,8 @@ def run_checks(verbose=True, n_r=200):
         "max_solution_diff_B": results["max_solution_diff_B"] < 1e-10,
         "max_solution_diff_C": results["max_solution_diff_C"] < 1e-8,
         "jac_diff_A_vs_B": results["jac_diff_A_vs_B"] < 1e-5,
+        "max_solution_diff_B_pattern": results["max_solution_diff_B_pattern"] < 1e-10,
+        "jac_diff_Bpattern_vs_B": results["jac_diff_Bpattern_vs_B"] < 1e-12,
         "jac_diff_C_vs_B": results["jac_diff_C_vs_B"] < 1e-5,
         "prater_structural_residual": results["prater_structural_residual"] < 1e-10,
         "break_row_incomplete_stencil_iterations":
