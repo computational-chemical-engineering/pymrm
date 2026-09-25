@@ -1,9 +1,13 @@
 # PyMRM Model Style Guide
 
-This guide is intended for `pymrm` exercise solutions and class demonstrations.
-It is based on the current `pymrm` tutorials and API, the extended teacher
-solutions in `pymrm-book-teacher`, and the implementation patterns already used
-in `exercises/solutions`.
+This guide is the house standard for `pymrm` models: exercise solutions, class
+demonstrations, research models, and models written by coding agents. It is based
+on the current `pymrm` tutorials and API and on the patterns used across the
+`pymrm` examples and the pymrm gallery.
+
+Read it together with [`pitfalls.md`](pitfalls.md): API behaviour that has
+produced wrong answers in practice, each entry backed by a test in
+`test/test_pitfalls.py` of the pymrm repository.
 
 The goal is not to make every model identical. The goal is to make them
 predictable: same structure, same naming, same array conventions, and same
@@ -27,7 +31,7 @@ Two formats are allowed.
 ### 2.1 Compact script format
 
 Use this for:
-- L1-L2 ODE examples
+- pointwise algebra and ODE models (batch, CSTR, ideal PFR marching)
 - single-purpose demonstrations
 - short derivations where the numerical method itself is the teaching target
 
@@ -50,7 +54,7 @@ Use this by default for:
 - reusable demos
 - any model with more than one solve mode or more than one physical field
 
-This is the preferred style from L3 onward.
+This is the preferred style for every PDE model.
 
 ## 3. Standard Section Order
 
@@ -192,7 +196,7 @@ Spatial axes come first. Non-spatial axes come last.
 
 Preferred layouts:
 
-- 1D single field: `(n_x,)`
+- 1D single field: `(n_x, 1)`, never `(n_x,)` (see pitfalls P3)
 - 1D multicomponent: `(n_x, n_c)`
 - 1D two-phase single-component: `(n_z, n_phase, 1)`
 - 1D two-phase multicomponent: `(n_z, n_phase, n_c)`
@@ -206,6 +210,8 @@ Rules:
 3. Keep components and phases in the final axes so broadcasting remains clear.
 4. When flattening for linear algebra, only flatten at the residual/Jacobian
    interface.
+5. Keep a field axis even when there is one field. `NumJac` couples the last
+   axis in full, so a bare `(n_x,)` shape builds a dense `n_x` by `n_x` Jacobian.
 
 ## 6. Boundary Conditions
 
@@ -221,8 +227,13 @@ bc = (
 Interpretation:
 
 ```text
-a * normal_gradient + b * value = d
+a * dc/dn + b * c = d      with n the OUTWARD normal
 ```
+
+At the right (upper) boundary `dc/dn = dc/dx`; at the left (lower) boundary
+`dc/dn = -dc/dx`. The same dictionary therefore means opposite fluxes at the two
+ends. `compute_boundary_values` returns gradients along `+x`, not along the
+outward normal. See pitfalls P1.
 
 Rules:
 
@@ -232,14 +243,20 @@ Rules:
    their array structure matches the non-spatial axes.
 4. When using Robin or Danckwerts conditions, write the physical equation in a
    nearby comment or Markdown cell before the dictionary.
+5. Write that comment in terms of `x`, and check the sign of `a` against the
+   outward normal at that end.
+6. When a boundary value changes during the run (time-varying feed, continuation
+   on an inlet value), assemble once with `shapes_d` and multiply the returned
+   boundary matrices by the new `d`; do not rebuild the operators.
 
 Example:
 
 ```python
-# Danckwerts inlet: D * dc/dx + v * c = v * c_in
+# Danckwerts inlet at x = 0: v * c - D * dc/dx = v * c_in
+# (outward normal is -x, so -D * dc/dx = +D * dc/dn and a = +D)
 bc = (
     {"a": d_ax, "b": velocity, "d": velocity * c_in},
-    {"a": 1.0, "b": 0.0, "d": 0.0},  # zero outlet gradient
+    {"a": 1.0, "b": 0.0, "d": 0.0},  # outlet at x = L: dc/dx = 0
 )
 ```
 
@@ -329,6 +346,10 @@ flux_mat = -diff_mat @ grad_mat
 flux_bc = -diff_mat @ grad_bc
 ```
 
+`diff_mat` holds FACE diffusivities. Where the diffusivity varies between cells,
+use the harmonic mean of the two neighbours at each interior face; the
+arithmetic mean converges at first order at a jump (pitfalls P2).
+
 ### 9.2 Convection
 
 Use:
@@ -386,17 +407,24 @@ rates = ...
 rhs = nu @ rates
 ```
 
-This is especially useful in L1-L2, where the stoichiometric structure is part
+This is especially useful in reaction-network and ODE models, where the stoichiometric structure is part
 of the teaching objective.
 
 ## 11. Solver Rules
 
 1. Use `newton(...)` for nonlinear implicit steps and steady-state solves.
-2. Use `NumJac(...)` when an analytical Jacobian is not trivial.
+2. Use `NumJac(...)` when an analytical Jacobian is not trivial. Give it the
+   field-shaped state, `(n_x, 1)` for one field. Use `axes_diagonals` only on
+   shapes with at least two axes, and only when the source term itself reads
+   neighbouring cells (pitfalls P3, P4).
 3. Use `clip_approach(...)` when positivity or boundedness is physically
    required.
 4. For linear steady problems, use `spsolve(...)` directly.
 5. Do not rebuild constant sparse matrices inside the time loop.
+6. `newton` stops when the infinity norm of the STEP falls below `tol`, an
+   absolute number. Scale unknowns so that they are of order one, or a
+   trace-level unknown reports success after one step with a wrong value
+   (pitfalls P7). Check `result.success` and the final residual.
 
 Preferred `solve()` pattern:
 
@@ -436,6 +464,12 @@ Every model should include at least one of the following:
 3. Conservation check
 4. Grid-independence check
 5. Physical monotonicity or boundedness check
+
+Every check must be able to fail. Break the model on purpose (flip a sign, change
+`nu`, mismatch a bc) and confirm the checked number moves; a check that does not
+move tests nothing. Refine every axis that carries error (grid and time step) and
+report the observed order. Read outlet and wall values with
+`compute_boundary_values`, not from the last cell centre (pitfalls P8).
 
 Examples:
 
@@ -487,12 +521,12 @@ class ModelName:
 
         # Boundary conditions
         self.bc = (
-            {"a": 1.0, "b": 0.0, "d": 1.0},
-            {"a": 1.0, "b": 0.0, "d": 0.0},
+            {"a": 0.0, "b": 1.0, "d": 1.0},  # x = 0: c = 1
+            {"a": 1.0, "b": 0.0, "d": 0.0},  # x = L: dc/dx = 0
         )
 
-        # State
-        self.u = np.zeros((self.n_x,))
+        # State: one field, so shape (n_x, 1)
+        self.u = np.zeros((self.n_x, 1))
 
         # Operators
         self._build_operators()
@@ -535,7 +569,7 @@ class ModelName:
 
 ## 16. Recommended House Style for Future Material
 
-If a new exercise or demo is written today, the preferred house style is:
+If a new model, exercise or demo is written today, the preferred house style is:
 
 1. Notebook first cell states the model, assumptions, and target quantity.
 2. Code uses the class-based pattern for all PDE or multivariable models.
@@ -548,5 +582,5 @@ If a new exercise or demo is written today, the preferred house style is:
 8. Plotting is separate from solving.
 9. At least one validation step is shown.
 
-This should be the default standard for future `pymrm` exercise solutions and
+This should be the default standard for future `pymrm` models, exercise solutions and
 class demonstrations.
