@@ -95,7 +95,9 @@ Show the user the spec and wait for approval. Revise until approved.
 ## Phase 4: implement
 
 Pick the nearest exemplar from the `conventions` skill and the structure map,
-copy its skeleton, substitute the physics. Follow the style guide: class-based
+copy its skeleton, substitute the physics. Choose the Jacobian assembly with
+`assembly-styles.md` and shape the code to the profile in `brief.md`
+(`profiles.md`); state both choices in `spec.md`. Follow the style guide: class-based
 module plus a driver notebook for PDE or multi-field models, compact script for
 pointwise or ODE models. Scale the unknowns. Print every number you will
 report; never type a number into prose.

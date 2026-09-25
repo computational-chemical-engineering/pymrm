@@ -24,6 +24,10 @@ know can say "yes, use that".
    explicitly does not want.
 7. **How much time and effort?** Minutes (estimate mode) or a full model with
    verification.
+8. **What should the code be good at?** The profile: default, efficiency (many
+   solves), flexibility (will grow), readability (others must trust it) or
+   teaching (explains the method). See the `conventions` skill's `profiles.md`;
+   a project may set its own default.
 
 ## When to stop asking
 
@@ -43,6 +47,7 @@ Dynamics: steady | transient (<which event>)
 Known data: <what, source, units>
 Out of scope: <list>
 Assumptions made during elicitation: <value, reason>
+Profile: default | efficiency | flexibility | readability | teaching (<source: user, project, default>)
 Stopping rule: <what counts as done; what happens if a check cannot be met>
 Questions asked: <list, with the user's answers>
 ```

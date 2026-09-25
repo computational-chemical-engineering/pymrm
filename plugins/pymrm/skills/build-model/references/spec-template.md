@@ -42,6 +42,8 @@ Labels: user, literature: <reference>, correlation: <name and range>, assumed.
 ## 5. Numerics
 Grid(s): <n per axis, clustering>   Time stepping: <scheme, dt>
 Solver: <newton options, continuation if any, how multiplicity is handled>
+Jacobian assembly: <operator sum | block assembly | full-residual NumJac | hybrid, and why>
+Profile: <from brief.md, and the choices it drove>
 
 ## 6. Validation plan (numbered assertions)
 Each: what is compared, against what, tolerance, why the tolerance is right,

@@ -29,7 +29,7 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | Jacobian of a nonlinear source | `NumJac(shape)`, called as `g, jac = numjac(f, c)` | shape keeps a field axis (pitfalls P3, P4) |
 | nonlinear solve | `newton(fun, x0, tol, maxfev, solver, callback)` | `fun(x) -> (g, jac)`; absolute step tolerance (pitfalls P7) |
 | keep iterates physical | `clip_approach(values, dummy, lower_bounds=0)` as the `newton` callback | |
-| couple sub-domains in one system | `update_csc_array_indices`, `construct_interface_matrices` | structure S7 |
+| couple sub-domains in one system | `update_array_indices` (place a block into a larger state), `construct_interface_matrices` | structure S7; `update_csc_array_indices` is deprecated; see `assembly-styles.md` |
 
 ## `NumJac` stencils
 
