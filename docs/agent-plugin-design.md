@@ -1,0 +1,243 @@
+# Design: a pymrm modelling plugin for coding agents
+
+Status: APPROVED 2026-09-25 (two modes; verifier inherits the session model; persona files).
+Implemented on branch `feature/claude-plugin`; section 10 lists where the build
+departs from this draft.
+
+## 1. Goal
+
+Any pymrm user describes a process loosely. The agent talks with them about what
+the model must answer and how detailed it must be, writes a specification the user
+approves, builds a pymrm model to that specification, has it attacked by a separate
+verifier, and reports what the model can and cannot say.
+
+## 2. Decisions already taken
+
+| Decision | Choice |
+|---|---|
+| Home | public `pymrm` repo, so API and guidance change in the same PR |
+| Relation to `clearsheet` | neighbour: borrow its patterns, no dependency, nothing copied from the private repo |
+| Deliverable | class-based `.py` module plus driver notebook (compact script for pointwise or ODE cases, style guide 2.1/2.2), plus a model card |
+| Names | plugin `pymrm`; skills `conventions`, `build-model`, `verify-model`; Claude agent `model-verifier` |
+| Single source | the style guide moves into the plugin; `docs/pymrm-model-style-guide.md` becomes a pointer stub |
+| Portability | all substance in Agent Skills (open SKILL.md standard, read by Claude Code, Codex CLI, Gemini CLI); per-tool wrappers stay thin |
+| Worked examples | public material only (gallery, `tutorials`, `examples`, `pymrm-book`); never `pymrm-book-teacher` |
+
+Facts that fix the layout (confirmed from the Claude Code docs on 2026-09-25): an
+installed plugin is copied to `~/.claude/plugins/cache/...` and may not read paths
+outside its own directory; a marketplace can live in the same repo with
+`"source": "./plugins/pymrm"`; components are namespaced `pymrm:<name>`;
+`claude plugin eval` runs cases from an eval directory given by `--eval-dir`.
+
+## 3. Layout
+
+```
+pymrm/
+  AGENTS.md                         any tool, working ON pymrm: points to the conventions skill
+  .claude-plugin/marketplace.json   marketplace "pymrm", one plugin, source ./plugins/pymrm
+  plugins/pymrm/                    everything a user's agent can read; nothing else ships
+    .claude-plugin/plugin.json
+    README.md                       install for Claude Code, Codex CLI, Gemini CLI
+    skills/
+      conventions/
+        SKILL.md                    short index: when to read which reference
+        references/style-guide.md   git mv from docs/, scope widened, private-repo mention removed
+        references/pitfalls.md      the measured traps, each with symptom, cause, fix, test name
+        references/api-map.md       which pymrm function for which job; how to read the installed source
+        exemplars/*.py              3 to 4 small models in house style, each with its own checks
+      build-model/
+        SKILL.md                    the workflow, its gates and its stopping rule
+        references/elicit.md        the questions, and when to stop asking
+        references/fidelity.md      phenomena, deciding groups, criteria, the ladder
+        references/structures.md    structure codes S1 to S13 -> pymrm ingredients -> exemplar
+        references/spec-template.md
+        references/model-card-template.md
+      verify-model/
+        SKILL.md                    how to attack a model; verdict per spec assertion
+        references/attack-list.md   defect classes measured in the gallery, hunt them by name
+    agents/model-verifier.md        Claude wrapper: frontmatter + `skills: [verify-model]`
+    evals/                          `claude plugin eval` cases (the harness hides them from the agent under test)
+  test/test_pitfalls.py             one test per trap; fails if an API change makes a trap untrue
+  docs/pymrm-model-style-guide.md   stub pointing to the new location
+```
+
+Why the exemplars are bundled rather than pointed to: `examples/` and `tutorials/`
+sit outside the plugin directory and use legacy names (`Jac_const`, `g(...)`). A
+few short exemplars written to the style guide, run in CI, are cheaper than
+teaching the agent which legacy patterns to ignore. For API truth the skill tells
+the agent to read the INSTALLED pymrm source (`python -c "import pymrm;
+print(pymrm.__file__)"`), so the docstrings match the user's version. The gallery
+is linked by URL for further examples.
+
+## 4. The workflow (`build-model`)
+
+Each phase ends with a written artefact. Two gates need the user.
+
+0. **Environment.** pymrm installed and which version; if older than the plugin's
+   minimum, say so.
+1. **Elicit.** The question the model must answer and the decision that hangs on
+   it; outputs and their required accuracy; operating range; data the user has;
+   time budget. State the stopping rule now: what "done" means and when to park.
+2. **Scope and fidelity.** List candidate phenomena. Estimate the groups that decide
+   each (Pe, Da, Thiele, Biot, Mears, Weisz-Prater, ...) with labelled parameter
+   values. Choose a rung on the ladder. For every excluded phenomenon, state what
+   it would change and roughly by how much.
+3. **Specification. GATE: user approves before any code.** Equations; each bc as
+   the pymrm dict with the physical equation beside it; every parameter with a
+   source label (user-given, literature with reference, correlation, assumed);
+   assumptions; the validation plan with numbered assertions, chosen before the
+   model and including at least one check that can fail and one headline computed
+   by a second independent route.
+4. **Implement.** Map to structure codes, copy the nearest exemplar, substitute
+   the physics, follow `conventions`. Copying an exemplar does not copy its checks:
+   rebuild them for the new physics.
+5. **Self-check.** Refine every axis that carries error (grid and time step),
+   report observed orders; root-find thresholds and extrema instead of sampling;
+   reported numbers come from deterministic solves, not warm-start chains.
+6. **Verify.** A separate context runs `verify-model` on the spec and the code,
+   not on the builder's narrative. Verdict per assertion: met / not met /
+   insufficient evidence / blocked. One fix round, then re-verify; if still not
+   met, report it as such rather than iterate.
+7. **Report. GATE: the user sees the model card.** Results; what was checked and
+   how; which conclusions rest on assumed parameters; validity limits; and what
+   the model does NOT establish.
+
+Tool-neutral wording rule: skill text never names a tool-specific function. It
+says "ask the user", "run the verifier in a separate context (a subagent if your
+tool has one, otherwise a fresh session with this brief)".
+
+## 5. The verifier
+
+- Portable instructions in `verify-model`; the Claude wrapper
+  `agents/model-verifier.md` adds only: read-only tools plus Bash to run code,
+  `model: inherit`, and the skill preload.
+- Inputs: the approved spec, the code, the self-check output. Not the builder's
+  conclusions.
+- Method: attack the baseline, not only the inputs. Rerun the numbers itself;
+  check every boundary condition against its physical statement; refine grids;
+  test a limit the builder did not test; hunt the defect classes by name.
+- Output: verdict per spec assertion, with the reproducing command, and a list
+  of what the evidence does not establish.
+
+## 6. Pitfalls to move into `conventions/references/pitfalls.md`
+
+Each gets symptom, cause, fix, and a test in `test/test_pitfalls.py`:
+
+1. bc normal is OUTWARD, so the sign of `a` flips meaning between the two ends.
+   The current style guide's own Danckwerts comment (`D * dc/dx + v * c = v *
+   c_in`) is wrong for the left end; the dict is right. Fix the comment in the move.
+2. Diffusivity jump: harmonic mean at the face (arithmetic converges at first
+   order only).
+3. `NumJac((n,))` on a single-field 1-D problem builds a dense Jacobian.
+4. `axes_diagonals=[0]` on a 1-D shape drops the diagonal and converges to a
+   different answer.
+5. Changing boundary values: assemble once, use `shapes_d`.
+6. Pure outflow boundary: pymrm has none; the Neumann outflow extrapolates to the
+   face; the gallery workaround.
+7. `newton` stops on an absolute step norm: scale mixed-unit state vectors.
+8. Outlet values: read through `compute_boundary_values` or the face, never off
+   the last cell centre (`v*C_N` is O(h): 8.9e-3 at n=8, 7.8e-5 at n=800, and a
+   mass balance written with it fails to close).
+
+Material that goes elsewhere: the gallery's structure codes S1 to S13 go into
+`build-model/references/structures.md`; the D1.1 ladder goes into `fidelity.md`
+(shifts against rung 1: +0.17 %, -4.74 %, +15.69 %, -8.94 %; resolving the
+particle moves the answer +21.4 % from the film-only model, so stopping at the
+film model leaves you further from the particle model than plug flow was) with
+the warning that a passed rate criterion does not bound a sensitive output; the
+"check that cannot fail" (B1.6: an identity residual of 1e-11 blind to a Newton
+residual of 18) and "break something on purpose" go into the verifier's
+attack list.
+
+## 7. Evaluation
+
+Cases live in `plugins/pymrm/evals/` (see section 10). Three kinds:
+
+**A. Trap tasks**, one per pitfall, each with a measured wrong answer. Graded by
+number (regex on printed output against a tolerance) plus a code check where the
+trap is structural.
+
+| Case | Task | Wrong answer it catches |
+|---|---|---|
+| T1 | slab, prescribed flux entering at the RIGHT end | sign of `a`, profile mirrored |
+| T2 | composite slab, D jumps 10x | arithmetic face mean, first-order error |
+| T3 | nonlinear reaction-diffusion, one field, n=400 | `NumJac((n,))` dense, or `axes_diagonals=[0]` |
+| T4 | tanks in series, outlet concentration | Neumann outflow, 5.9% at N=2 |
+| T5 | nonisothermal pellet, T in K and c in mol/m3 | unscaled newton stops early |
+| T6 | open tube, outlet conversion and mass balance | outlet read off the last cell |
+
+**B. Held-out gallery pages.** The model statement as a paragraph, no code, no
+link; score against the page's `agreement.json` (headline metrics only, not all).
+
+| Page | Structure | Metrics pinned |
+|---|---|---|
+| A2.1 Danckwerts boundary conditions | S3, S4 | 29 |
+| B1.1 Thiele, Weisz-Hicks pellet (multiplicity) | S3 | 7 |
+| A3.15 Graetz-Nusselt | S6 | 22 |
+| B3.2 grain model | S8, S12 | 15 |
+| D2.2 Van Welsenaere-Froment runaway | S2, two routes | 7 |
+| J1.5 LDF breakthrough | S4, S5 | 5 |
+
+**C. Vague-spec tasks**, graded by an LLM judge against a rubric: asked for the
+purpose, decision and range; estimated the deciding groups with numbers; chose a
+fidelity and justified it; labelled every parameter; wrote a spec before code;
+ran a separate verifier; the model card says what is not established. Four
+prompts, for example "Will my methanation bed run away?", "Is internal diffusion
+limiting in my pellets?", a membrane sizing question, and one where the right
+answer is that a criterion settles it and no PDE model is needed. The eval
+harness has no live user, so each case carries a persona file with the user's
+answers; the agent must write down the questions it would ask before it reads the
+persona.
+
+Runs: every case on Opus and Sonnet, 3 runs each. A no-plugin baseline arm only
+for A, to show the traps are real for an unaided agent.
+
+## 8. Order of work
+
+1. Move the style guide, write `pitfalls.md` and `test/test_pitfalls.py`
+   (tests first: each trap is demonstrated numerically before it is written down).
+2. `conventions` skill, exemplars, CI job that runs the exemplars.
+3. `build-model` and `verify-model` skills, Claude wrapper, marketplace files.
+4. Eval cases; run on Opus and Sonnet; fix what fails.
+5. `AGENTS.md`, README section; Codex and Gemini wrappers only after an eval case
+   has run on each.
+
+## 9. Open questions for the user
+
+1. **Two modes?** Recommended: `estimate` (phases 1 to 2 and a short report: do
+   you need a model at all, which groups decide it) and `model` (all phases). A
+   verifier always runs in `model` mode. Without this, every question costs a
+   full build.
+2. **Verifier model.** Recommended: `model: inherit`, so it works for users
+   without Opus; the Sonnet eval runs tell us whether that is good enough.
+3. **Eval budget.** A 6 x 2 x 3 x 2 = 72 sessions, B 6 x 2 x 3 = 36, C 4 x 2 x 3 =
+   24: about 130 sessions for a full pass. Recommended: full pass once before the
+   PR, then only the cases a change touches.
+4. **Persona files for the vague-spec cases** (section 7C): acceptable, or do you
+   want those graded by hand in a live session?
+
+## 10. As built (2026-09-25)
+
+- **Eval location.** `claude plugin eval` only accepts an eval directory inside
+  the plugin, and its docs state that a run cannot read the eval directory. The
+  cases therefore live in `plugins/pymrm/evals/`; `scripts/run_plugin_evals.sh`
+  runs them.
+- **Eval sandbox.** Bash in an eval run is sandboxed and cannot read `$HOME`, so
+  the runner installs pymrm non-editable into `/tmp/pymrm-eval-venv` and puts it
+  first on `PATH`. Linux needs `bubblewrap` and `socat`.
+- **Held-out pages: five, not six.** A3.15 was dropped: its only target that a
+  paragraph can pose is the textbook Nu = 3.657, which an agent can recall.
+- **Verifier model.** Plugin agents do not accept `model: inherit`; the agent file
+  omits `model`, which inherits the session model.
+- **Pitfall numbers were re-measured** on pymrm 2.4.6 and differ from the gallery
+  write-ups where the test problem differs (for example P6: 3.85 % at N = 2 here,
+  5.9 % on a different metric in the gallery). `pitfalls.md` quotes the tests.
+- **Two extra rules in `build-model`:** a user who already gave a complete
+  specification is not re-interviewed; a non-interactive run writes its
+  questions to `questions.md` first and labels everything else assumed.
+- **Found while building:** the style guide's minimal template used
+  `NumJac((n_x,))` (dense) and a flux bc labelled like a Dirichlet one; its
+  Danckwerts comment had the wrong sign at the left end. All fixed in the move.
+  `NumJac(..., axes_diagonals=[0])` on a 1-D shape still returns a wrong
+  Jacobian; worth fixing in pymrm itself (raise an error) rather than only
+  documenting it.

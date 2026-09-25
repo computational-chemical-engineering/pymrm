@@ -1,0 +1,14 @@
+{
+  "name": "pymrm",
+  "description": "Coding-agent plugins for pymrm, the multiphase reactor modelling library.",
+  "owner": {
+    "name": "pymrm developers"
+  },
+  "plugins": [
+    {
+      "name": "pymrm",
+      "source": "./plugins/pymrm",
+      "description": "Build scoped, verified pymrm reactor models from a process description."
+    }
+  ]
+}
