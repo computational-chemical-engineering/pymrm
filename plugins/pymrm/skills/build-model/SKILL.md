@@ -1,6 +1,6 @@
 ---
 name: build-model
-description: Turn a loose description of a chemical-engineering process (reactor, catalyst pellet, column, membrane, adsorber, electrode) into a scoped, verified pymrm model, or into a quick estimate of whether such a model is needed at all. Use when a user wants to model, simulate, size or assess a process with pymrm, or asks whether transport, dispersion, heat effects or diffusion limitation matter.
+description: Turn a loose description of a chemical-engineering process (reactor, catalyst pellet, column, membrane, adsorber, electrode) into a scoped, verified pymrm model, give a quick estimate of whether such a model is needed, or discuss modelling choices as a pymrm specialist. Use when a user wants to model, simulate, size or assess a process with pymrm, asks whether transport, dispersion, heat effects or diffusion limitation matter, or wants advice on reactor type, level of detail, Jacobian assembly or coupling of domains.
 ---
 
 # Build a pymrm model from a process description
@@ -13,7 +13,7 @@ attacked, and say honestly what it can and cannot tell them.
 Load the `conventions` skill before writing any code. Paths below are relative
 to this skill's directory.
 
-## Two modes
+## Three modes
 
 - **estimate**: the user wants to know whether something matters, or what order
   of magnitude to expect. Phases 1, 2 and a short report, `estimate.md`: the
@@ -25,9 +25,17 @@ to this skill's directory.
   or the same criterion from the other side, for example the Thiele modulus
   from kinetics against the observable Weisz-Prater modulus).
 - **model**: all phases below.
+- **consult**: the user wants to discuss choices (which reactor model, which
+  phenomena, which assembly style, how to couple domains, why a model fails)
+  rather than get a model now. Follow `references/consult.md`: lead with a firm
+  recommendation, give real alternatives with their trade-offs, back claims with
+  numbers, no model code unless asked. End by proposing the next step, usually
+  estimate or model mode.
 
-Ask which mode fits if the request does not make it clear. When in doubt, start
-with estimate: it is cheap, and its phase 2 is the first half of a model anyway.
+Infer the mode from the request; ask only if it is genuinely unclear. When in
+doubt between estimate and model, start with estimate: it is cheap, and its
+phase 2 is the first half of a model anyway. A consult can turn into a build at
+any point; carry the decisions into `brief.md`.
 
 **When the user has already specified the model** (equations or a complete
 physical statement, all parameter values, the quantity wanted) and asks for the
@@ -67,7 +75,9 @@ check cannot be met (report it and stop, rather than iterate without end).
 
 ## Phase 2: scope and fidelity
 
-Follow `references/fidelity.md`. List every phenomenon that could matter,
+If the reactor type itself is still open, settle it first with
+`references/reactor-selection.md`. Then follow `references/fidelity.md`. List
+every phenomenon that could matter,
 estimate the dimensionless group that decides it WITH NUMBERS and labelled
 inputs, and choose the lowest rung of the ladder that the decision can rest on.
 For every excluded phenomenon, state what it would change and roughly by how
