@@ -248,3 +248,37 @@ for A, to show the traps are real for an unaided agent.
   therefore ships the same folder as a Gemini extension (`gemini-extension.json`)
   and, if its skills are namespaced, a Codex plugin, both tested by an eval run;
   the flat copy stays a fallback with a clash warning in the README.
+
+## 11. Next phase (approved 2026-09-25)
+
+Evidence behind it:
+- In the gallery, about 39 of 47 NumJac pages already differentiate only local
+  terms, with transport from operators. The 8 full-residual pages (A4.1, A4.2,
+  A4.3, A4.4, A4.9, J3.1, J3.4, J3.5) all have fluxes nonlinear in the state.
+  What goes unused is the coupling and boundary API: `shapes_d`,
+  `update_csc_array_indices` and `construct_interface_matrices` appear in no
+  page, `compute_boundary_values` in 12 of 82.
+- A two-field (c, T) sphere pellet: analytic transport Jacobian plus NumJac on
+  the source takes 1.05 ms per residual and Jacobian at n = 10 000, full-residual
+  NumJac takes 1.86 ms; identical answers and iterations.
+
+Decisions: the default assembly style is the maintainer's (operators for
+transport, NumJac for local terms, Jacobian as a sum); full-residual NumJac is
+recommended when fluxes are nonlinear in the state. Profiles: default,
+efficiency, flexibility, readability, teaching. Pattern idioms may be distilled
+from the maintainer's private repositories in new words and new public
+exemplars, never copied.
+
+Phases, each closed by evals:
+1. Baseline: current eval suite on Opus and Sonnet.
+2. `conventions/references/assembly-styles.md`, a CI-tested pair of the same
+   model in both styles, profiles recorded in `brief.md` and readable from a
+   project preferences section; evals for profile adherence.
+3. `consult` mode (authoritative recommendation, real alternatives with
+   trade-offs, no code unless asked) and `build-model/references/reactor-selection.md`.
+4. `model-patterns` skill: monolithic multi-domain coupling (membrane reactor),
+   pressure-velocity coupling, nested scales, segregated versus monolithic; one
+   tested exemplar and one eval case per pattern.
+5. Automated skill optimisation (CORAL-type or skill-refinement tools) against the
+   suite, if phase 1 shows room.
+6. Codex and Gemini packaging (section 10).
