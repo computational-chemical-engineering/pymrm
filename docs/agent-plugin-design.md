@@ -241,3 +241,10 @@ for A, to show the traps are real for an unaided agent.
   `NumJac(..., axes_diagonals=[0])` on a 1-D shape still returns a wrong
   Jacobian; worth fixing in pymrm itself (raise an error) rather than only
   documenting it.
+- **Skill names stay short** (decided 2026-09-25). Claude Code always namespaces
+  plugin skills (`/pymrm:build-model`), and Gemini CLI namespaces extension
+  skills, so a `pymrm-` prefix would only stack. Name clashes arise only when the
+  folders are copied into a flat skills directory. Step 2 of the order of work
+  therefore ships the same folder as a Gemini extension (`gemini-extension.json`)
+  and, if its skills are namespaced, a Codex plugin, both tested by an eval run;
+  the flat copy stays a fallback with a clash warning in the README.
