@@ -32,7 +32,12 @@ to this skill's directory.
   numbers, no model code unless asked. End by proposing the next step, usually
   estimate or model mode.
 
-Infer the mode from the request; ask only if it is genuinely unclear. When in
+Infer the mode from the request; ask only if it is genuinely unclear. A request
+for "a model" does not settle the mode: if phase 2 shows that a criterion
+answers the user's question with a wide margin (an order of magnitude or more),
+stop there, deliver `estimate.md` with that conclusion, and offer the model as
+an option rather than building it. Building a model nobody needs is not
+thoroughness. When in
 doubt between estimate and model, start with estimate: it is cheap, and its
 phase 2 is the first half of a model anyway. A consult can turn into a build at
 any time: model mode then starts at phase 1 with the consult's decisions in
@@ -116,6 +121,13 @@ report; never type a number into prose.
 Copying an exemplar does not copy its checks. Build the checks from the spec.
 
 ## Phase 5: self-check
+
+Before launching any study, time one solve and estimate what each planned
+study costs (solves times time per solve). Fit the studies to the time the user
+allows, and in an unattended run to well under its time limit: coarse grids and
+few bisection steps first, refine only what the decision needs, and never wait
+on a long run without knowing when it will end. A check that does not finish is
+worth nothing.
 
 Run the validation plan and write `self_check.md`:
 - refine every axis that carries error and report the observed order;
