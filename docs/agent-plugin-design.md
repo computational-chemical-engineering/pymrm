@@ -344,3 +344,23 @@ case; file-protocol graders scored only in the plugin arm):
 flags 46 pages, including 21 expressions KaTeX cannot parse (VS Code), mostly
 two `\tag` in one block. `docs/math-render-test.ipynb` awaits a manual check in
 JupyterLab, VS Code, Colab and the GitHub preview.
+
+**Three-run targeted comparison and hard cases** (2026-09-26):
+- After replacing LLM numeric judges with deterministic range regexes (the
+  judge had failed correct numbers in 3 of 3 runs), no measured case shows a
+  correctness difference between with and without the plugin: m1-m3, a3, and
+  the three hard cases (adsorption front width, ternary Maxwell-Stefan signs,
+  hidden internal diffusion) are solved correctly by Opus and Sonnet in both
+  arms. The one repeatable difference is p2 (efficiency sweep: refinement study
+  and cold-start checks present with the plugin, 2/3 against 0/3); m3 differs
+  only in style (monolithic or Schur with the plugin, particle nested in the
+  bulk ODE without, both exact). Sonnet D2.2 misreads "constant density" in 1
+  to 2 of 3 runs in either arm.
+- Cost per task with the plugin is 1.2 to 2 times higher for Opus and up to 17
+  times for Sonnet on a vague case (h3: $4.20 against $0.24, same answer).
+- Reading: on problems of this size, current models are capable pymrm modellers
+  unaided. The plugin's measurable value is process (spec, checks, verification,
+  audit trail), the maintainer's conventions, and teaching output; its cost is
+  real. Candidates: make the full model-mode workflow opt-in, keep
+  `conventions` and `model-patterns` light, and look for value in longer,
+  interactive work that single-shot evals do not capture.
