@@ -43,12 +43,15 @@ phase 2 is the first half of a model anyway. A consult can turn into a build at
 any time: model mode then starts at phase 1 with the consult's decisions in
 `brief.md`, and phases 2 and 3, including the approval gate, still apply.
 
-**When the user has already specified the model** (equations or a complete
-physical statement, all parameter values, the quantity wanted) and asks for the
-number: do not interrogate them. Write `spec.md` from their text, fill gaps with
-labelled assumptions, and go straight to phases 4 and 5. Skip the approval gate
-only if they said so or cannot be reached. The pitfalls and the self-check still
-apply in full; a well-posed problem is where silent API mistakes hide best.
+**A fully specified calculation is not model mode.** When the user gives the
+equations or a complete physical statement, all parameter values and the
+quantity wanted, and asks for the number: do not interrogate them and do not run
+the model-mode workflow (no brief, spec, verifier or model card). Follow the
+`conventions` skill, build the calculation, run phase 5 (including the checker
+and one independent check), and answer with the number and how it was checked.
+Offer an independent verification if the result feeds a decision. Use model mode
+when the user describes a decision the model must support, asks for a model to
+keep and extend, or the problem needs scoping.
 
 **When you cannot reach the user** (a batch or non-interactive run): write the
 questions you would ask to `questions.md`, then use any answers you were given,
@@ -122,12 +125,20 @@ Copying an exemplar does not copy its checks. Build the checks from the spec.
 
 ## Phase 5: self-check
 
+**Analysis before numerics.** Derive what can be derived: limits, asymptotes,
+lag constants, thresholds of simple sub-models, conserved quantities. Use the
+model to confirm them, not to discover them by fitting. Fitting an asymptote to
+finite-time or finite-domain runs is ill-conditioned: the fitted constant drifts
+with the fitting window. If you must fit, fit the known functional form and show
+that the constant is stable across windows before reporting it.
+
 Before launching any study, time one solve and estimate what each planned
 study costs (solves times time per solve). Fit the studies to the time the user
 allows, and in an unattended run to well under its time limit: coarse grids and
 few bisection steps first, refine only what the decision needs, and never wait
-on a long run without knowing when it will end. A check that does not finish is
-worth nothing.
+on a long run without knowing when it will end. Run studies in the foreground
+with a `timeout` set from your estimate; do not start background jobs and poll
+them with `sleep`. A check that does not finish is worth nothing.
 
 Run the validation plan and write `self_check.md`:
 - refine every axis that carries error and report the observed order;

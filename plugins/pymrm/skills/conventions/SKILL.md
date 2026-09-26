@@ -5,8 +5,10 @@ description: House conventions and known pitfalls of the pymrm Python library (m
 
 # pymrm conventions
 
-Read these before writing or reviewing pymrm code. They are short; read the
-whole file that applies, not an excerpt.
+Read these before writing or reviewing pymrm code; read the whole file that
+applies, not an excerpt. For a single calculation, `pitfalls.md` and the nearest
+exemplar are enough; add the style guide and the other references when you write
+a model that will be kept, shared or extended.
 
 | File | Read when |
 |---|---|
