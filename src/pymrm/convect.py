@@ -24,7 +24,8 @@ def construct_convflux_upwind(
         Cell-center coordinates. If omitted, arithmetic midpoints are used.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with keys ``a``, ``b``,
-        and ``d``. ``{"outflow": True}`` marks a pure-outflow boundary: the
+        and ``d`` for ``a * dc/dn + b * c = d`` with ``n`` the outward normal
+        (at the left end ``dc/dn = -dc/dx``). ``{"outflow": True}`` marks a pure-outflow boundary: the
         face value is the adjacent cell value (a stirred volume's exit). It is
         meant for faces where material leaves; if flow enters there, the face
         still carries the adjacent cell value.
@@ -33,7 +34,9 @@ def construct_convflux_upwind(
     axis : int, optional
         Convection axis.
     shapes_d : tuple[tuple | None, tuple | None], optional
-        Optional source-vector shapes for boundary inhomogeneities.
+        Optional source-vector shapes for boundary inhomogeneities. With
+        ``shapes_d`` the dictionary's ``d`` is a coefficient on that external
+        vector (use ``d = 1`` to pass the values through the vector).
     format : {'csc', 'csr'}, optional
         Sparse format for returned operator matrices.
 
@@ -148,13 +151,15 @@ def construct_convflux_bc(
         Cell-center coordinates.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with keys ``a``, ``b``,
-        and ``d``.
+        and ``d`` for ``a * dc/dn + b * c = d`` with ``n`` the outward normal;
+        ``{"outflow": True}`` marks a pure-outflow boundary.
     v : float or array_like, optional
         Face velocity field.
     axis : int, optional
         Convection axis.
     shapes_d : tuple[tuple | None, tuple | None], optional
-        Optional source-vector shapes for inhomogeneous boundary terms.
+        Optional source-vector shapes for inhomogeneous boundary terms; ``d``
+        is then a coefficient on the external vector.
     format : {'csc', 'csr'}, optional
         Sparse format for returned operator matrices.
 

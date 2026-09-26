@@ -586,6 +586,23 @@ class NumJac:
 
     The class builds a sparse Jacobian structure from a stencil/dependency
     description and reuses that structure across repeated evaluations.
+
+    With the default stencil every point is coupled in full along the LAST
+    axis and not at all along the others: right for a local term (a reaction)
+    on a field of shape ``(n, n_c)``. Keep a field axis for a single field,
+    ``(n, 1)``; a bare ``(n,)`` couples all cells and builds a dense Jacobian.
+    Couplings between neighbouring cells normally come from the operators, not
+    from ``NumJac``; use ``axes_diagonals`` only when the local term itself
+    reads neighbours.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from pymrm import NumJac
+    >>> numjac = NumJac((5, 1))
+    >>> g, jac = numjac(lambda c: c**2, np.ones((5, 1)))
+    >>> jac.shape, jac.nnz
+    ((5, 5), 5)
     """
 
     def __init__(

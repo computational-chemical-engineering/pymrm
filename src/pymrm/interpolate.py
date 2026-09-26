@@ -411,7 +411,9 @@ def compute_boundary_values(
     tuple
         If ``bound_id`` is ``None``:
         ``(value_left, grad_left, value_right, grad_right)``.
-        Otherwise: ``(value, grad)`` for the requested boundary.
+        Otherwise: ``(value, grad)`` for the requested boundary. Gradients are
+        along the positive ``axis`` direction, NOT the outward normal used in
+        the ``bc`` dictionaries (at the lower boundary they differ in sign).
     """
     if bc is not None:
         bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})

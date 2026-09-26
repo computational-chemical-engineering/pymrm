@@ -174,11 +174,13 @@ def construct_grad_bc(
         Cell-center coordinates.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with keys ``a``, ``b``,
-        and ``d``.
+        and ``d`` for ``a * dc/dn + b * c = d`` with ``n`` the outward normal;
+        ``{"outflow": True}`` means zero normal gradient here.
     axis : int, optional
         Differentiation axis.
     shapes_d : tuple[tuple | None, tuple | None], optional
-        Optional source-vector shapes for left/right boundary contributions.
+        Optional source-vector shapes for left/right boundary contributions;
+        ``d`` is then a coefficient on the external vector.
     format : {'csc', 'csr'}, optional
         Sparse format for returned operator matrices.
 
