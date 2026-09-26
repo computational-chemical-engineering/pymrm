@@ -83,8 +83,54 @@ result = newton(residual, np.ones(shape))
 c = result.x.reshape(shape)
 ```
 
-Coding agents: the pymrm repository also ships skills for building and checking
-models (`plugins/pymrm/`, see its README).
+## Developing pymrm models with a coding agent
+
+Coding agents such as Claude Code already model well with pymrm: they read the
+installed package's source and docstrings. The pymrm agent plugin adds the house
+conventions (operator-sum Jacobians, monolithic coupling, model and notebook
+formats), known pitfalls and checkers, tested exemplar models, and, when you ask
+for it, a documented workflow with an independent verifier.
+
+### Install (Claude Code)
+
+pymrm must be installed in the Python environment the agent runs in
+(`pip install pymrm`). Then, inside Claude Code:
+
+```text
+/plugin marketplace add computational-chemical-engineering/pymrm
+/plugin install pymrm@pymrm
+```
+
+From a terminal, update later with `claude plugin marketplace update pymrm` and
+remove with `claude plugin uninstall pymrm@pymrm`. To work from a local checkout of this repository
+instead (for example while changing the skills), start Claude Code with
+`claude --plugin-dir plugins/pymrm`, or register the checkout once with
+`claude plugin marketplace add /path/to/pymrm`.
+
+### Use
+
+Describe what you want in plain words; the plugin picks the mode.
+
+| You want | Ask for example |
+|---|---|
+| a checked model and its answer (default) | "Model steady diffusion with a second-order reaction in a 3 mm spherical pellet, D_eff = 1e-6 m2/s, and give the effectiveness factor." |
+| a quick estimate: does it matter at all? | "Is external mass transfer limiting in my lab microreactor? Particles are 200 micrometre, ..." |
+| advice on modelling choices | "Should I solve my membrane reactor monolithically or iterate between the channels?" |
+| a documented, independently verified model | "I need a documented, independently verified model for a design review: ..." (specification for your approval, verification by a separate agent, model card) |
+| teaching material | "For my course: a flat notebook that builds the operators step by step for ..." |
+
+You can also call the skills directly: `/pymrm:build-model`,
+`/pymrm:conventions`, `/pymrm:model-patterns`, `/pymrm:verify-model`. Optional
+tools the checks use when present: `nbformat` and `nbclient` (to execute
+notebooks), Node.js with KaTeX (to check that notebook equations render in
+JupyterLab, VS Code, Colab and on GitHub). Details: `plugins/pymrm/README.md`.
+
+### Other agent tools
+
+The skills use the open Agent Skills format (`SKILL.md`). For Codex CLI or
+Gemini CLI, copy the skill folders into `~/.agents/skills/` (see
+`plugins/pymrm/README.md`); rename them if they clash with skills you already
+have.
 
 ## Helper utilities
 
