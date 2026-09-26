@@ -81,7 +81,18 @@ at each end (P1), face means at property jumps (P2), `NumJac` shapes and stencil
 tolerance against unknown magnitudes and the final residual (P7), boundary
 values read from faces (P8).
 
-## 9. Fixes that bring new defects
+## 9. A misread problem statement
+
+Two routes agree because both implement the same misreading: a stated
+constant density replaced by an ideal-gas density, a rate per catalyst mass used
+as a rate per volume, a boundary condition at the wrong end. Example: two
+routes agreed to 1e-4 on a critical inlet pressure 16 % too high, because both
+let the density vary although the statement fixed it.
+
+Test: list every condition in the specification or the user's statement and
+find the code line that implements it. A condition without a line is a finding.
+
+## 10. Fixes that bring new defects
 
 When verifying a second time, after a fix, look hardest at what the builder
 ADDED in the fix, not only at the findings it addressed. Correct repairs of real

@@ -39,7 +39,8 @@ is missing, your verdict is `blocked`: say what is missing and stop.
 4. **Refine every axis that carries error**: space and time, separately and
    together. Report observed orders. If the reported value is not converged to
    the accuracy the spec asks for, the assertion is `not met`.
-5. **Hunt the defect classes by name** (`references/attack-list.md`). Each one
+5. **Hunt the defect classes by name** (`references/attack-list.md`),
+   including a misread problem statement: map every stated condition to code. Each one
    has been found repeatedly in real models.
 6. **Check every check.** For each assertion the builder claims to meet, break
    the model on purpose in a way that assertion should detect and confirm the

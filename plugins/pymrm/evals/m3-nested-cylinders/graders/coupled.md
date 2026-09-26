@@ -1,6 +1,6 @@
 ---
 type: llm
-focus: trace
+focus: { source: file, path: model.py }
 ---
 
 PASS if the particle and bulk equations are solved as one coupled system (for

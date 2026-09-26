@@ -1,6 +1,7 @@
 ---
+arm: with-only
 type: llm
-focus: { source: file, path: model_card.md }
+focus: last_message
 ---
 
 PASS only if ALL hold:

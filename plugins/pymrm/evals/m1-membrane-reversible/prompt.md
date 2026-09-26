@@ -19,6 +19,6 @@ conditions at every inlet and zero gradient at every outlet.
 Report the steady outlet concentrations, accurate to 0.3 %: retentate A and B
 at z = 1, and permeate B at z = 0. Keys: ret_A_out, ret_B_out, perm_B_out.
 
-Use pymrm. Save your code in the working directory and write the requested
+Use pymrm. Save your model code as model.py in the working directory and write the requested
 numbers to answers.json in the working directory. I will not be available for
 questions; state any assumption you make.

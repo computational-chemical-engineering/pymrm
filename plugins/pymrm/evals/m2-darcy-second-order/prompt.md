@@ -14,6 +14,6 @@ k c_A^2, k = 1, without change in the number of moles; axial dispersion is
 negligible. Compute the pressure profile and the conversion of A together,
 and report the conversion accurate to 0.2 %. Key: conversion.
 
-Use pymrm. Save your code in the working directory and write the requested
+Use pymrm. Save your model code as model.py in the working directory and write the requested
 numbers to answers.json in the working directory. I will not be available for
 questions; state any assumption you make.

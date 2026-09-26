@@ -49,6 +49,11 @@ quantity wanted, and asks for the number: do not interrogate them and do not run
 the model-mode workflow (no brief, spec, verifier or model card). Follow the
 `conventions` skill, build the calculation, run phase 5 (including the checker
 and one independent check), and answer with the number and how it was checked.
+Before answering, list every condition the user stated (geometry, assumptions
+such as constant density, boundary conditions, units, definitions of the
+reported quantities) and point to the line of code that implements each. A
+second numerical route shares your reading of the problem, so it cannot catch a
+misreading; this list can.
 Offer an independent verification if the result feeds a decision. Use model mode
 when the user describes a decision the model must support, asks for a model to
 keep and extend, or the problem needs scoping.

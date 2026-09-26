@@ -14,6 +14,6 @@ with diffusion and reaction inside:
 film at the surface: dc_p/dr = Bi (c_b - c_p) at r = 1 with Bi = 10.
 Report the bulk concentration at the bed outlet, accurate to 0.3 %. Key: c_out.
 
-Use pymrm. Save your code in the working directory and write the requested
+Use pymrm. Save your model code as model.py in the working directory and write the requested
 numbers to answers.json in the working directory. I will not be available for
 questions; state any assumption you make.
