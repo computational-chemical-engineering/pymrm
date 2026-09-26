@@ -33,7 +33,10 @@ to this skill's directory.
   stakes (design sign-off, safety limits, publication) or when the user asks for
   a specification, verification or report. Follow the "Full mode" section. Do
   not start it unasked: when the stakes look high, offer it in one sentence and
-  continue in direct mode unless the user accepts.
+  continue in direct mode unless the user accepts. In a non-interactive run
+  nobody can accept, so stay in direct mode unless the request itself asks for
+  documentation or verification; a stated decision or an instruction to treat
+  your plan as agreed is not such a request.
 
 Infer the mode from the request; ask only if it is genuinely unclear.
 
@@ -52,7 +55,10 @@ Infer the mode from the request; ask only if it is genuinely unclear.
    Weisz-Prater, Mears, Peclet, Hatta, Biot) with the user's numbers, and
    include what matters. A phenomenon the user's intrinsic data leave out (for
    example diffusion inside large pellets) is exactly what this step catches.
-   If the reactor type is open, see `references/reactor-selection.md`.
+   If the reactor type is open, see `references/reactor-selection.md`. If this
+   step already answers the question (a criterion passed or failed by a wide
+   margin, a target shown to be infeasible), answer from it with the numbers,
+   check the headline a second way, and build no more than the answer needs.
 3. **Build.** Start from the nearest exemplar (`conventions`, `model-patterns`,
    `references/structures.md`), follow `assembly-styles.md` and the profile
    (`profiles.md`), and the style guide's format rule. Scale the unknowns. Print
