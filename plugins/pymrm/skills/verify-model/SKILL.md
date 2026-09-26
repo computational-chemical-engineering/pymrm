@@ -48,6 +48,16 @@ is missing, your verdict is `blocked`: say what is missing and stop.
    printed output and `self_check.md`: what statistic, over what range, with what
    held fixed? Does the evidence support the sentence, or only a weaker one?
 
+## Budget
+
+Verification must finish. Time one solve of the model first. Then spend the
+time in this order: reproduce the headline numbers; run the cheapest check that
+could overturn each headline (a limit, an independent route on a coarse grid, a
+break row); only then re-run long studies, and only those whose result the
+cheaper evidence cannot decide. Do not re-run a long study just because the
+builder ran it; its log plus a spot check at one point is often enough. List in
+the report what you did not re-run and why.
+
 ## Verdict per assertion
 
 One line per numbered assertion in `spec.md`, plus one per extra finding:

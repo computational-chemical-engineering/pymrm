@@ -14,6 +14,8 @@ Answers from the plant engineer:
   energy 80 kJ mol-1. Nothing better available.
 - Overall wall heat transfer coefficient: 150 W m-2 K-1 (our estimate).
 - Effective radial conductivity of the bed: we do not know.
-- Steady state is enough. Accuracy: we want to know the safe coolant
-  temperature to within about 5 K.
+- Steady state is enough. We need a first answer today: the safe coolant
+  temperature to within about 10 K. If a more detailed model (for example
+  radial gradients) could change it by more than that, tell us and by roughly
+  how much, rather than building it now.
 EOF
