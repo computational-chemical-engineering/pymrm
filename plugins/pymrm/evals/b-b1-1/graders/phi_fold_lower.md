@@ -1,8 +1,6 @@
 ---
-type: llm
+type: regex
+target: { source: file, path: answers.json }
+pattern: '"phi_fold_lower"\s*:\s*(?:0\.(?:29(?:4(?:3|4|5|6|7|8|9)|5(?:0|1|2|3|4|5|6|7|8|9)|6(?:0|1|2|3|4|5|6|7|8|9)|7(?:0|1|2|3|4|5|6|7|8|9)|8(?:0|1|2|3|4|5|6|7|8|9)|9(?:0|1|2|3|4|5|6|7|8|9))|300(?:0|1|2))\d*|0\.(?:29(?:5|6|7|8|9)|3(?:0(?:0)?)?)(?![0-9]))(?![0-9])'
 weight: 3
-focus: { source: file, path: answers.json }
 ---
-
-PASS if answers.json contains the key "phi_fold_lower" with a numeric value between 0.29434793 and 0.30029435 (inclusive).
-FAIL otherwise, including when the key is missing or the value is not a number.

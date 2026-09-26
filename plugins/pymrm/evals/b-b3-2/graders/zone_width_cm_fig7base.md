@@ -1,8 +1,6 @@
 ---
-type: llm
+type: regex
+target: { source: file, path: answers.json }
+pattern: '"zone_width_cm_fig7base"\s*:\s*(?:0\.29(?:2(?:1|2|3|4|5|6|7|8|9)|3(?:0|1|2|3|4|5|6|7|8|9)|4(?:0|1|2|3|4|5|6|7|8|9)|5(?:0|1|2|3|4|5|6|7|8|9)|6(?:0|1|2|3|4|5|6|7|8|9)|7(?:0|1|2|3|4|5|6|7|8|9)|80)\d*|0\.29(?:3|4|5|6|7|8)(?![0-9]))(?![0-9])'
 weight: 3
-focus: { source: file, path: answers.json }
 ---
-
-PASS if answers.json contains the key "zone_width_cm_fig7base" with a numeric value between 0.29212088 and 0.29802231 (inclusive).
-FAIL otherwise, including when the key is missing or the value is not a number.
