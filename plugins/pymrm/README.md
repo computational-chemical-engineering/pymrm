@@ -31,10 +31,25 @@ environment the agent uses: `pip install pymrm`.
 /plugin install pymrm@pymrm
 ```
 
-Then describe your process, for example "I want to know whether internal
-diffusion limits my 3 mm pellets", or invoke `/pymrm:build-model` directly. The
-plugin also provides the `pymrm:model-verifier` subagent, which runs the
-`verify-model` skill in its own context.
+Then describe what you want; `build-model` picks the mode:
+
+- **direct** (default): builds and checks the model and answers, with how it was
+  checked and what rests on assumptions. Example: "Model diffusion with a
+  second-order reaction in a 3 mm spherical pellet and give the effectiveness
+  factor."
+- **estimate**: "Is internal diffusion limiting in my 3 mm pellets?" Answered
+  with the deciding groups, and no model if a criterion settles it.
+- **consult**: "Should I solve my membrane reactor monolithically?" A firm
+  recommendation with the real alternatives.
+- **full**, only when you ask for documentation or verification: "I need a
+  documented, independently verified model for a design review." You approve a
+  specification first; a separate `pymrm:model-verifier` subagent checks the
+  model against it; you get a model card.
+
+Ask for "a flat notebook for my course" to get teaching material, or "fast, for a
+parameter sweep" for the efficiency profile. The skills can also be invoked
+directly: `/pymrm:build-model`, `/pymrm:conventions`, `/pymrm:model-patterns`,
+`/pymrm:verify-model`.
 
 To try a local checkout: `claude --plugin-dir plugins/pymrm`.
 
@@ -48,7 +63,7 @@ mkdir -p ~/.agents/skills
 cp -r plugins/pymrm/skills/* ~/.agents/skills/
 ```
 
-`build-model` asks for the verifier to run in a separate context. In tools with
+In full mode `build-model` asks for the verifier to run in a separate context. In tools with
 subagents, point a subagent at the `verify-model` skill; otherwise start a fresh
 session and ask it to verify with that skill. Dedicated Codex and Gemini agent
 definitions are not included yet because they have not been tested.

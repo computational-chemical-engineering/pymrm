@@ -364,3 +364,13 @@ JupyterLab, VS Code, Colab and the GitHub preview.
   real. Candidates: make the full model-mode workflow opt-in, keep
   `conventions` and `model-patterns` light, and look for value in longer,
   interactive work that single-shot evals do not capture.
+
+**Slim-down (2026-09-27).** `build-model` defaults to direct mode; the full
+workflow runs on request. First test: all cases correct, but the agent started
+the full workflow unasked in 4 of 14 runs, triggered by eval prompts that said
+"treat your specification as approved". After making direct mode explicit for
+unattended runs: Opus c3 $2.56 to $0.53, c4 $2.76 to $0.70, Sonnet h3 $2.90 to
+$0.66, all correct and in direct mode; one Sonnet run still read the old prompt
+wording as a request for documentation (prompts now reworded). In that full-mode
+run the verifier caught a real unit-conversion bug. Open: Sonnet h2 misread the
+ternary problem in 1 of 3 runs (two routes agreed on the misreading), like D2.2.
