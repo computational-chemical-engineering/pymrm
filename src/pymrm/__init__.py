@@ -50,7 +50,7 @@ from .coupling import (
     translate_indices_to_larger_array,
     construct_interface_matrices,
 )
-from .helpers import construct_coefficient_matrix
+from .helpers import construct_coefficient_matrix, describe_bc
 from .ibm import (
     IBM,
     construct_ibm,
@@ -129,6 +129,7 @@ __all__ = [
     "NumJac",
     "stencil_block_diagonals",
     "construct_coefficient_matrix",
+    "describe_bc",
     "IBM",
     "construct_ibm",
     "apply_ibm",
