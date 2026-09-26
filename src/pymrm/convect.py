@@ -5,7 +5,7 @@ import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array
-from .helpers import unwrap_bc_coeff, _sparse_array
+from .helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 
 
 def construct_convflux_upwind(
@@ -163,6 +163,11 @@ def construct_convflux_bc(
         otherwise.
     """
 
+    # A pure-outflow face takes the value of the adjacent cell. It is built as a
+    # Dirichlet face with d = 0, and the dependence of the face values on that
+    # d (which equals the adjacent cell value) is added to the cell matrix.
+    bc, outflow = substitute_outflow_bc(bc, {"a": 0.0, "b": 1.0, "d": 0.0})
+
     # Trick: Reshape to triplet shape_t
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -228,6 +233,12 @@ def construct_convflux_bc(
             ((a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]) * fctr,
             shape_bc,
         ).reshape(shape_bc_d)
+        if outflow[0]:  # d0 = c0: add d(face)/d(d0)
+            values[:, 0, :] += np.broadcast_to((a[1] * alpha_0_right + b[1]) * fctr, shape).reshape(shape_bc_d)
+            values[:, 1, :] += np.broadcast_to(-alpha_2_right * a[1] * fctr, shape).reshape(shape_bc_d)
+        if outflow[1]:  # d1 = c0: add d(face)/d(d1)
+            values[:, 0, :] += np.broadcast_to(-alpha_2_left * a[0] * fctr, shape).reshape(shape_bc_d)
+            values[:, 1, :] += np.broadcast_to((a[0] * alpha_0_left + b[0]) * fctr, shape).reshape(shape_bc_d)
 
         if isinstance(v, (float, int)):
             values *= v
@@ -307,6 +318,10 @@ def construct_convflux_bc(
         values[:, -1, :] = a_fctr * alpha_1
         values[:, -2, :] = -a_fctr * alpha_2
         values_bc[:, -1, :] = d_fctr
+        if outflow[0]:
+            values[:, 0, :], values[:, 1, :], values_bc[:, 0, :] = 1.0, 0.0, 0.0
+        if outflow[1]:
+            values[:, -1, :], values[:, -2, :], values_bc[:, -1, :] = 1.0, 0.0, 0.0
         if isinstance(v, (float, int)):
             values *= v
             values_bc *= v

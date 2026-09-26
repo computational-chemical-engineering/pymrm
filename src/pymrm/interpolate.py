@@ -3,7 +3,7 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from .helpers import unwrap_bc_coeff
+from .helpers import unwrap_bc_coeff, substitute_outflow_bc, is_outflow_bc
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
@@ -109,6 +109,9 @@ def interp_cntr_to_stagg_tvd(
 ):
     """Perform TVD interpolation from cell centers to faces.
 
+    A boundary given as ``{"outflow": True}`` gets the adjacent cell value at
+    its face and no TVD correction there.
+
     Parameters
     ----------
     cell_centered_values : numpy.ndarray
@@ -134,6 +137,21 @@ def interp_cntr_to_stagg_tvd(
     tuple[numpy.ndarray, numpy.ndarray]
         Interpolated staggered values and TVD correction term.
     """
+    if bc is not None:
+        bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
+        if any(outflow):
+            face, delta = interp_cntr_to_stagg_tvd(
+                cell_centered_values, x_f, x_c, bc, v, tvd_limiter, axis
+            )
+            ax = axis % cell_centered_values.ndim
+            face, delta = np.moveaxis(face, ax, 0), np.moveaxis(delta, ax, 0)
+            cells = np.moveaxis(np.asarray(cell_centered_values), ax, 0)
+            for flag, (i_face, i_cell) in zip(outflow, ((0, 0), (-1, -1))):
+                if flag:
+                    face[i_face] = cells[i_cell]
+                    delta[i_face] = 0.0
+            return np.moveaxis(face, 0, ax), np.moveaxis(delta, 0, ax)
+
     shape = list(cell_centered_values.shape)
     if axis < 0:
         axis += len(shape)
@@ -389,6 +407,24 @@ def compute_boundary_values(
         ``(value_left, grad_left, value_right, grad_right)``.
         Otherwise: ``(value, grad)`` for the requested boundary.
     """
+    if bc is not None:
+        bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
+        if any(outflow):
+            result = list(compute_boundary_values(
+                cell_centered_values, x_f, x_c, bc, axis, bound_id))
+            ax = axis % cell_centered_values.ndim
+            sides = [0, 1] if bound_id is None else [bound_id]
+            if isinstance(bc, dict) or len(outflow) == 1:
+                flags = {sides[0]: outflow[0]}
+            else:
+                flags = {side: outflow[side] for side in sides}
+            for k, side in enumerate(sides):
+                if flags.get(side):
+                    adjacent = np.take(cell_centered_values, [0 if side == 0 else -1], axis=ax)
+                    result[2 * k] = adjacent.reshape(np.shape(result[2 * k]))
+                    result[2 * k + 1] = np.zeros_like(np.asarray(result[2 * k + 1], dtype=float))
+            return tuple(result)
+
     shape = list(cell_centered_values.shape)
     if axis < 0:
         axis += len(shape)
@@ -604,6 +640,11 @@ def construct_boundary_value_matrices(
         ``(matrix, mat_bc)`` where ``matrix`` maps cell-centered values to
         boundary values and ``mat_bc`` maps inhomogeneous boundary terms.
     """
+    if is_outflow_bc(bc):
+        raise NotImplementedError(
+            "construct_boundary_value_matrices does not support an outflow boundary; "
+            "the boundary value there is the adjacent cell value"
+        )
 
     if bound_id not in (0, 1):
         raise ValueError("bound_id must be 0 or 1")

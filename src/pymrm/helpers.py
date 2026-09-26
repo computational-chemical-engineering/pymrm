@@ -264,3 +264,32 @@ def describe_bc(bc, x_f=None, axis_name="x", var="c"):
             f"{_format_coefficient(d)}  [{_classify_bc(a, b)}]"
         )
     return "\n".join(lines)
+
+
+def is_outflow_bc(bc_side):
+    """Return True if a boundary dictionary is the pure-outflow marker.
+
+    ``{"outflow": True}`` marks a boundary through which material leaves with
+    the value of the adjacent cell (a stirred volume's exit, a tanks-in-series
+    outlet). It cannot be expressed with ``a``, ``b`` and ``d``, which describe
+    a reconstructed face value, so it is a separate marker.
+    """
+    if not isinstance(bc_side, dict) or not bc_side.get("outflow", False):
+        return False
+    if any(key in bc_side for key in ("a", "b", "d")):
+        raise ValueError("an outflow boundary takes no 'a', 'b' or 'd' coefficients")
+    return True
+
+
+def substitute_outflow_bc(bc, replacement):
+    """Replace outflow markers in ``bc`` by ``replacement``.
+
+    Returns the new bc (tuple, or single dict) and the outflow flags.
+    """
+    if bc is None:
+        return bc, (False, False)
+    if isinstance(bc, dict):
+        flag = is_outflow_bc(bc)
+        return (dict(replacement) if flag else bc), (flag,)
+    flags = tuple(is_outflow_bc(side) for side in bc)
+    return tuple(dict(replacement) if flag else side for side, flag in zip(bc, flags)), flags

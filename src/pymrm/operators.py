@@ -3,7 +3,7 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from pymrm.helpers import unwrap_bc_coeff, _sparse_array
+from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 from pymrm.grid import generate_grid
 
 
@@ -43,6 +43,8 @@ def construct_grad(
         shape = tuple(shape)
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
     grad_matrix = construct_grad_int(shape, x_f, x_c, axis, format=format)
+    # a pure-outflow boundary carries no diffusive flux: zero normal gradient
+    bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
     if bc == (None, None):
         shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
