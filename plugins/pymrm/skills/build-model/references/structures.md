@@ -17,10 +17,10 @@ use them for physics and checks, and prefer the conventions where they differ.
 | S4 | 1-D transient PDE | dispersed plug flow, breakthrough, start-up | S3 plus accumulation, time loop, constant Jacobian factorised once | `dispersion_reactor.py`; gallery B2.2 |
 | S5 | convection-dominated, sharp fronts | chromatography, adsorption fronts, coking fronts | `construct_convflux_upwind`, `interp_cntr_to_stagg_tvd` deferred correction | `api-map.md` (TVD); gallery A2.8, B2.2 |
 | S6 | 2-D PDE | cooled tube with radial gradients, Graetz problem, monolith channel | per-axis operators on `(n_z, n_r, n_c)`, `nu=1` radially | gallery A2.3, I1.3, D1.1 (rung 5) |
-| S7 | several phases or domains coupled | bubbling bed, membrane reactor, gas-liquid column | layout `(n_z, n_phase, n_c)`, `update_array_indices`, `NumJac(axes_blocks=[-2, -1])` | gallery E2.1, H1.4 |
-| S8 | nested scales | reactor with resolved particles | Schur complement of the particle problem, `shapes_d` boundary unknowns | gallery D1.1 (rung 4), J3.5 |
+| S7 | several phases or domains coupled | bubbling bed, membrane reactor, gas-liquid column | layout `(n_z, n_phase, n_c)`, `update_array_indices`, `NumJac(axes_blocks=[-2, -1])` | `model-patterns`: `membrane_reactor.py`; gallery E2.1, H1.4 |
+| S8 | nested scales | reactor with resolved particles | Schur complement of the particle problem, `shapes_d` boundary unknowns | `model-patterns`: `nested_particle_bed.py`; gallery D1.1 (rung 4), J3.5 |
 | S9 | implicit multicomponent flux | Maxwell-Stefan, dusty gas | per-face linear solve, `NumJac(axes_blocks=[-1])` | gallery A4.2, A4.3 |
-| S10 | differential-algebraic, constraints | electroneutrality, pressure-velocity, equilibrium | monolithic Jacobian with algebraic rows | gallery J3.1, F3.5 |
+| S10 | differential-algebraic, constraints | electroneutrality, pressure-velocity, equilibrium | monolithic Jacobian with algebraic rows | `model-patterns`: `darcy_gas_reactor.py` (pressure-velocity); gallery J3.1, F3.5 |
 | S11 | population balance | crystallisation, particle size | size as an extra axis, growth as convection (S5) | none bundled |
 | S12 | moving boundary | shrinking core, dissolving particle | front tracking or fixed grid with an indicator | gallery B3.1 |
 | S13 | non-standard geometry | tapered channel, arbitrary area profile | `construct_div(nu=callable)` | gallery B1.2 |

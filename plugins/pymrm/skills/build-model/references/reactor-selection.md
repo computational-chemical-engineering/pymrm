@@ -42,6 +42,5 @@ number, deactivation time against residence time).
 | monolith, catalytic converter | one channel, 1-D with film transfer to the washcoat | 2-D channel; washcoat diffusion | S6, S7, S8 |
 | adsorber, chromatographic column | axial dispersion with linear driving force AND the actual isotherm (its curvature decides whether fronts sharpen or spread) | pore diffusion, sharp-front numerics | S4, S5, S8 |
 
-Couplings between domains (membrane, washcoat, particle, two phases) are the
-subject of the `model-patterns` skill once it exists; until then see
-`assembly-styles.md` (block assembly) in the `conventions` skill.
+Couplings between domains (membrane, washcoat, particle, two phases), pressure
+and flow, and nested scales are the subject of the `model-patterns` skill.

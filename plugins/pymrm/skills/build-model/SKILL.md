@@ -113,12 +113,14 @@ Show the user the spec and wait for approval. Revise until approved.
 
 ## Phase 4: implement
 
-Pick the nearest exemplar from the `conventions` skill and the structure map,
+Pick the nearest exemplar from the `conventions` skill, the `model-patterns`
+skill (coupled domains, pressure-velocity, nested scales) and the structure map,
 copy its skeleton, substitute the physics. Choose the Jacobian assembly with
 `assembly-styles.md` and shape the code to the profile in `brief.md`
-(`profiles.md`); state both choices in `spec.md`. Follow the style guide: class-based
-module plus a driver notebook for PDE or multi-field models, compact script for
-pointwise or ODE models. Scale the unknowns. Print every number you will
+(`profiles.md`); state both choices in `spec.md`. Choose the output format by the
+style guide's rule (section 2): a flat, executed notebook for simple or
+didactic models; `.py` module(s) plus a driver and report notebook for a full
+reactor model; in between, one module plus a notebook. Scale the unknowns. Print every number you will
 report; never type a number into prose.
 
 Copying an exemplar does not copy its checks. Build the checks from the spec.

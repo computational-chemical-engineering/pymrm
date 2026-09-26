@@ -26,14 +26,28 @@ separation between physics, discretisation, solver, and plotting.
 
 ## 2. Recommended Output Formats
 
-Two formats are allowed.
+Choose the format by purpose and size, not by whether the model is a PDE:
 
-### 2.1 Compact script format
+| Case | Format |
+|---|---|
+| Didactic or simple: one domain, one or two fields, one solve mode, a teaching or readability profile | one flat, executed notebook, no class (2.1): operators built in visible steps, markdown between them, checks at the end |
+| A full reactor model: several fields or domains, several solve modes, meant to be extended or reused | `.py` module(s) with the model (2.2), plus a notebook that drives the model and reports results |
+| In between | one `.py` module plus a notebook |
+
+State the choice in the specification; an explicit wish of the user always
+wins. Notebooks are delivered executed, with outputs. If `nbformat`/`nbclient`
+(or jupyter) are not available to execute one, write it anyway and say that it
+was not executed; do not silently switch to a script.
+
+The two formats:
+
+### 2.1 Compact script or flat notebook format
 
 Use this for:
 - pointwise algebra and ODE models (batch, CSTR, ideal PFR marching)
 - single-purpose demonstrations
 - short derivations where the numerical method itself is the teaching target
+- simple didactic PDE models (see `exemplars/pellet_teaching.ipynb`)
 
 Required section order in a `.py` file or notebook:
 
@@ -48,7 +62,7 @@ Required section order in a `.py` file or notebook:
 ### 2.2 Class-based format
 
 Use this by default for:
-- all PDE models
+- PDE models that will be extended or reused
 - multicomponent models
 - multiphase models
 - reusable demos

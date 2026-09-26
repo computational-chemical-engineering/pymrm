@@ -56,7 +56,7 @@ offset=(row_offset, col_offset))`. Off-diagonal (coupling) blocks are
 rectangular. This is how models with different fields, grids or domains are
 built: species, pressure and temperature with their own operators; retentate,
 membrane and permeate; a particle coupled to a reactor. It is the natural style
-for monolithic models.
+for monolithic models; the `model-patterns` skill has tested exemplars.
 
 Keep it fast:
 - place every CONSTANT block once, at setup;

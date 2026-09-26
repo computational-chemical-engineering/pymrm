@@ -10,11 +10,12 @@ from pathlib import Path
 import pytest
 
 EXEMPLAR_DIR = Path(__file__).resolve().parents[1] / "plugins" / "pymrm" / "skills" / "conventions" / "exemplars"
-EXEMPLARS = sorted(EXEMPLAR_DIR.glob("*.py"))
+PATTERN_DIR = EXEMPLAR_DIR.parents[1] / "model-patterns" / "exemplars"
+EXEMPLARS = sorted(EXEMPLAR_DIR.glob("*.py")) + sorted(PATTERN_DIR.glob("*.py"))
 
 
 def test_exemplars_found():
-    assert len(EXEMPLARS) >= 3
+    assert len(EXEMPLARS) >= 7
 
 
 @pytest.mark.parametrize("path", EXEMPLARS, ids=lambda p: p.stem)
@@ -63,3 +64,12 @@ def test_plugin_copy_of_checks_is_identical():
     library = Path(__file__).resolve().parents[1] / "src" / "pymrm" / "checks.py"
     copy = EXEMPLAR_DIR.parent / "scripts" / "pymrm_checks.py"
     assert library.read_bytes() == copy.read_bytes(), "run: cp src/pymrm/checks.py " + str(copy)
+
+
+@pytest.mark.parametrize("notebook", sorted(EXEMPLAR_DIR.glob("*.ipynb")) + sorted(PATTERN_DIR.glob("*.ipynb")),
+                         ids=lambda p: p.stem)
+def test_exemplar_notebooks_execute(notebook):
+    nbformat = pytest.importorskip("nbformat")
+    nbclient = pytest.importorskip("nbclient")
+    nb = nbformat.read(notebook, as_version=4)
+    nbclient.NotebookClient(nb, timeout=300, kernel_name="python3").execute()
