@@ -36,6 +36,24 @@ Paths are relative to this skill's directory.
 7. Every check must be able to fail: break the model on purpose and confirm the
    checked number moves.
 
+## Before you finish: run the checker
+
+Run your model once through the checker and fix every finding before you report
+any number:
+
+```bash
+python <this skill's directory>/scripts/check_model.py model.py
+```
+
+It runs the script with pymrm instrumented and reports NumJac on a 1-D shape
+(P3, P4), newton stopping on a tolerance that is not small against the unknowns
+or not converging (P7), and deprecated calls. Then check by reading your code:
+every bc dictionary has its physical equation beside it and the sign of `a`
+matches the outward normal at that end (P1); face diffusivities at jumps are
+harmonic (P2); outlet and wall values come from `compute_boundary_values` (P8);
+a stirred-volume outlet uses the sink construction (P6). Knowing the pitfalls is
+not enough; check the code against them.
+
 ## API truth
 
 The installed pymrm is the authority on signatures and behaviour. Locate it with

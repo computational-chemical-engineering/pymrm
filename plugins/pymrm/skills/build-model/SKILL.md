@@ -52,9 +52,9 @@ you were told so, and say in the model card that it was not reviewed.
 
 ## Working files
 
-Create a folder for the job (default `pymrm_model_<short-name>/` in the current
-directory, unless the user names another place) and keep every artefact in it,
-under these names:
+Keep every artefact under these names in one place: the directory the user
+names; otherwise the current directory if it holds nothing unrelated; otherwise a
+new `pymrm_model_<short-name>/` folder. Say where they are.
 
 | File | Phase | Content |
 |---|---|---|
@@ -131,7 +131,9 @@ Run the validation plan and write `self_check.md`:
   eigenvalues of the transient Jacobian), and otherwise write "single branch
   searched" in the model card;
 - break the model on purpose once per check (flip a sign, change the geometry
-  index, perturb a bc) and confirm the checked number moves.
+  index, perturb a bc) and confirm the checked number moves;
+- run the `conventions` skill's `scripts/check_model.py` on the model and fix
+  every finding; record its report in `self_check.md`.
 
 ## Phase 6: verify (separate context)
 
@@ -151,6 +153,17 @@ If any assertion is `not met`, fix it ONCE and run the verifier again, scoped at
 the fix AND at anything the fix added. Keep the first report as
 `verification-1.md` and the second as `verification.md`. If it is still not met,
 stop and report it as not met. Do not iterate further unless the user asks.
+
+## Model mode is complete only when
+
+all of `brief.md`, `scoping.md`, `spec.md`, the model code, `self_check.md`,
+`verification.md` and `model_card.md` exist. Check this before your final
+message. The verifier is not optional, also not in an unattended run: it is the
+step that has changed conclusions most often. If you genuinely cannot start a
+separate context, run the `verify-model` skill yourself as a last step, reading
+only `spec.md` and the code, and state in the model card that the verification
+was not independent. A result reported without `verification.md` is a draft, and
+must be called one.
 
 ## Phase 7: report (GATE: the user reads the model card)
 

@@ -9,7 +9,7 @@ allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]
 A liquid-phase tubular reactor, L = 0.5 m, superficial velocity 0.01 m s-1, axial
 dispersion coefficient 1.0e-3 m2 s-1, first-order reaction k = 0.04 s-1, feed
 concentration 2.0 mol m-3, Danckwerts boundary conditions. Use a finite-volume
-model with 50 cells. Report the steady outlet conversion (4 decimals) and show
+model with 50 cells. Report the steady outlet conversion of that 50-cell model (4 decimals) and show
 that the overall steady mass balance (in, out, consumed) closes; report its
 relative residual.
 
