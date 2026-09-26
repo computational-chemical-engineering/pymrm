@@ -19,6 +19,7 @@ a model that will be kept, shared or extended.
 | `references/profiles.md` | the user or project asks for efficiency, flexibility, readability or teaching value |
 | `references/numerics.md` | checking a Jacobian, a refinement study, a threshold or a residual; SciPy tolerances; script imports |
 | `scripts/pymrm_checks.py` | copy of `pymrm.checks` for pymrm 2.3.1 and older |
+| `scripts/check_notebook_math.py` | before delivering a notebook: equations within the portable subset, parsed with KaTeX |
 | `exemplars/pellet_teaching.ipynb` | a flat didactic notebook: no class, named operators built step by step, checks at the end |
 | `exemplars/steady_pellet.py` | a steady 1-D nonlinear boundary-value problem (sphere, `NumJac`, `newton`) |
 | `exemplars/dispersion_reactor.py` | a transient 1-D convection-dispersion-reaction model (Danckwerts bc, backward Euler, constant Jacobian factorised once) |

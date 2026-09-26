@@ -1,6 +1,6 @@
 ---
-description: "vague: cooled multitubular bed, runaway question, model mode"
-tags: [vague]
+description: "vague, long: cooled multitubular bed runaway; exceeds the 60-min harness limit on both models, run on demand"
+tags: [vague-long]
 max_turns: 150
 timeout_seconds: 3600
 allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]

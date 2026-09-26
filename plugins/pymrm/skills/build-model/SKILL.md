@@ -164,6 +164,9 @@ Run the validation plan and write `self_check.md`:
   index, perturb a bc) and confirm the checked number moves;
 - run the `conventions` skill's `scripts/check_model.py` on the model and fix
   every finding; record its report in `self_check.md`;
+- for every notebook you deliver, run `scripts/check_notebook_math.py` and fix
+  every finding, so the equations render in JupyterLab, VS Code, Colab and the
+  GitHub preview;
 - use the check tools (`numerics.md`): `check_jacobian` once at a state away
   from the solution, `observed_orders` for every refinement study, `find_roots`
   for every threshold, `residual_check` on every reported solution.

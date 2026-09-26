@@ -73,3 +73,31 @@ def test_exemplar_notebooks_execute(notebook):
     nbclient = pytest.importorskip("nbclient")
     nb = nbformat.read(notebook, as_version=4)
     nbclient.NotebookClient(nb, timeout=300, kernel_name="python3").execute()
+
+
+MATH_CHECKER = EXEMPLAR_DIR.parent / "scripts" / "check_notebook_math.py"
+
+
+def _math_checker():
+    spec = importlib.util.spec_from_file_location("check_notebook_math", MATH_CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_math_checker_flags_only_the_risky_part():
+    import json
+    checker = _math_checker()
+    notebook = Path(__file__).resolve().parents[1] / "docs" / "math-render-test.ipynb"
+    findings, _ = checker.check(notebook)
+    cells = json.loads(notebook.read_text())["cells"]
+    part_b = next(i for i, c in enumerate(cells) if "Part B" in "".join(c["source"]))
+    assert findings and all(cell > part_b for cell, *_ in findings)
+    flagged = {why.split(":")[0] for *_, why in findings}
+    assert any("\\label" in w for w in flagged) and any("environment outside" in w for w in flagged)
+
+
+@pytest.mark.parametrize("notebook", sorted(EXEMPLAR_DIR.glob("*.ipynb")), ids=lambda p: p.stem)
+def test_exemplar_notebook_maths_is_portable(notebook):
+    findings, _ = _math_checker().check(notebook)
+    assert not findings, findings

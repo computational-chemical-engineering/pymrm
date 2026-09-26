@@ -86,17 +86,30 @@ For scripts, use comment banners in the same order.
 
 ### 3.1 Notebook formatting and figures
 
-Notebooks should render clearly in three places:
+Notebooks should render clearly in four places:
 
-1. A running Jupyter notebook or JupyterLab session.
-2. The GitHub notebook preview.
-3. The VS Code notebook editor.
+1. A running Jupyter notebook or JupyterLab session (MathJax).
+2. The GitHub notebook preview (Markdown is processed before the maths).
+3. The VS Code notebook editor (KaTeX, the strictest).
+4. Google Colab.
 
 Use portable notebook Markdown by default:
 
 - Use ordinary Markdown headings, lists, links, tables, fenced code blocks, and
   LaTeX equations.
-- Use display equations with `$$ ... $$` and inline equations with `$...$`.
+- Use display equations with `$$ ... $$` and inline equations with `$...$`,
+  within this portable subset:
+  - `$$` on its own lines, with a blank line before and after the block;
+  - inline `$...$` without a space just inside the dollars and without `\\`;
+  - multi-line equations with `aligned`, `cases` or `array` INSIDE `$$`, never a
+    bare `\begin{align}` or `\begin{equation}`;
+  - no `\label`, `\ref`, `\eqref`; at most one `\tag` per display block;
+  - no macros (`\newcommand`, `\def`), no `\bm` (use `\boldsymbol`);
+  - multi-letter subscripts in `\mathrm{}`; `\cdot` rather than `*`;
+  - no maths in headings; no `|` inside maths in a table (use `\vert`).
+- Check a notebook with the conventions skill's
+  `scripts/check_notebook_math.py notebook.ipynb`, which lints these rules and
+  parses every expression with KaTeX when Node.js and KaTeX are installed.
 - Avoid MyST-only directives such as `{figure}`, `{grid}`,
   admonitions, and colon-fenced layouts when the notebook must also be readable
   outside the Jupyter Book build.
