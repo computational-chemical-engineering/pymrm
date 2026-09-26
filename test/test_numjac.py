@@ -663,3 +663,14 @@ def test_stencil_axes_are_normalised_and_range_checked():
         stencil_block_diagonals(ndims=2, axes_diagonals=[0])
     with pytest.raises(ValueError):
         stencil_block_diagonals(ndims=1, axes_diagonals=[1])
+
+
+def test_dense_1d_shape_warns_and_can_be_confirmed():
+    import warnings as _w
+    with pytest.warns(UserWarning, match="dense 200 x 200"):
+        NumJac((200,))
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        NumJac((200,), axes_blocks=[-1])   # dense coupling confirmed: silent
+        NumJac((200, 1))                   # field layout: silent
+        NumJac((3,))                       # small pointwise system: silent

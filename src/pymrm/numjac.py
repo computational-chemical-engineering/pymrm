@@ -1,5 +1,7 @@
 """Numerical Jacobian construction with sparse stencil support."""
 
+import warnings
+
 import numpy as np
 from scipy.sparse import csc_array, csr_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
@@ -427,6 +429,9 @@ def colgroup(*args, shape=None, try_reorder=True):
     return g, num_groups
 
 
+DENSE_1D_WARNING_SIZE = 100
+
+
 def stencil_block_diagonals(
     ndims=1, axes_diagonals=(), axes_blocks=None, periodic_axes=()
 ):
@@ -636,6 +641,18 @@ class NumJac:
 
         self.eps_jac = eps_jac
         self.format = format
+
+        if shape is not None and stencil is stencil_block_diagonals and not kwargs:
+            shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
+            if len(shape_t) == 1 and shape_t[0] >= DENSE_1D_WARNING_SIZE:
+                warnings.warn(
+                    f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
+                    f"({shape_t[0]} function evaluations per call). For a field on a grid "
+                    f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
+                    "dense coupling is intended.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Initialize stencil
         self.init_stencil(stencil, **kwargs)
