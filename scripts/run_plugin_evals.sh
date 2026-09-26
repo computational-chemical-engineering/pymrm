@@ -3,12 +3,16 @@
 # Execute from the repository root. Extra arguments go to `claude plugin eval`, e.g.
 #   scripts/run_plugin_evals.sh --case 'a*' --runs 1 --model claude-sonnet-5
 #
-# Eval runs execute Bash inside Claude Code's OS sandbox, which cannot read your home
-# directory. pymrm is therefore installed (non-editable) into a venv outside $HOME
-# and put first on PATH. Linux needs bubblewrap and socat for the sandbox.
+# Eval runs execute Bash inside Claude Code's OS sandbox. It hides $HOME, /tmp and /var/tmp,
+# and a venv inside the plugin folder makes it too large to scan, so pymrm is installed
+# (non-editable) into a venv under /opt and put first on PATH. Create it once with:
+#   sudo mkdir -p /opt/pymrm-eval-venv && sudo chown "$USER" /opt/pymrm-eval-venv
+# Override the location with PYMRM_EVAL_VENV. Linux needs bubblewrap and socat.
+# The z-env-probe case checks that pymrm is importable inside the sandbox; run it first:
+#   scripts/run_plugin_evals.sh --tag env --runs 1 --ablation none
 set -euo pipefail
 
-EVAL_VENV="${PYMRM_EVAL_VENV:-/tmp/pymrm-eval-venv}"
+EVAL_VENV="${PYMRM_EVAL_VENV:-/opt/pymrm-eval-venv}"
 PYTHON="${PYTHON:-python3}"
 
 for tool in bwrap socat; do
