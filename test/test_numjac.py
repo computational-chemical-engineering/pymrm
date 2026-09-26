@@ -604,3 +604,80 @@ def test_numjac_csc_returns_csc_type():
     nj = NumJac(shape=shape, format="csc")
     _, jac = nj(lambda c: c ** 2, np.arange(1.0, 6.0))
     assert isinstance(jac, csc_cls)
+
+
+# ---------------------------------------------------------------------------
+# stencil_block_diagonals: axis normalisation and 1-D banded stencils
+# ---------------------------------------------------------------------------
+
+def _dense_fd_jacobian(f, x, eps=1e-7):
+    x = np.asarray(x, dtype=float)
+    f0 = f(x).ravel()
+    jac = np.zeros((f0.size, x.size))
+    for j in range(x.size):
+        xp = x.copy().ravel()
+        xp[j] += eps
+        jac[:, j] = (f(xp.reshape(x.shape)).ravel() - f0) / eps
+    return jac
+
+
+def _neighbour_source(c):
+    # nonlinear and reads both neighbours along axis 0
+    out = c**2
+    out[1:] += 0.5 * c[:-1] ** 3
+    out[:-1] -= 0.25 * np.sin(c[1:])
+    return out
+
+
+def test_axes_diagonals_on_1d_shape_is_tridiagonal_and_exact():
+    n = 12
+    x = np.linspace(0.3, 1.2, n)
+    _, jac = NumJac((n,), axes_diagonals=[0])(_neighbour_source, x)
+    jac = jac.toarray()
+    assert np.allclose(jac, _dense_fd_jacobian(_neighbour_source, x), atol=1e-5)
+    assert np.count_nonzero(np.triu(jac, 2)) == 0 and np.count_nonzero(np.tril(jac, -2)) == 0
+
+
+def test_axes_diagonals_with_field_axis_matches_dense_fd():
+    n, nc = 10, 2
+    x = np.linspace(0.3, 1.2, n * nc).reshape(n, nc)
+
+    def f(c):
+        out = _neighbour_source(c)
+        out[:, 0] += c[:, 1] * c[:, 0]
+        return out
+
+    _, jac = NumJac((n, nc), axes_diagonals=[0])(f, x)
+    assert np.allclose(jac.toarray(), _dense_fd_jacobian(f, x), atol=1e-5)
+
+
+def test_axis_listed_as_block_and_diagonal_stays_exact():
+    n = 8
+    x = np.linspace(0.3, 1.2, n)
+    _, jac = NumJac((n,), axes_diagonals=[0], axes_blocks=[-1])(_neighbour_source, x)
+    assert np.allclose(jac.toarray(), _dense_fd_jacobian(_neighbour_source, x), atol=1e-5)
+
+
+def test_stencil_axes_are_normalised_and_range_checked():
+    assert stencil_block_diagonals(ndims=2, axes_diagonals=[-2]) == \
+        stencil_block_diagonals(ndims=2, axes_diagonals=[0])
+    with pytest.raises(ValueError):
+        stencil_block_diagonals(ndims=1, axes_diagonals=[1])
+
+
+def test_dense_1d_shape_warns_and_can_be_confirmed():
+    import warnings as _w
+    with pytest.warns(UserWarning, match="dense 200 x 200"):
+        NumJac((200,))
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        NumJac((200,), axes_blocks=[-1])   # dense coupling confirmed: silent
+        NumJac((200, 1))                   # field layout: silent
+        NumJac((3,))                       # small pointwise system: silent
+
+
+def test_two_axis_default_keeps_component_block():
+    # on a 2-D shape the last (component) axis stays a full block by default,
+    # also when it is listed in axes_diagonals (same pattern as before the 1-D fix)
+    _, jac = NumJac((6, 4), axes_diagonals=[0, 1])(lambda c: c**2, np.ones((6, 4)))
+    assert jac.nnz == 256

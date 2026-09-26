@@ -160,3 +160,31 @@ def test_clip_approach_factor_array_bounds():
     clip_approach(x, None, lower_bounds=lb, upper_bounds=ub, factor=0.1)
     assert x[0] >= -1.0  # should have been moved up
     assert x[2] <= 5.0  # should have been moved down
+
+
+# ---------------------------------------------------------------------------
+# newton: relative tolerance and step_norm
+# ---------------------------------------------------------------------------
+
+def _trace_root(x):
+    # x**2 = 1e-20: root 1e-10, far below the default absolute tolerance
+    from scipy.sparse import csc_array
+    return np.array([x[0] ** 2 - 1e-20]), csc_array(np.array([[2.0 * x[0]]]))
+
+
+def test_newton_default_is_absolute_and_reports_step_norm():
+    res = newton(_trace_root, np.array([1e-8]))
+    assert res.success and res.nit == 1          # stops on the absolute tolerance
+    assert res.x[0] / 1e-10 > 40.0               # ... with a wrong answer
+    assert np.isfinite(res.step_norm)
+
+
+def test_newton_relative_tolerance_finds_trace_root():
+    res = newton(_trace_root, np.array([1e-8]), tol=0.0, rtol=1e-10)
+    assert res.success
+    assert np.isclose(res.x[0], 1e-10, rtol=1e-8)
+
+
+def test_newton_array_tolerance():
+    res = newton(_trace_root, np.array([1e-8]), tol=np.array([1e-16]))
+    assert res.success and np.isclose(res.x[0], 1e-10, rtol=1e-4)

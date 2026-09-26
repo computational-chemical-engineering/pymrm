@@ -5,7 +5,7 @@ import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array
-from .helpers import unwrap_bc_coeff, _sparse_array
+from .helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 
 
 def construct_convflux_upwind(
@@ -24,7 +24,10 @@ def construct_convflux_upwind(
         Cell-center coordinates. If omitted, arithmetic midpoints are used.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with keys ``a``, ``b``,
-        and ``d``.
+        and ``d``. ``{"outflow": True}`` marks a pure-outflow boundary: the
+        face value is the adjacent cell value (a stirred volume's exit). It is
+        meant for faces where material leaves; if flow enters there, the face
+        still carries the adjacent cell value.
     v : float or array_like, optional
         Face velocity field. Scalars and broadcastable arrays are accepted.
     axis : int, optional
@@ -163,6 +166,11 @@ def construct_convflux_bc(
         otherwise.
     """
 
+    # A pure-outflow face takes the value of the adjacent cell. The face values
+    # are first built with a zero-gradient condition there (consistent with
+    # construct_grad), then the outflow face is set to the adjacent cell value.
+    bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
+
     # Trick: Reshape to triplet shape_t
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
@@ -228,6 +236,9 @@ def construct_convflux_bc(
             ((a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]) * fctr,
             shape_bc,
         ).reshape(shape_bc_d)
+        for side in (0, 1):
+            if outflow[side]:
+                values[:, side, :], values_bc[:, side, :] = 1.0, 0.0
 
         if isinstance(v, (float, int)):
             values *= v
@@ -307,6 +318,10 @@ def construct_convflux_bc(
         values[:, -1, :] = a_fctr * alpha_1
         values[:, -2, :] = -a_fctr * alpha_2
         values_bc[:, -1, :] = d_fctr
+        if outflow[0]:
+            values[:, 0, :], values[:, 1, :], values_bc[:, 0, :] = 1.0, 0.0, 0.0
+        if outflow[1]:
+            values[:, -1, :], values[:, -2, :], values_bc[:, -1, :] = 1.0, 0.0, 0.0
         if isinstance(v, (float, int)):
             values *= v
             values_bc *= v

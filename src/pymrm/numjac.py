@@ -1,5 +1,7 @@
 """Numerical Jacobian construction with sparse stencil support."""
 
+import warnings
+
 import numpy as np
 from scipy.sparse import csc_array, csr_array, sparray
 from scipy.sparse.csgraph import reverse_cuthill_mckee
@@ -427,46 +429,67 @@ def colgroup(*args, shape=None, try_reorder=True):
     return g, num_groups
 
 
+DENSE_1D_WARNING_SIZE = 100
+
+
 def stencil_block_diagonals(
-    ndims=1, axes_diagonals=[], axes_blocks=[-1], periodic_axes=[]
+    ndims=1, axes_diagonals=(), axes_blocks=None, periodic_axes=()
 ):
     """Generate a block-diagonal or block-banded stencil description.
 
     Parameters
     ----------
     ndims : int, optional
-        Number of spatial dimensions.
-    axes_diagonals : list[int], optional
-        Axes for which ``[-1, 0, 1]`` neighbor offsets are included.
-    axes_blocks : list[int], optional
-        Axes over which full-block coupling (``slice(None)``) is applied.
-    periodic_axes : list[int], optional
+        Number of axes of the field (spatial axes plus component axes).
+    axes_diagonals : sequence[int], optional
+        Axes along which neighbour coupling (offsets ``-1, 0, 1``) is included.
+    axes_blocks : sequence[int] or None, optional
+        Axes over which full-block coupling (``slice(None)``) is applied. The
+        default, ``None``, means the last axis; on a 1-D field with
+        ``axes_diagonals=[0]`` it means no block axes, which gives a tridiagonal
+        stencil.
+    periodic_axes : sequence[int], optional
         Axes with periodic indexing.
 
     Returns
     -------
     list[tuple]
         Dependency specification in PyMRM notation.
+
+    Notes
+    -----
+    Axes may be given as negative numbers and are normalised modulo ``ndims``.
+    An axis listed both as a block and as a diagonal axis is treated as a block
+    axis: full coupling along it already contains the neighbour band, so the
+    Jacobian stays exact.
     """
-    if ndims < len(axes_diagonals) or ndims < len(axes_blocks):
-        raise ValueError(
-            "Number of dimensions should be greater than the number of axes."
-        )
-    dependencies = []
-    dep_block = ndims * [
-        0,
-    ]
-    for axis in axes_blocks:
-        dep_block[axis] = slice(None)
-    if len(axes_diagonals) == 0:
-        dep = (tuple(dep_block), tuple(dep_block), axes_blocks, periodic_axes)
-        dependencies.append(dep)
+
+    def _normalise(axes, name):
+        out = []
+        for axis in axes:
+            if not -ndims <= axis < ndims:
+                raise ValueError(f"{name}: axis {axis} out of range for ndims={ndims}")
+            out.append(axis % ndims)
+        return sorted(set(out))
+
+    diagonals = _normalise(axes_diagonals, "axes_diagonals")
+    periodic = _normalise(periodic_axes, "periodic_axes")
+    if axes_blocks is None:
+        blocks = [] if (ndims == 1 and 0 in diagonals) else [ndims - 1]
     else:
-        for axis in axes_diagonals:
-            dep_diagonals = dep_block.copy()
-            dep_diagonals[axis] = [-1, 0, 1]
-            dep = (tuple(dep_diagonals), tuple(dep_block), axes_blocks, periodic_axes)
-            dependencies.append(dep)
+        blocks = _normalise(axes_blocks, "axes_blocks")
+
+    dep_block = ndims * [0]
+    for axis in blocks:
+        dep_block[axis] = slice(None)
+    band_axes = [axis for axis in diagonals if axis not in blocks]
+    if not band_axes:
+        return [(tuple(dep_block), tuple(dep_block), blocks, periodic)]
+    dependencies = []
+    for axis in band_axes:
+        dep_diagonals = dep_block.copy()
+        dep_diagonals[axis] = [-1, 0, 1]
+        dependencies.append((tuple(dep_diagonals), tuple(dep_block), blocks, periodic))
     return dependencies
 
 
@@ -618,6 +641,18 @@ class NumJac:
 
         self.eps_jac = eps_jac
         self.format = format
+
+        if shape is not None and stencil is stencil_block_diagonals and not kwargs:
+            shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
+            if len(shape_t) == 1 and shape_t[0] >= DENSE_1D_WARNING_SIZE:
+                warnings.warn(
+                    f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
+                    f"({shape_t[0]} function evaluations per call). For a field on a grid "
+                    f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
+                    "dense coupling is intended.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Initialize stencil
         self.init_stencil(stencil, **kwargs)

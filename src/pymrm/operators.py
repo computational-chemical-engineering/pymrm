@@ -3,7 +3,7 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from pymrm.helpers import unwrap_bc_coeff, _sparse_array
+from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 from pymrm.grid import generate_grid
 
 
@@ -23,11 +23,15 @@ def construct_grad(
         as arithmetic midpoints.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with coefficients
-        ``'a'``, ``'b'``, and ``'d'``.
+        ``'a'``, ``'b'``, and ``'d'`` for ``a * dc/dn + b * c = d`` with ``n``
+        the outward normal. ``{"outflow": True}`` marks a pure-outflow
+        boundary; for diffusion it means zero normal gradient.
     axis : int, optional
         Differentiation axis.
     shapes_d : tuple[tuple | None, tuple | None], optional
-        Optional output shapes for inhomogeneous boundary source vectors.
+        Optional output shapes for inhomogeneous boundary source vectors. With
+        ``shapes_d`` the dictionary's ``d`` is a coefficient on that external
+        vector (use ``d = 1`` to pass values through the vector).
     format : {'csc', 'csr'}, optional
         Sparse format used for returned operator matrices.
 
@@ -43,6 +47,8 @@ def construct_grad(
         shape = tuple(shape)
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
     grad_matrix = construct_grad_int(shape, x_f, x_c, axis, format=format)
+    # a pure-outflow boundary carries no diffusive flux: zero normal gradient
+    bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
     if bc == (None, None):
         shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
@@ -183,6 +189,7 @@ def construct_grad_bc(
         ``(grad_matrix_left, grad_bc_left, grad_matrix_right, grad_bc_right)``
         otherwise.
     """
+    bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
     shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
     shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
