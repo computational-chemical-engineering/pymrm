@@ -16,6 +16,7 @@ def newton(
     solver=None,
     lin_solver_kwargs=None,
     callback=None,
+    rtol=0.0,
 ):
     """Solve ``function(x) = 0`` with Newton iterations.
 
@@ -27,8 +28,14 @@ def newton(
         Starting point of the iterations.
     args : tuple, optional
         Extra positional arguments passed to ``function``.
-    tol : float, optional
-        Stopping tolerance on the infinity norm of the Newton update.
+    tol : float or numpy.ndarray, optional
+        Absolute stopping tolerance on the Newton update. With the default
+        ``rtol=0`` and a scalar ``tol`` the iteration stops when the infinity
+        norm of the update is below ``tol``. This is an ABSOLUTE criterion: for
+        unknowns much smaller than ``tol`` (trace concentrations, for example)
+        it stops after one step with a wrong answer. Scale the unknowns to order
+        one, or use ``tol=0`` with ``rtol``. An array must broadcast to the
+        unknowns.
     maxfev : int, optional
         Maximum number of Newton iterations.
     solver : {'spsolve', 'cg', 'bicgstab', 'splu'} or callable, optional
@@ -44,12 +51,19 @@ def newton(
         Keyword arguments forwarded to the selected linear solver.
     callback : callable, optional
         Optional hook called as ``callback(x, residual)`` after each iteration.
+    rtol : float, optional
+        Relative stopping tolerance. When ``rtol > 0`` or ``tol`` is an array,
+        the iteration stops when every component satisfies
+        ``abs(update) <= tol + rtol * abs(x)``. ``tol=0, rtol=1e-8`` gives a
+        purely relative criterion.
 
     Returns
     -------
     scipy.optimize.OptimizeResult
-        Result object with fields ``x``, ``success``, ``nit``, ``fun``, and
-        ``message``.
+        Result object with fields ``x``, ``success``, ``nit``, ``fun``,
+        ``message`` and ``step_norm`` (infinity norm of the last update).
+        ``fun`` is the residual evaluated at the iterate BEFORE the last update,
+        not at ``x``; evaluate ``function(x)`` to check the final residual.
 
     Raises
     ------
@@ -114,6 +128,8 @@ def newton(
     else:
         raise ValueError("Unsupported solver method.")
 
+    relative = rtol > 0 or not np.isscalar(tol)
+    defect = np.inf
     x = initial_guess.copy()
     for it in range(int(maxfev)):
         g, jac_matrix = function(x, *args)
@@ -122,13 +138,21 @@ def newton(
         x -= dx_neg.reshape(x.shape)
         if callback:
             callback(x, g)
-        if defect < tol:
+        if relative:
+            converged = np.all(
+                np.abs(np.asarray(dx_neg).reshape(x.shape)) <= tol + rtol * np.abs(x)
+            )
+        else:
+            converged = defect < tol
+        if converged:
             return OptimizeResult(
-                x=x, success=True, nit=it + 1, fun=g, message="Converged"
+                x=x, success=True, nit=it + 1, fun=g, message="Converged",
+                step_norm=defect,
             )
 
     return OptimizeResult(
-        x=x, success=False, nit=maxfev, fun=g, message="Did not converge"
+        x=x, success=False, nit=maxfev, fun=g, message="Did not converge",
+        step_norm=defect,
     )
 
 
