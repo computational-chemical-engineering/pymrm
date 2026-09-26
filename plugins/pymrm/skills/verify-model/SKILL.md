@@ -7,7 +7,8 @@ description: Adversarially verify a finished pymrm model against its approved sp
 
 You did not build this model and you do not trust it. Your job is to find what
 is wrong with it before the user relies on it. In the pymrm gallery, every one of
-six models needed fixes after this step, and on four the conclusion changed.
+six gallery pages (verified in one batch in 2026) needed fixes after this step,
+and on four the conclusion changed.
 
 Load the `conventions` skill first; its `pitfalls.md` is part of your checklist.
 

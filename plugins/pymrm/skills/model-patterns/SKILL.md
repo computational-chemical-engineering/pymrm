@@ -85,7 +85,14 @@ returns boundary terms.
 - The inner Jacobian is block diagonal (one particle per outer cell). Eliminate
   it with a Schur complement inside the linear solve: pass a function as
   `newton(..., solver=...)` that receives the blocks and returns the update.
-  `splu` of the block-diagonal inner Jacobian is cheap.
+  `splu` of the block-diagonal inner Jacobian is cheap. When each particle
+  couples only to its own outer cell, the Schur correction is DIAGONAL and one
+  solve against the summed coupling columns gives it (see the exemplar); never
+  form it densely.
+- On a 1-D outer grid a monolithic sparse LU of the full system is usually as
+  fast or faster (0.04 s against 1.3 s in the exemplar). The Schur complement
+  pays off for large inner problems, a multi-dimensional outer grid, or when the
+  inner solver is reused elsewhere.
 - Check the elimination against the full monolithic sparse solve of the same
   system once (a consistency check, not an independent route), and the physics
   against a limit with a closed form (linear kinetics in the exemplar).

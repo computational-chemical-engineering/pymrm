@@ -4,7 +4,9 @@ Usage:
     python check_notebook_math.py notebook.ipynb [more.ipynb ...]
 
 Notebooks are read in JupyterLab (MathJax), VS Code (KaTeX), the GitHub preview
-(Markdown is processed before the maths) and Colab. This script checks every
+(Markdown is processed before the maths) and Colab. No single engine is the
+strictest (KaTeX accepts \\bm, JupyterLab's MathJax does not), so this script
+combines a KaTeX parse with rules for what the others need. It checks every
 Markdown cell against a portable subset (style guide section 3.1):
 
 - display maths as $$ ... $$ with the $$ lines separated from text by blank lines;
@@ -16,13 +18,15 @@ Markdown cell against a portable subset (style guide section 3.1):
 - no macros (\\newcommand, \\renewcommand, \\def) and no \\require;
 - no maths in headings; no | inside maths in a table row (use \\vert).
 
-Then every expression is parsed with KaTeX, the strictest of the engines, when
+Then every expression is parsed with KaTeX (the engine of VS Code) when
 Node.js and KaTeX are available (KaTeX is looked for in $PYMRM_KATEX_DIR,
 default ~/.cache/pymrm-katex; install with
 `npm install --prefix ~/.cache/pymrm-katex katex@0.16`). Without them the
 parse step is skipped and the report says so.
 
-Exit status 1 when anything is flagged.
+Findings are errors or warnings. Warnings (blank lines around $$, maths in a
+heading) are rules whose effect on the GitHub preview is not yet confirmed.
+Exit status 1 when an error is flagged.
 """
 
 import json
@@ -40,14 +44,31 @@ FORBIDDEN = {r"\label": "equation labels do not render in KaTeX (VS Code)",
              r"\renewcommand": "macros do not carry over between cells in every renderer",
              r"\def": "macros do not carry over between cells in every renderer",
              r"\require": "MathJax-only extension loading",
-             r"\bm": "not in KaTeX; use \\boldsymbol"}
+             r"\bm": "not in MathJax 3 as configured in JupyterLab; use \\boldsymbol"}
 INLINE = re.compile(r"(?<![\\$])\$(?!\$)((?:[^$\\]|\\.)+?)(?<![\\$])\$(?!\$)", re.S)
 BARE_ENV = re.compile(r"^\s*\\begin\{(align\*?|equation\*?|gather\*?|multline\*?|eqnarray\*?)\}", re.M)
 
 
+WARNINGS = ("no blank line before $$", "no blank line after $$", "maths in a heading")
+
+
+def _blank_out(match):
+    return "\n" * match.group(0).count("\n")
+
+
 def _strip_code(text):
-    text = re.sub(r"```.*?```", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
-    return re.sub(r"`[^`\n]*`", "", text)
+    """Remove everything that is not Markdown prose: code, comments, URLs, quote markers."""
+    text = re.sub(r"^(```|~~~).*?^\1[^\n]*$", _blank_out, text, flags=re.S | re.M)   # fenced code
+    text = re.sub(r"<!--.*?-->", _blank_out, text, flags=re.S)                         # HTML comments
+    text = re.sub(r"(?m)^[ \t]*>[ \t]?", "", text)                                   # blockquote markers
+    text = re.sub(r"\]\([^)]*\)", "]", text)                                           # link targets
+    text = re.sub(r"(`+)(.+?)\1", "", text, flags=re.S)                                # code spans
+    blocks = re.split(r"(\n[ \t]*\n)", text)                                           # indented code blocks
+    for i, block in enumerate(blocks):
+        lines = [ln for ln in block.split("\n") if ln.strip()]
+        if lines and all(re.match(r"( {4}|\t)", ln) for ln in lines) and not re.match(r"\s*([-*+]|\d+\.)\s", lines[0]):
+            blocks[i] = "\n" * block.count("\n")
+    return "".join(blocks)
 
 
 def _cell_source(cell):
@@ -95,12 +116,13 @@ def extract(markdown):
             if re.search(r"\\tag(?![A-Za-z])", body):
                 problems.append(("inline", body, "\\tag in inline maths"))
         if stars >= 2:
-            problems.append(("inline", paragraph.strip()[:80],
+            starred = [m.group(1) for m in INLINE.finditer(paragraph) if "*" in m.group(1)]
+            problems.append(("inline", "  ".join(f"${b}$" for b in starred),
                              "two or more * in inline maths in one paragraph can become italics on GitHub; "
-                             "use \\cdot or \\ast"))
+                             "use \\ast or ^{\\ast}"))
 
     for line in lines:
-        if re.match(r"\s*#", line) and "$" in line:
+        if re.match(r"\s*#", line) and re.search(r"(?<!\\)\$", line):
             problems.append(("heading", line.strip(), "maths in a heading"))
         if line.lstrip().startswith("|"):
             for m in INLINE.finditer(line):
@@ -154,15 +176,21 @@ def check(path):
     return findings, note
 
 
+def is_warning(why):
+    return why.startswith(WARNINGS)
+
+
 def main(paths):
     status = 0
     for path in paths:
         findings, note = check(path)
-        print(f"{path}: {len(findings)} finding(s); {note}")
+        errors = [f for f in findings if not is_warning(f[3])]
+        print(f"{path}: {len(errors)} error(s), {len(findings) - len(errors)} warning(s); {note}")
         for cell, kind, snippet, why in findings:
             short = " ".join(snippet.split())
-            print(f"  cell {cell} [{kind}] {why}: {short[:90]}")
-        status |= bool(findings)
+            level = "warning" if is_warning(why) else "error"
+            print(f"  cell {cell} {level} [{kind}] {why}: {short[:90]}")
+        status |= bool(errors)
     return int(status)
 
 

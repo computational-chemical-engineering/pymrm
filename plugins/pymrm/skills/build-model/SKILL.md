@@ -75,7 +75,7 @@ new `pymrm_model_<short-name>/` folder. Say where they are.
 | `scoping.md` | 2 | phenomena, deciding groups with numbers, chosen fidelity |
 | `estimate.md` | 2 | estimate mode only: the report |
 | `spec.md` | 3 | the approved specification (`references/spec-template.md`) |
-| `<model>.py`, `<model>.ipynb` | 4 | class-based module and driver notebook, or one compact script |
+| `<model>.py`, `<model>.ipynb` | 4 | by the style guide's format rule: a flat notebook, or module(s) plus a driver notebook |
 | `self_check.md` | 5 | refinement, orders, checks, each with the command that produced it |
 | `verification.md` | 6 | the verifier's verdicts, unedited |
 | `model_card.md` | 7 | the report (`references/model-card-template.md`) |
@@ -164,9 +164,9 @@ Run the validation plan and write `self_check.md`:
   index, perturb a bc) and confirm the checked number moves;
 - run the `conventions` skill's `scripts/check_model.py` on the model and fix
   every finding; record its report in `self_check.md`;
-- for every notebook you deliver, run `scripts/check_notebook_math.py` and fix
-  every finding, so the equations render in JupyterLab, VS Code, Colab and the
-  GitHub preview;
+- for every notebook you deliver, run `scripts/check_notebook_math.py`, fix every
+  error and the warnings you can, so the equations render in JupyterLab, VS Code,
+  Colab and the GitHub preview;
 - use the check tools (`numerics.md`): `check_jacobian` once at a state away
   from the solution, `observed_orders` for every refinement study, `find_roots`
   for every threshold, `residual_check` on every reported solution.

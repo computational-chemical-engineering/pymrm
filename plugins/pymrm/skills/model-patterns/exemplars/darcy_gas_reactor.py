@@ -20,8 +20,9 @@ No NumJac is needed; this is the operator-sum style with a state-dependent
 velocity (assembly-styles.md, "velocity varying along the reactor").
 
 Checks, each able to fail:
-1. Pressure profile against the exact p(z) = sqrt(p_in^2 - (p_in^2 - p_out^2) z)
-   (second order).
+1. Pressure profile against the exact p(z) = sqrt(p_in^2 - (p_in^2 - p_out^2) z).
+   First order, because the face density in the continuity equation is upwinded
+   (observed orders 0.97 to 0.99).
 2. Outlet conversion against the exact plug-flow result
    y_out / y_in = exp(-k / F_t * integral of p dz), with F_t = (p_in^2 - p_out^2) / 2.
 3. Grid refinement of the conversion: observed order about 1 (upwind).
@@ -144,7 +145,7 @@ def run_checks(verbose=True):
     results["break_row_frozen_velocity_shift"] = abs(frozen - x_exact) / x_exact
 
     passed = {
-        "pressure_max_error_n400": results["pressure_max_error_n400"] < 1e-4,
+        "pressure_max_error_n400": results["pressure_max_error_n400"] < 2e-4,
         "conversion_rel_error_n800": results["conversion_rel_error_n800"] < 2e-3,
         "grid_order": 0.8 < results["grid_order"] < 1.2,
         "jacobian_rel_error": results["jacobian_rel_error"] < 1e-5,

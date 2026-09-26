@@ -31,14 +31,14 @@ Checks, each able to fail:
 """
 
 import numpy as np
-from scipy.sparse import bmat, csc_array
+from scipy.sparse import bmat, csc_array, diags_array
 from scipy.sparse.linalg import spsolve, splu
 
 from pymrm import NumJac, compute_boundary_values, construct_convflux_upwind, construct_div, construct_grad, newton
 
 
 class ParticleBed:
-    def __init__(self, n_z=100, n_r=30, alpha=0.5, phi=2.0, biot=5.0, order=1, schur=True):
+    def __init__(self, n_z=100, n_r=30, alpha=0.5, phi=2.0, biot=5.0, order=1, schur=True, nu=2):
         self.n_z, self.n_r = n_z, n_r
         self.alpha, self.phi2, self.biot, self.order, self.schur = alpha, phi**2, biot, order, schur
         z_f = np.linspace(0.0, 1.0, n_z + 1)
@@ -57,16 +57,18 @@ class ParticleBed:
         # particle: symmetry at r = 0; film at r = 1: dc/dr + Bi c = Bi c_b
         # (outward normal +r, so a = 1). d = Bi is the coefficient on c_b (shapes_d).
         bc_p = ({"a": 1.0, "b": 0.0, "d": 0.0}, {"a": 1.0, "b": biot, "d": biot})
+        # grad_bc_left is discarded: the symmetry condition at r = 0 has d = 0
         grad, _, grad_bc_right = construct_grad(self.shape_p, r_f, bc=bc_p, axis=1,
                                                 shapes_d=(None, (n_z, 1, 1)))
-        div_r = construct_div(self.shape_p, r_f, nu=2, axis=1)   # nu=2: sphere
+        div_r = construct_div(self.shape_p, r_f, nu=nu, axis=1)   # nu=2: sphere, 1: cylinder
+        surface = nu + 1.0   # particle surface over volume, times the radius (3 for a sphere)
         self.jac_pp_transport = (div_r @ -grad).tocsc()
         self.jac_pb = (div_r @ -grad_bc_right).tocsc()          # particle rows, bulk columns
         # surface gradient: outer face (r = 1) of every particle
         outer = np.arange(n_z) * (n_r + 1) + n_r
         select = csc_array((np.ones(n_z), (np.arange(n_z), outer)), shape=(n_z, n_z * (n_r + 1)))
-        self.jac_bp = (3.0 * alpha * select @ grad).tocsc()          # bulk rows, particle columns
-        self.jac_bb = (self.jac_bb_transport + 3.0 * alpha * select @ grad_bc_right).tocsc()
+        self.jac_bp = (surface * alpha * select @ grad).tocsc()      # bulk rows, particle columns
+        self.jac_bb = (self.jac_bb_transport + surface * alpha * select @ grad_bc_right).tocsc()
         self.numjac = NumJac(self.shape_p)
         self.n_b = n_z
 
@@ -87,10 +89,13 @@ class ParticleBed:
         if not self.schur:  # full monolithic sparse solve of the same system
             full = bmat([[blocks["bb"], blocks["bp"]], [blocks["pb"], blocks["pp"]]]).tocsc()
             return spsolve(full, g)
-        lu_pp = splu(blocks["pp"])           # block diagonal: cheap, one particle per bulk cell
-        pp_inv_pb = lu_pp.solve(blocks["pb"].toarray())
-        schur = blocks["bb"] - blocks["bp"] @ pp_inv_pb
-        dx_b = np.linalg.solve(schur, g_b - blocks["bp"] @ lu_pp.solve(g_p))
+        lu_pp = splu(blocks["pp"])           # block diagonal: one particle per bulk cell
+        # Each particle couples only to its own bulk cell, so the columns of
+        # J_pp^-1 J_pb have disjoint supports and J_bp J_pp^-1 J_pb is DIAGONAL.
+        # One solve against the sum of the columns gives all of them at once.
+        w = lu_pp.solve(blocks["pb"] @ np.ones(self.n_b))
+        schur = (blocks["bb"] - diags_array(blocks["bp"] @ w)).tocsc()
+        dx_b = spsolve(schur, g_b - blocks["bp"] @ lu_pp.solve(g_p))
         dx_p = lu_pp.solve(g_p - blocks["pb"] @ dx_b)
         return np.concatenate([dx_b, dx_p])
 

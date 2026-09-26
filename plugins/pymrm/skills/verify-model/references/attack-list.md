@@ -1,6 +1,7 @@
 # Defect classes to hunt by name
 
-Measured across dozens of verified pymrm models (the pymrm gallery). They recur
+Found repeatedly while verifying the pymrm gallery's pages
+(<https://github.com/computational-chemical-engineering/pymrm-gallery>). They recur
 far more often than wrong arithmetic. For each: what it looks like and the test
 that exposes it.
 

@@ -1,4 +1,4 @@
-"""Countercurrent membrane reactor, monolithic block assembly (structures S4, S7).
+"""Countercurrent membrane reactor, monolithic block assembly (structures S3, S7).
 
 Two channels along 0 < z < 1 (dimensionless), solved as ONE Newton system:
 
@@ -21,7 +21,11 @@ the steady Jacobian is constant and one sparse solve gives the answer.
 
 Checks, each able to fail:
 1. Plug-flow limit (Pe = 1e4) against an independent route: the countercurrent
-   two-point boundary-value ODE solved with scipy solve_bvp (no pymrm).
+   two-point boundary-value ODE solved with scipy solve_bvp (no pymrm). At this
+   Pe the upwind scheme's numerical diffusion exceeds the physical one, so this
+   checks that the discretisation converges to plug flow (error O(dz)).
+All checks run at a permeate/retentate volume ratio sigma = 0.5: at sigma = 1 a
+J * sigma versus J / sigma error is invisible to every check.
 2. Species balance: A fed = A out + A reacted; B produced = B out of both
    channels. Evaluated with face values; with the operators used here it is
    structural (exact by construction) and reported as a code check.
@@ -141,24 +145,24 @@ def plug_flow_bvp(damkohler=2.0, stanton=3.0, sigma=1.0, c_in=(1.0, 0.0)):
 
 def run_checks(verbose=True):
     results = {}
-    ref_ret, ref_perm = plug_flow_bvp()
-    model = MembraneReactor(n_z=800, peclet=1e4).solve()
+    ref_ret, ref_perm = plug_flow_bvp(sigma=0.5)
+    model = MembraneReactor(n_z=1600, peclet=1e4, sigma=0.5).solve()
     ret_out, perm_out = model.outlets()
     results["plug_flow_vs_bvp_retentate_B"] = abs(ret_out[1] - ref_ret[1])
     results["plug_flow_vs_bvp_permeate_B"] = abs(perm_out - ref_perm)
 
-    base = MembraneReactor(n_z=200).solve()
+    base = MembraneReactor(n_z=200, sigma=0.5).solve()
     ret_out, perm_out = base.outlets()
     dz = np.diff(base.z_f)
     reacted = base.damkohler * np.sum(base.u[:, 0] * dz)
     results["structural_balance_A"] = abs(base.c_in[0] - ret_out[0] - reacted)
     results["structural_balance_B"] = abs(reacted - ret_out[1] - base.sigma * perm_out)
 
-    values = [MembraneReactor(n_z=n).solve().outlets()[0][1] for n in (100, 200, 400, 800)]
+    values = [MembraneReactor(n_z=n, sigma=0.5).solve().outlets()[0][1] for n in (100, 200, 400, 800)]
     diffs = np.abs(np.diff(values))
     results["grid_order"] = np.log2(diffs[-2] / diffs[-1])
 
-    cocurrent = MembraneReactor(n_z=200, permeate_velocity=1.0).solve().outlets()[1]
+    cocurrent = MembraneReactor(n_z=200, sigma=0.5, permeate_velocity=1.0).solve().outlets()[1]
     results["break_row_cocurrent_shift"] = abs(cocurrent - perm_out) / perm_out
 
     passed = {

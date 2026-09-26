@@ -61,14 +61,9 @@ Required section order in a `.py` file or notebook:
 
 ### 2.2 Class-based format
 
-Use this by default for:
-- PDE models that will be extended or reused
-- multicomponent models
-- multiphase models
-- reusable demos
-- any model with more than one solve mode or more than one physical field
-
-This is the preferred style for every PDE model.
+Use this for full reactor models as defined by the table above: several fields
+or domains, several solve modes, or a model meant to be extended and reused
+(multicomponent and multiphase models usually are).
 
 ## 3. Standard Section Order
 
@@ -90,7 +85,7 @@ Notebooks should render clearly in four places:
 
 1. A running Jupyter notebook or JupyterLab session (MathJax).
 2. The GitHub notebook preview (Markdown is processed before the maths).
-3. The VS Code notebook editor (KaTeX, the strictest).
+3. The VS Code notebook editor (KaTeX).
 4. Google Colab.
 
 Use portable notebook Markdown by default:
@@ -104,12 +99,15 @@ Use portable notebook Markdown by default:
   - multi-line equations with `aligned`, `cases` or `array` INSIDE `$$`, never a
     bare `\begin{align}` or `\begin{equation}`;
   - no `\label`, `\ref`, `\eqref`; at most one `\tag` per display block;
-  - no macros (`\newcommand`, `\def`), no `\bm` (use `\boldsymbol`);
+  - no macros (`\newcommand`, `\def`), no `\bm` (JupyterLab's MathJax lacks it;
+    use `\boldsymbol`);
   - multi-letter subscripts in `\mathrm{}`; `\cdot` rather than `*`;
   - no maths in headings; no `|` inside maths in a table (use `\vert`).
 - Check a notebook with the conventions skill's
   `scripts/check_notebook_math.py notebook.ipynb`, which lints these rules and
-  parses every expression with KaTeX when Node.js and KaTeX are installed.
+  parses every expression with KaTeX when Node.js and KaTeX are installed. The
+  blank-line and heading rules are reported as warnings until their effect on
+  the GitHub preview is confirmed.
 - Avoid MyST-only directives such as `{figure}`, `{grid}`,
   admonitions, and colon-fenced layouts when the notebook must also be readable
   outside the Jupyter Book build.

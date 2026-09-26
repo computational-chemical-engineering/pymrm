@@ -1,7 +1,8 @@
 # Numerical practice around a pymrm model
 
-Mistakes measured in agent runs that are not pymrm API pitfalls but cost the
-most debugging turns. Each rule is short; follow it the first time.
+Mistakes seen repeatedly in coding-agent runs on pymrm models (2026 evaluations
+of this plugin) that are not pymrm API pitfalls but cost the most debugging
+turns. Each rule is short; follow it the first time.
 
 ## Use the check tools instead of writing your own
 
@@ -33,7 +34,8 @@ are 1e3 and round-off alone leaves 1e-10. Compare with the scale of the terms:
 
 `residual_check(fun, x)` does this for you: it divides each residual by the
 size of the terms that make it up (a componentwise backward error), so it gives
-the same verdict in any units. Or scale the equations to order one (divide each
+the same verdict whatever the scaling of rows and unknowns (not across offset
+units such as degrees Celsius against kelvin). Or scale the equations to order one (divide each
 balance by a reference rate) and then use an absolute threshold. Never raise "not converged"
 on a solve that reports convergence without first printing both numbers.
 
@@ -67,7 +69,7 @@ package you have not checked.
 
 `brentq` raises an error for `rtol` below 4 machine epsilons (8.9e-16); use
 `xtol` for the absolute accuracy you need and leave `rtol` at its default.
-`solve_ivp` silently raises `rtol` below about 2.2e-14 to that value; use
+`solve_ivp` raises `rtol` below about 2.2e-14 to that value with a warning; use
 `rtol=1e-12` with a small `atol` for a reference solution. `quad` warns when it
 cannot meet `epsabs` and `epsrel` near 1e-13; raise `limit` or split the
 interval rather than tightening further. A reference solution needs to be a few
