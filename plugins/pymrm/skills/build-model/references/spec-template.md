@@ -7,7 +7,7 @@ stand alone. Keep it short; put derivations in an appendix.
 ```markdown
 # Specification: <short name>
 Status: DRAFT | APPROVED by <user> on <date>
-Mode: model
+Mode: full
 Brief: brief.md   Scoping: scoping.md
 
 ## 1. Question

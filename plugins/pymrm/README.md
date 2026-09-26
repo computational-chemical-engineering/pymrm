@@ -1,14 +1,24 @@
 # pymrm skills for coding agents
 
-Skills that let a coding agent turn a loose description of a process into a
-scoped, verified pymrm model, and tell you honestly what that model can and
-cannot say.
+Skills that help a coding agent model chemical-engineering processes with pymrm
+in the house style: the pymrm conventions and known pitfalls, tested exemplar
+models, checkers for models and notebooks, coupling patterns, and an optional
+independent reviewer for decision-grade work.
+
+What to expect: current models (Claude Opus and Sonnet) already build correct
+pymrm models for well-posed problems without these skills, because they read the
+installed library's source and docstrings. The skills add consistency with the
+pymrm house conventions (operator-sum Jacobians, monolithic coupling, the model
+and notebook formats), teaching-format notebooks, proportionate checks, and a
+documented, independently verified workflow when you ask for one. See
+`docs/agent-plugin-design.md` in the pymrm repository for the measurements.
 
 | Skill | What it does |
 |---|---|
-| `build-model` | Asks what the model must decide, estimates which phenomena matter (Thiele, Weisz-Prater, Mears, Peclet, Hatta, ...), writes a specification for your approval, builds the model, has it verified, and writes a model card. Has a quick `estimate` mode for "does this matter at all?" questions. |
+| `build-model` | Builds and checks a model from a process description (default), gives quick estimates ("does this matter at all?"), discusses modelling choices, and on request runs a full workflow: specification for your approval, independent verification, model card. |
 | `verify-model` | Attacks a finished model against its specification in a fresh context and returns a verdict per check. |
-| `conventions` | pymrm house style, known API pitfalls (each pinned by a test), and tested exemplar models. Useful on its own whenever an agent writes pymrm code. |
+| `conventions` | pymrm house style, known API pitfalls (each pinned by a test), tested exemplar models, a run-time pitfall checker and a notebook maths checker. Useful on its own whenever an agent writes pymrm code. |
+| `model-patterns` | Monolithic coupling of domains and phases, pressure-velocity coupling, nested scales, with tested exemplars. |
 
 The skills follow the open Agent Skills format (`SKILL.md`), so the same files
 work in several agent tools. pymrm itself must be installed in the Python

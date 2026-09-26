@@ -39,7 +39,7 @@ parameter: an `assumed` value with a sensitivity check is better than no model.
 
 ```markdown
 # Brief: <short name>
-Mode: estimate | model
+Mode: direct | estimate | full
 Decision: <what the user will decide with this>
 Outputs: <quantity, unit, required accuracy> (one line each)
 Operating range: <variable: min to max, unit>
