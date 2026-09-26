@@ -323,3 +323,24 @@ assembly styles and profiles; consult mode; reactor selection.
 with `model.py` (importable, tested) + `index.ipynb` + `data/`; the bootstrap
 fetches `model.py` like `gallery_utils.py`; pin pymrm and fetch from a tag, not
 `main`; migrate pages when they are next touched.
+
+**Like-for-like comparison with outcome graders** (2026-09-26, one run per
+case; file-protocol graders scored only in the plugin arm):
+- Opus: equal outcomes with and without the plugin on 9 of 12 cases (vague
+  c2-c4, consult k1-k3, patterns m1-m2, teaching p1). The plugin helps on m3
+  (particle-bed coupling actually solved) and p2 (efficient code); c1 exceeds
+  the 60-minute limit in both arms. The plugin roughly doubles Opus's cost and
+  turns per task (spec, checks, verification).
+- Sonnet on the coupled-structure cases: the plugin helps on m2 (conversion
+  right, wrong without) and m3 (coupling solved); m1 with the plugin missed one
+  value that the no-plugin run got (single runs; possibly noise).
+- Reading: for Opus the plugin's value on these tasks is the audit trail and
+  robustness on coupled structures, not correctness on well-posed problems; for
+  Sonnet it is also correctness. A multi-run baseline is needed before quoting
+  rates.
+
+**Notebook maths.** The portable subset is in style guide 3.1 and checked by
+`scripts/check_notebook_math.py` (KaTeX parse). Across the 82 gallery pages it
+flags 46 pages, including 21 expressions KaTeX cannot parse (VS Code), mostly
+two `\tag` in one block. `docs/math-render-test.ipynb` awaits a manual check in
+JupyterLab, VS Code, Colab and the GitHub preview.
