@@ -674,3 +674,10 @@ def test_dense_1d_shape_warns_and_can_be_confirmed():
         NumJac((200,), axes_blocks=[-1])   # dense coupling confirmed: silent
         NumJac((200, 1))                   # field layout: silent
         NumJac((3,))                       # small pointwise system: silent
+
+
+def test_two_axis_default_keeps_component_block():
+    # on a 2-D shape the last (component) axis stays a full block by default,
+    # also when it is listed in axes_diagonals (same pattern as before the 1-D fix)
+    _, jac = NumJac((6, 4), axes_diagonals=[0, 1])(lambda c: c**2, np.ones((6, 4)))
+    assert jac.nnz == 256

@@ -257,8 +257,11 @@ def describe_bc(bc, x_f=None, axis_name="x", var="c"):
         if entry is None:
             lines.append(f"{head}: None, treated as a = b = d = 0")
             continue
+        if is_outflow_bc(entry):
+            lines.append(f"{head}: outflow, face value = adjacent cell value, zero diffusive flux")
+            continue
         a, b, d = (entry.get(key, 0.0) for key in ("a", "b", "d"))
-        a_text = _format_coefficient(np.asarray(a, dtype=float) * (-1.0 if sign == "-" else 1.0))
+        a_text = _format_coefficient(np.asarray(a, dtype=float) * (-1.0 if sign == "-" else 1.0) + 0.0)
         lines.append(
             f"{head}: {a_text}*d{var}/d{axis_name} + {_format_coefficient(b)}*{var} = "
             f"{_format_coefficient(d)}  [{_classify_bc(a, b)}]"
@@ -292,4 +295,7 @@ def substitute_outflow_bc(bc, replacement):
         flag = is_outflow_bc(bc)
         return (dict(replacement) if flag else bc), (flag,)
     flags = tuple(is_outflow_bc(side) for side in bc)
-    return tuple(dict(replacement) if flag else side for side, flag in zip(bc, flags)), flags
+    if not any(flags):
+        return bc, flags
+    replaced = [dict(replacement) if flag else side for side, flag in zip(bc, flags)]
+    return (replaced if isinstance(bc, list) else tuple(replaced)), flags

@@ -42,8 +42,8 @@ def check_jacobian(fun, x, n_probe=4, rtol=1e-4, seed=0, eps=None):
     seed : int, optional
         Seed of the random directions (the check is deterministic).
     eps : float, optional
-        Finite-difference step relative to the size of ``x``; default
-        ``cbrt(machine epsilon)``.
+        Relative finite-difference step; default ``cbrt(machine epsilon)``.
+        Each component is perturbed in proportion to its own size.
 
     Returns
     -------
@@ -58,30 +58,38 @@ def check_jacobian(fun, x, n_probe=4, rtol=1e-4, seed=0, eps=None):
     g0, jac = fun(x.copy())
     g0 = _as_dense_vector(g0)
     jac = sparse.csr_array(jac) if sparse.issparse(jac) else np.asarray(jac, dtype=float)
-    scale = max(np.max(np.abs(x_flat)), 1.0)
-    h = (eps if eps is not None else np.finfo(float).eps ** (1.0 / 3.0)) * scale
+    step = eps if eps is not None else np.finfo(float).eps ** (1.0 / 3.0)
+    # per-component scale, so small unknowns are not pushed across zero
+    x_scale = np.maximum(np.abs(x_flat), np.sqrt(np.finfo(float).eps) * max(np.max(np.abs(x_flat)), 1.0))
+    noise = np.finfo(float).eps * np.abs(g0) / step
 
     def g_at(xf):
         return _as_dense_vector(fun(xf.reshape(shape).copy())[0])
 
+    def mismatch(direction):
+        fd = (g_at(x_flat + step * direction) - g_at(x_flat - step * direction)) / (2.0 * step)
+        jv = jac @ direction
+        if not (np.all(np.isfinite(fd)) and np.all(np.isfinite(jv))):
+            return np.inf
+        scale = np.abs(jv) + np.abs(fd) + noise
+        err = np.abs(jv - fd) / np.where(scale > 0.0, scale, 1.0)
+        return float(np.max(err))
+
     rng = np.random.default_rng(seed)
     worst = 0.0
     for _ in range(n_probe):
-        v = rng.standard_normal(x_flat.size)
-        fd = (g_at(x_flat + h * v) - g_at(x_flat - h * v)) / (2.0 * h)
-        jv = jac @ v
-        denominator = max(np.max(np.abs(fd)), np.max(np.abs(jv)), np.max(np.abs(g0)), 1e-300)
-        worst = max(worst, np.max(np.abs(jv - fd)) / denominator)
+        worst = max(worst, mismatch(rng.standard_normal(x_flat.size) * x_scale))
     result = {"ok": bool(worst <= rtol), "max_rel_error": float(worst), "worst_entry": None}
 
     if x_flat.size <= 500:
         dense = jac.toarray() if sparse.issparse(jac) else jac
         fd_full = np.empty_like(dense)
-        for j in range(x_flat.size):
+        for k in range(x_flat.size):
             e = np.zeros(x_flat.size)
-            e[j] = h
-            fd_full[:, j] = (g_at(x_flat + e) - g_at(x_flat - e)) / (2.0 * h)
+            e[k] = step * x_scale[k]
+            fd_full[:, k] = (g_at(x_flat + e) - g_at(x_flat - e)) / (2.0 * e[k])
         diff = np.abs(dense - fd_full)
+        diff = np.where(np.isfinite(diff), diff, np.inf)
         row, col = np.unravel_index(np.argmax(diff), diff.shape)
         result["worst_entry"] = (int(row), int(col), float(dense[row, col]), float(fd_full[row, col]))
     return result
@@ -94,7 +102,9 @@ def observed_orders(solve, ns, ratio=None):
     ----------
     solve : callable
         ``solve(n) -> float or array``, the quantity of interest computed with
-        resolution ``n`` (cells, or number of time steps).
+        resolution ``n`` (cells, or number of time steps). An array must have
+        the same shape at every resolution (for example values at fixed
+        positions).
     ns : sequence[int]
         At least three resolutions with a constant refinement ratio, for example
         ``(50, 100, 200, 400)``.
@@ -106,7 +116,8 @@ def observed_orders(solve, ns, ratio=None):
     dict
         ``values`` per resolution, ``orders`` from each consecutive triple,
         ``extrapolated`` (Richardson estimate from the finest triple) and
-        ``error_estimate`` of the finest value against it.
+        ``error_estimate`` of the finest value against it; ``nan`` when the
+        finest order is not positive (the study is not converging).
 
     Notes
     -----
@@ -121,6 +132,8 @@ def observed_orders(solve, ns, ratio=None):
     if len(ns) < 3:
         raise ValueError("observed_orders needs at least three resolutions")
     ratio = float(ratio if ratio is not None else ns[1] / ns[0])
+    if not np.allclose(np.array(ns[1:], dtype=float) / np.array(ns[:-1], dtype=float), ratio):
+        raise ValueError("observed_orders needs a constant refinement ratio between resolutions")
     values = [np.asarray(solve(n), dtype=float) for n in ns]
     orders = []
     for q1, q2, q3 in zip(values, values[1:], values[2:]):
@@ -130,9 +143,10 @@ def observed_orders(solve, ns, ratio=None):
     q_prev, q_last = values[-2], values[-1]
     if np.isfinite(p) and p > 0:
         extrapolated = q_last + (q_last - q_prev) / (ratio**p - 1.0)
-    else:
+        error_estimate = float(np.max(np.abs(q_last - extrapolated)))
+    else:  # not converging (or exactly converged): no error estimate
         extrapolated = q_last
-    error_estimate = float(np.max(np.abs(q_last - extrapolated)))
+        error_estimate = float("nan")
     as_out = (lambda v: float(v)) if values[0].ndim == 0 else (lambda v: v)
     return {"values": [as_out(v) for v in values], "orders": orders,
             "extrapolated": as_out(extrapolated), "error_estimate": error_estimate}

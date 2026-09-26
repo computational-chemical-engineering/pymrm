@@ -143,9 +143,14 @@ def interp_cntr_to_stagg_tvd(
             face, delta = interp_cntr_to_stagg_tvd(
                 cell_centered_values, x_f, x_c, bc, v, tvd_limiter, axis
             )
-            ax = axis % cell_centered_values.ndim
+            cells = np.asarray(cell_centered_values)
+            ax = axis % cells.ndim
+            shape_f = list(cells.shape)
+            shape_f[ax] += 1
+            face = np.asarray(face).reshape(shape_f).copy()
+            delta = np.asarray(delta).reshape(shape_f).copy()
             face, delta = np.moveaxis(face, ax, 0), np.moveaxis(delta, ax, 0)
-            cells = np.moveaxis(np.asarray(cell_centered_values), ax, 0)
+            cells = np.moveaxis(cells, ax, 0)
             for flag, (i_face, i_cell) in zip(outflow, ((0, 0), (-1, -1))):
                 if flag:
                     face[i_face] = cells[i_cell]
@@ -394,7 +399,8 @@ def compute_boundary_values(
     bc : dict or tuple[dict | None, dict | None], optional
         Boundary-condition data. For a single boundary query (``bound_id`` set),
         a single dictionary is accepted. For both boundaries, pass a
-        two-element tuple.
+        two-element tuple. At a ``{"outflow": True}`` boundary the value is the
+        adjacent cell value and the gradient is zero.
     axis : int, optional
         Axis normal to the boundary.
     bound_id : {0, 1} or None, optional

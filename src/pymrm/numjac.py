@@ -445,9 +445,9 @@ def stencil_block_diagonals(
         Axes along which neighbour coupling (offsets ``-1, 0, 1``) is included.
     axes_blocks : sequence[int] or None, optional
         Axes over which full-block coupling (``slice(None)``) is applied. The
-        default, ``None``, means the last axis, unless that axis is listed in
-        ``axes_diagonals``, in which case there are no block axes. On a 1-D
-        field ``axes_diagonals=[0]`` therefore gives a tridiagonal stencil.
+        default, ``None``, means the last axis; on a 1-D field with
+        ``axes_diagonals=[0]`` it means no block axes, which gives a tridiagonal
+        stencil.
     periodic_axes : sequence[int], optional
         Axes with periodic indexing.
 
@@ -475,7 +475,7 @@ def stencil_block_diagonals(
     diagonals = _normalise(axes_diagonals, "axes_diagonals")
     periodic = _normalise(periodic_axes, "periodic_axes")
     if axes_blocks is None:
-        blocks = [] if (ndims - 1) in diagonals else [ndims - 1]
+        blocks = [] if (ndims == 1 and 0 in diagonals) else [ndims - 1]
     else:
         blocks = _normalise(axes_blocks, "axes_blocks")
 

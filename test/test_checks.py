@@ -73,3 +73,27 @@ def test_residual_check_is_scale_free():
         return tuple(v * 1e6 for v in fun(c))
 
     assert residual_check(fun, sol.x)["ok"] and residual_check(scaled, sol.x)["ok"]
+
+
+def test_check_jacobian_fails_on_nan_probe_and_mixed_scales():
+    x = np.array([1e-4, 1e3])
+
+    def log_wrong(v):  # derivative wrong by a factor 2 on a small unknown
+        return np.log(v), np.diag([2.0 / v[0], 1.0 / v[1]])
+    assert not check_jacobian(log_wrong, x)["ok"]
+
+    def scaled_wrong(v):  # 10 % error in the entry of the large unknown
+        return np.array([v[0] ** 2, v[1] ** 2]), np.diag([2.0 * v[0], 2.2 * v[1]])
+    assert not check_jacobian(scaled_wrong, x)["ok"]
+
+    def correct(v):
+        return np.array([v[0] ** 2, np.log(v[1])]), np.diag([2.0 * v[0], 1.0 / v[1]])
+    assert check_jacobian(correct, x)["ok"]
+
+
+def test_observed_orders_rejects_variable_ratio_and_flags_divergence():
+    import pytest
+    with pytest.raises(ValueError):
+        observed_orders(lambda n: 1.0 / n**2, (10, 20, 30))
+    out = observed_orders(lambda n: float(n % 3), (10, 20, 40))
+    assert np.isnan(out["error_estimate"]) or out["orders"][-1] > 0

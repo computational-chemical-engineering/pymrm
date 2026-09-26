@@ -89,3 +89,38 @@ def test_outflow_marker_rejects_coefficients():
     with pytest.raises(ValueError):
         construct_convflux_upwind((3, 1), np.linspace(0, 1, 4),
                                   bc=({"a": 0, "b": 1, "d": 1}, {"outflow": True, "a": 1.0}), v=1.0)
+
+
+def test_list_bc_without_marker_still_works():
+    c = np.linspace(1.0, 2.0, 5).reshape(-1, 1)
+    x_f = np.linspace(0.0, 1.0, 6)
+    compute_boundary_values(c, x_f, None, [None, {"a": 0.0, "b": 1.0, "d": 2.0}])
+
+
+def test_single_cell_cstr_with_danckwerts_inlet_is_exact():
+    z_f = np.array([0.0, 1.0])
+    shape, d_ax, k = (1, 1), 0.1, 2.0
+    bc = ({"a": d_ax, "b": 1.0, "d": 1.0}, OUT)     # v c - D dc/dz = v c_in at z = 0
+    conv, conv_bc = construct_convflux_upwind(shape, z_f, bc=bc, v=1.0)
+    grad, grad_bc = construct_grad(shape, z_f, bc=bc)
+    div = construct_div(shape, z_f, nu=0)
+    mat = (div @ (conv - d_ax * grad) + k * eye_array(1)).tocsc()
+    c = spsolve(mat, -_dense(div @ (conv_bc - d_ax * grad_bc)))
+    assert np.isclose(float(np.ravel(c)[0]), 1.0 / (1.0 + k), rtol=1e-12)
+    inlet_flux = ((conv - d_ax * grad) @ np.atleast_1d(c) + _dense(conv_bc - d_ax * grad_bc))[0]
+    assert np.isclose(inlet_flux, 1.0, rtol=1e-12)
+
+
+def test_tvd_wrapper_single_cell_and_other_axis():
+    face, delta = interp_cntr_to_stagg_tvd(np.array([2.0]), np.array([0.0, 1.0]),
+                                           bc=({"a": 0.0, "b": 1.0, "d": 5.0}, OUT), v=1.0)
+    assert np.allclose(np.ravel(face), [5.0, 2.0])
+    c = np.array([[1.0, 2.0, 3.0]])
+    face, _ = interp_cntr_to_stagg_tvd(c.reshape(1, 3), np.linspace(0, 1, 4),
+                                       bc=({"a": 0.0, "b": 1.0, "d": 0.0}, OUT), v=1.0, axis=1)
+    assert face.shape == (1, 4) and np.isclose(face[0, -1], 3.0)
+
+
+def test_describe_bc_knows_the_marker():
+    from pymrm import describe_bc
+    assert "outflow" in describe_bc(({"a": 0.0, "b": 1.0, "d": 1.0}, OUT)).splitlines()[1]

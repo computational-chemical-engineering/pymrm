@@ -33,7 +33,7 @@ def newton(
         ``rtol=0`` and a scalar ``tol`` the iteration stops when the infinity
         norm of the update is below ``tol``. This is an ABSOLUTE criterion: for
         unknowns much smaller than ``tol`` (trace concentrations, for example)
-        it stops after one step with a wrong answer. Scale the unknowns to order
+        it can stop after one step with a wrong answer. Scale the unknowns to order
         one, or use ``tol=0`` with ``rtol``. An array must broadcast to the
         unknowns.
     maxfev : int, optional

@@ -24,7 +24,10 @@ def construct_convflux_upwind(
         Cell-center coordinates. If omitted, arithmetic midpoints are used.
     bc : tuple[dict | None, dict | None], optional
         Left and right boundary-condition dictionaries with keys ``a``, ``b``,
-        and ``d``.
+        and ``d``. ``{"outflow": True}`` marks a pure-outflow boundary: the
+        face value is the adjacent cell value (a stirred volume's exit). It is
+        meant for faces where material leaves; if flow enters there, the face
+        still carries the adjacent cell value.
     v : float or array_like, optional
         Face velocity field. Scalars and broadcastable arrays are accepted.
     axis : int, optional
@@ -163,10 +166,10 @@ def construct_convflux_bc(
         otherwise.
     """
 
-    # A pure-outflow face takes the value of the adjacent cell. It is built as a
-    # Dirichlet face with d = 0, and the dependence of the face values on that
-    # d (which equals the adjacent cell value) is added to the cell matrix.
-    bc, outflow = substitute_outflow_bc(bc, {"a": 0.0, "b": 1.0, "d": 0.0})
+    # A pure-outflow face takes the value of the adjacent cell. The face values
+    # are first built with a zero-gradient condition there (consistent with
+    # construct_grad), then the outflow face is set to the adjacent cell value.
+    bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
     # Trick: Reshape to triplet shape_t
     shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
@@ -233,12 +236,9 @@ def construct_convflux_bc(
             ((a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]) * fctr,
             shape_bc,
         ).reshape(shape_bc_d)
-        if outflow[0]:  # d0 = c0: add d(face)/d(d0)
-            values[:, 0, :] += np.broadcast_to((a[1] * alpha_0_right + b[1]) * fctr, shape).reshape(shape_bc_d)
-            values[:, 1, :] += np.broadcast_to(-alpha_2_right * a[1] * fctr, shape).reshape(shape_bc_d)
-        if outflow[1]:  # d1 = c0: add d(face)/d(d1)
-            values[:, 0, :] += np.broadcast_to(-alpha_2_left * a[0] * fctr, shape).reshape(shape_bc_d)
-            values[:, 1, :] += np.broadcast_to((a[0] * alpha_0_left + b[0]) * fctr, shape).reshape(shape_bc_d)
+        for side in (0, 1):
+            if outflow[side]:
+                values[:, side, :], values_bc[:, side, :] = 1.0, 0.0
 
         if isinstance(v, (float, int)):
             values *= v
