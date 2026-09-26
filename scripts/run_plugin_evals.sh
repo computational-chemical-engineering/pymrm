@@ -24,4 +24,6 @@ fi
 
 PATH="$EVAL_VENV/bin:$PATH" claude plugin eval plugins/pymrm \
     --allow-tools Bash Write Edit \
-    --scaffold --trust-plugin --no-publish "$@"
+    --scaffold --trust-plugin --no-publish --keep-temp "$@"
+# --keep-temp keeps each run's transcript at /tmp/claude-eval-*/out/trace.jsonl
+# (tracePath in the --json output); delete those directories when done.
