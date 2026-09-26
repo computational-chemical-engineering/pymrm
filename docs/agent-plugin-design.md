@@ -282,3 +282,44 @@ Phases, each closed by evals:
 5. Automated skill optimisation (CORAL-type or skill-refinement tools) against the
    suite, if phase 1 shows room.
 6. Codex and Gemini packaging (section 10).
+
+## 12. Progress and measurements (2026-09-26)
+
+**Eval environment.** The first baseline (2026-09-25, $72) ran without pymrm:
+the eval sandbox hides `$HOME`, `/tmp` and `/var/tmp`, and exposes only the PATH
+directories of the home tree. `scripts/run_plugin_evals.sh` now builds a venv
+whose packages live inside `bin/` with a wrapper `python`; the `z-env-probe` case
+fails when pymrm is not importable. Transcripts are kept (`--keep-temp`).
+
+**Measured with pymrm available** (one run per case):
+- Opus passes all pitfall and held-out cases with AND without the plugin: on
+  well-posed problems the plugin's value for Opus is process, not correctness.
+- Sonnet cost 4 to 8 times Opus per task. Turn analysis: most of it was the
+  full model-mode workflow (spec, verifier subagent, model card) on one-number
+  calculations, verifier self-inflicted errors, fitting an asymptote instead of
+  deriving it, and polling background runs. After the skill fixes: $22 to
+  $9.97 for the same cases, Python runs per case 18 to 7.5, errors 5.8 to 2.1,
+  pitfall tasks $0.26 to $0.42 (Opus $0.20 to $0.30).
+- Opus's repeated errors: absolute residual thresholds, root finding without a
+  verified bracket, scripts that cannot import the model, assumed packages,
+  SciPy tolerance limits. Now `numerics.md` and `pymrm.checks`.
+- Sonnet D2.2: two "independent" routes agreed on a model that ignored the
+  stated constant density. An independent route checks numerics, not the reading
+  of the problem (fix pending: map each stated assumption to its code line).
+
+**Library changes (branch feature/api-guards, merged into this branch):**
+P4 stencil fixed, P3 warning, newton `rtol` and `step_norm`, `describe_bc`,
+`pymrm.checks`, `{"outflow": True}` marker; reviewed twice by `think`, 390
+tests, every regression test fails on the previous code. Found on the way:
+with `shapes_d` the bc dictionary's `d` is a coefficient on the external vector.
+
+**Plugin additions:** `model-patterns` skill with three tested exemplars
+(membrane reactor, Darcy pressure-velocity, nested particles with Schur
+complement); format rule (flat executed notebook for simple or didactic models,
+modules plus driver notebook for full models) with `pellet_teaching.ipynb`;
+assembly styles and profiles; consult mode; reactor selection.
+
+**Proposed for the gallery (not done; the gallery is paused):** page = folder
+with `model.py` (importable, tested) + `index.ipynb` + `data/`; the bootstrap
+fetches `model.py` like `gallery_utils.py`; pin pymrm and fetch from a tag, not
+`main`; migrate pages when they are next touched.
