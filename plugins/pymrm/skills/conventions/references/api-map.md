@@ -29,6 +29,9 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | Jacobian of a nonlinear source | `NumJac(shape)`, called as `g, jac = numjac(f, c)` | shape keeps a field axis (pitfalls P3, P4) |
 | nonlinear solve | `newton(fun, x0, tol, maxfev, solver, callback)` | `fun(x) -> (g, jac)`; absolute step tolerance (pitfalls P7) |
 | keep iterates physical | `clip_approach(values, dummy, lower_bounds=0)` as the `newton` callback | |
+| see what a bc dictionary means | `describe_bc(bc, x_f)` (after 2.3.1) | prints each end as an equation in x (pitfalls P1) |
+| stirred-volume or tank outlet | `{"outflow": True}` as the bc dictionary (after 2.3.1) | face value = adjacent cell (pitfalls P6) |
+| Jacobian, refinement, threshold and residual checks | `pymrm.checks` (after 2.3.1; copy in `scripts/pymrm_checks.py`) | see `numerics.md` |
 | couple sub-domains in one system | `update_array_indices` (place a block into a larger state), `construct_interface_matrices` | structure S7; `update_csc_array_indices` is deprecated; see `assembly-styles.md` |
 
 ## `NumJac` stencils

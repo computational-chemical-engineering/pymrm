@@ -17,6 +17,8 @@ a model that will be kept, shared or extended.
 | `references/api-map.md` | choosing a function; patterns beyond the core recipe (TVD, nested scales, 2-D, boundary unknowns, continuation) |
 | `references/assembly-styles.md` | deciding how to build the Jacobian: operator sum (default), block assembly, full-residual `NumJac` |
 | `references/profiles.md` | the user or project asks for efficiency, flexibility, readability or teaching value |
+| `references/numerics.md` | checking a Jacobian, a refinement study, a threshold or a residual; SciPy tolerances; script imports |
+| `scripts/pymrm_checks.py` | copy of `pymrm.checks` for pymrm 2.3.1 and older |
 | `exemplars/steady_pellet.py` | a steady 1-D nonlinear boundary-value problem (sphere, `NumJac`, `newton`) |
 | `exemplars/dispersion_reactor.py` | a transient 1-D convection-dispersion-reaction model (Danckwerts bc, backward Euler, constant Jacobian factorised once) |
 | `exemplars/assembly_styles.py` | one two-field model in all three assembly styles, with a Jacobian cross-check |
@@ -30,7 +32,9 @@ Paths are relative to this skill's directory.
    the physical equation in `x` next to each dictionary and derive `a` from it.
 2. Keep a field axis: one field is `(n, 1)`, never `(n,)`.
 3. Face diffusivities at a jump: harmonic mean.
-4. Scale unknowns to order one before `newton`; check the final residual.
+4. Scale unknowns to order one before `newton` (or use `tol=0, rtol=...` on a
+   pymrm after 2.3.1); judge the result with `residual_check`, not with an
+   absolute threshold.
 5. Read boundary values with `compute_boundary_values`, never from the last cell.
 6. Assemble constant operators once; use `shapes_d` when boundary values change.
    Default Jacobian: constant operator part plus `NumJac` on local terms only

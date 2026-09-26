@@ -33,7 +33,7 @@ BAD_MODEL = """
 import numpy as np
 from scipy.sparse import csc_array
 from pymrm import NumJac, newton
-NumJac((50,))(lambda c: -c**2, np.ones(50))
+NumJac((150,))(lambda c: -c**2, np.ones(150))
 s = 1e-20
 newton(lambda x: (np.array([x[0]**2 - s]), csc_array(np.array([[2 * x[0]]]))), np.array([1e-8]))
 """
@@ -56,3 +56,10 @@ def test_checker_silent_on_exemplar():
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "no pitfall symptoms" in out.stdout
+
+
+def test_plugin_copy_of_checks_is_identical():
+    """The plugin ships a copy of pymrm.checks for environments with an older pymrm."""
+    library = Path(__file__).resolve().parents[1] / "src" / "pymrm" / "checks.py"
+    copy = EXEMPLAR_DIR.parent / "scripts" / "pymrm_checks.py"
+    assert library.read_bytes() == copy.read_bytes(), "run: cp src/pymrm/checks.py " + str(copy)

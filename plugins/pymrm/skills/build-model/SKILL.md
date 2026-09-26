@@ -156,7 +156,10 @@ Run the validation plan and write `self_check.md`:
 - break the model on purpose once per check (flip a sign, change the geometry
   index, perturb a bc) and confirm the checked number moves;
 - run the `conventions` skill's `scripts/check_model.py` on the model and fix
-  every finding; record its report in `self_check.md`.
+  every finding; record its report in `self_check.md`;
+- use the check tools (`numerics.md`): `check_jacobian` once at a state away
+  from the solution, `observed_orders` for every refinement study, `find_roots`
+  for every threshold, `residual_check` on every reported solution.
 
 ## Phase 6: verify (separate context)
 

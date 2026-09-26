@@ -31,6 +31,14 @@ from scipy.optimize import brentq
 
 from pymrm import NumJac, compute_boundary_values, construct_div, construct_grad, newton
 
+try:
+    from pymrm.checks import residual_check
+except ImportError:  # pymrm 2.3.1 or older: the copy shipped with the plugin
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from pymrm_checks import residual_check
+
 
 class SteadyPellet:
     """Finite-volume model of a pellet with power-law kinetics."""
@@ -73,9 +81,10 @@ class SteadyPellet:
 
     def solve(self):
         result = newton(self.residual, self.c)
-        g_final, _ = self.residual(result.x)
-        if not result.success or np.max(np.abs(g_final)) > 1e-8:
-            raise RuntimeError(f"pellet solve failed: {result.message}")
+        check = residual_check(self.residual, result.x)   # scale-free, not an absolute threshold
+        if not (result.success and check["ok"]):
+            raise RuntimeError(f"pellet solve failed: {result.message}, backward error "
+                               f"{check['backward_error']:.1e}")
         self.c = result.x.reshape(self.c.shape)
         return self
 

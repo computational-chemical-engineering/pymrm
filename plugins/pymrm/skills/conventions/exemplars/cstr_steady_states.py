@@ -28,6 +28,14 @@ from scipy.sparse import csc_array
 
 from pymrm import newton
 
+try:
+    from pymrm.checks import residual_check
+except ImportError:  # pymrm 2.3.1 or older: the copy shipped with the plugin
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from pymrm_checks import residual_check
+
 # 3. Parameters (all assumed, for illustration)
 C_IN = 1000.0      # mol/m3, feed concentration
 T_IN = 300.0       # K, feed temperature
@@ -84,9 +92,10 @@ def root_by_newton(temp_guess, beta=BETA):
     conc_guess = C_IN / (1.0 + TAU * rate_constant(temp_guess))
     y0 = np.array([conc_guess / C_IN, temp_guess / T_REF])
     result = newton(lambda y: residual_scaled(y, beta), y0)
-    g_final, _ = residual_scaled(result.x, beta)
-    if not result.success or np.max(np.abs(g_final)) > 1e-10:
-        raise RuntimeError(f"newton failed near T = {temp_guess} K: {result.message}")
+    check = residual_check(lambda y: residual_scaled(y, beta), result.x)
+    if not (result.success and check["ok"]):
+        raise RuntimeError(f"newton failed near T = {temp_guess} K: {result.message}, "
+                           f"backward error {check['backward_error']:.1e}")
     return result.x[0] * C_IN, result.x[1] * T_REF
 
 

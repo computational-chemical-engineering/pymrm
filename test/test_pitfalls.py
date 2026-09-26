@@ -1,7 +1,7 @@
 """Executable record of the pitfalls documented for modelling agents.
 
 Each test demonstrates one entry of
-``plugins/pymrm/skills/conventions/references/pitfalls.md`` (ids P1 to P8).
+``plugins/pymrm/skills/conventions/references/pitfalls.md`` (ids P1 to P8; entries note what changed after pymrm 2.3.1).
 The tests pin CURRENT behaviour, including behaviour that is a trap rather than a
 feature. If a test here fails after an API change, the change has made the
 documented pitfall untrue: update ``pitfalls.md`` in the same PR, then update or
@@ -9,6 +9,7 @@ delete the test.
 """
 
 import numpy as np
+import pytest
 from scipy.sparse import csc_array, eye_array
 from scipy.sparse.linalg import spsolve
 
@@ -91,21 +92,21 @@ def test_p3_numjac_bare_1d_shape_is_dense():
     _, jac_field = NumJac((n, 1))(reaction, np.ones((n, 1)))
     assert jac_bare.nnz == n * n
     assert jac_field.nnz == n
+    with pytest.warns(UserWarning, match="dense"):   # new: warning from n >= 100
+        NumJac((200,))
 
 
 # P4 -------------------------------------------------------------------------
-def test_p4_axes_diagonals_on_1d_shape_gives_wrong_jacobian():
-    """axes_diagonals=[0] on a 1-D shape misplaces entries; the true Jacobian
-    of a pointwise -c**2 at c=1 is -2 on the diagonal."""
+def test_p4_axes_diagonals_on_1d_shape_is_fixed():
+    """Fixed after 2.3.1: axes_diagonals=[0] on a 1-D shape is tridiagonal and
+    exact (on 2.3.1 and older it misplaced entries; see pitfalls.md)."""
     n = 8
 
     def reaction(c):
         return -c**2
 
     _, jac = NumJac((n,), axes_diagonals=[0])(reaction, np.ones(n))
-    assert not np.allclose(jac.toarray(), -2.0 * np.eye(n), atol=1e-4)
-    _, jac_ok = NumJac((n, 1))(reaction, np.ones((n, 1)))
-    assert np.allclose(jac_ok.toarray(), -2.0 * np.eye(n), atol=1e-4)
+    assert np.allclose(jac.toarray(), -2.0 * np.eye(n), atol=1e-4)
 
 
 # P5 -------------------------------------------------------------------------
@@ -122,6 +123,11 @@ def test_p5_shapes_d_separates_boundary_values_from_operator():
         grad_rebuilt, grad_bc_rebuilt = construct_grad(shape, x_f, x_c, bc_new)
         assert np.allclose((grad - grad_rebuilt).toarray(), 0.0)
         assert np.allclose(_dense(grad_bc_left @ np.array([d_new])), _dense(grad_bc_rebuilt))
+    # the dictionary's d is a coefficient on the external vector: d = 2 doubles it
+    bc_two = ({"a": 0.0, "b": 1.0, "d": 2.0}, bc[1])
+    _, grad_bc_two, _ = construct_grad(shape, x_f, x_c, bc_two, shapes_d=((1,), None))
+    _, grad_bc_plain = construct_grad(shape, x_f, x_c, bc_two)
+    assert np.allclose(_dense(grad_bc_two @ np.array([2.0])), 2.0 * _dense(grad_bc_plain))
 
 
 # P6 -------------------------------------------------------------------------
@@ -133,6 +139,9 @@ def _tanks_outlet(n_tanks, k, outlet):
     if outlet == "zero-gradient":
         bc = (bc_in, {"a": 1.0, "b": 0.0, "d": 0.0})
         conv, conv_bc = construct_convflux_upwind(shape, z_f, z_c, bc, v=1.0)
+        mat = div @ conv
+    elif outlet == "marker":
+        conv, conv_bc = construct_convflux_upwind(shape, z_f, z_c, (bc_in, {"outflow": True}), v=1.0)
         mat = div @ conv
     else:
         # no flux through the exit face, outflow v*C_N added as a sink on the last cell
@@ -153,6 +162,7 @@ def test_p6_no_pure_outflow_bc():
         err_zg = _tanks_outlet(n_tanks, 1.0, "zero-gradient") / exact - 1.0
         assert abs(err_zg - err_expected) < 5e-4
         assert abs(_tanks_outlet(n_tanks, 1.0, "sink") / exact - 1.0) < 1e-12
+        assert abs(_tanks_outlet(n_tanks, 1.0, "marker") / exact - 1.0) < 1e-12   # new
 
 
 # P7 -------------------------------------------------------------------------
@@ -176,6 +186,13 @@ def test_p7_newton_stops_on_absolute_step():
 
     res = newton(f_scaled, np.array([100.0]))
     assert res.success and np.isclose(scale * res.x[0], np.sqrt(s), rtol=1e-8)
+
+    # new: relative stopping, and a scale-free residual check
+    from pymrm.checks import residual_check
+    res_rel = newton(f, np.array([1e-8]), tol=0.0, rtol=1e-10)
+    assert np.isclose(res_rel.x[0], np.sqrt(s), rtol=1e-8)
+    assert not residual_check(f, np.array([5.0005e-9]))["ok"]
+    assert residual_check(f, res_rel.x)["ok"]
 
 
 # P8 -------------------------------------------------------------------------
