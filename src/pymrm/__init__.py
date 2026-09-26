@@ -11,6 +11,35 @@ including:
 * coupling helpers for multi-domain/interface formulations; and
 * immersed-boundary operators with SDF-based domain segmentation and a
   particle front end (exact per-particle walls/normals, contact policies).
+
+Conventions (the ones most often got wrong, by people and coding agents):
+
+* Boundary conditions are ``(lower, upper)`` dictionaries ``{"a", "b", "d"}``
+  meaning ``a * dc/dn + b * c = d`` with ``n`` the OUTWARD normal, so at the
+  lower end ``dc/dn = -dc/dx``. ``describe_bc(bc, x_f)`` prints what a pair
+  means. ``{"outflow": True}`` marks a pure-outflow boundary (a stirred
+  volume's exit).
+* Keep a trailing field axis: one field on ``n`` cells has shape ``(n, 1)``.
+  ``NumJac`` couples the LAST axis in full, so a bare ``(n,)`` shape builds a
+  dense Jacobian.
+* A model assembles its constant operators once (``construct_grad``,
+  ``construct_div``, ``construct_convflux_upwind``), returns ``(g, jac)`` from a
+  residual function, uses ``NumJac`` for local nonlinear terms such as
+  reactions, and solves with ``newton``; the Jacobian is the sum of the
+  constant operator part and the local part.
+* ``newton`` stops on an ABSOLUTE step (``tol``): scale unknowns to order one or
+  pass ``tol=0, rtol=...``, and check the result with
+  ``pymrm.checks.residual_check``.
+* Read boundary values with ``compute_boundary_values`` (its gradients are
+  along the axis, not the outward normal), never from the last cell centre.
+* With ``shapes_d`` a dictionary's ``d`` is a coefficient on the external
+  vector of boundary values: use ``d = 1`` and pass the values in the vector.
+* Where the diffusivity jumps between cells, use the harmonic mean at the face.
+
+``pymrm.checks`` provides ``check_jacobian``, ``observed_orders``,
+``find_roots`` and ``residual_check``. Tutorials and examples are not installed
+with the package; see https://github.com/computational-chemical-engineering/pymrm
+(folders ``tutorials`` and ``examples``) and the README for a minimal model.
 """
 
 from .grid import generate_grid, non_uniform_grid
