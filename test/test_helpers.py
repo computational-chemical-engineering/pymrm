@@ -146,3 +146,15 @@ def test_construct_coefficient_matrix_rectangular(sparse_format):
                                        format=sparse_format)
     assert mat.shape == (5, 20)
     assert issparse(mat)
+
+
+def test_describe_bc_resolves_the_outward_normal():
+    from pymrm import describe_bc
+    text = describe_bc(({"a": 0.05, "b": 1.0, "d": 2.0}, {"a": 1.0, "b": 0.0, "d": 0.0}),
+                       x_f=np.linspace(0.0, 1.0, 5))
+    lower, upper = text.splitlines()
+    assert "x=0" in lower and "outward normal -x" in lower
+    assert "-0.05*dc/dx + 1*c = 2" in lower and "[Robin]" in lower
+    assert "x=1" in upper and "1*dc/dx + 0*c = 0" in upper and "[Neumann]" in upper
+    assert "None, treated as a = b = d = 0" in describe_bc((None, {"a": 0, "b": 1, "d": 1}))
+    assert "[Dirichlet]" in describe_bc((None, {"a": 0, "b": 1, "d": 1}))

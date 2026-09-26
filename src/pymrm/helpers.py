@@ -199,3 +199,103 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
         coefficients_copy = np.broadcast_to(coefficients_copy, shape)
         coeff_matrix = cls(diags(coefficients_copy.ravel(), format=fmt))
     return coeff_matrix
+
+
+def _format_coefficient(value):
+    arr = np.asarray(value, dtype=float)
+    if arr.size == 1:
+        return f"{float(arr.ravel()[0]):.6g}"
+    if arr.size <= 6:
+        return "[" + ", ".join(f"{v:.6g}" for v in arr.ravel()) + "]"
+    return f"[{arr.min():.6g} .. {arr.max():.6g}, shape {arr.shape}]"
+
+
+def _classify_bc(a, b):
+    a_zero = np.all(np.asarray(a, dtype=float) == 0.0)
+    b_zero = np.all(np.asarray(b, dtype=float) == 0.0)
+    a_nonzero = np.all(np.asarray(a, dtype=float) != 0.0)
+    b_nonzero = np.all(np.asarray(b, dtype=float) != 0.0)
+    if a_zero and b_nonzero:
+        return "Dirichlet"
+    if b_zero and a_nonzero:
+        return "Neumann"
+    if a_nonzero and b_nonzero:
+        return "Robin"
+    return "mixed or degenerate"
+
+
+def describe_bc(bc, x_f=None, axis_name="x", var="c"):
+    """Describe boundary-condition dictionaries as the equations they impose.
+
+    pymrm boundary conditions read ``a * dc/dn + b * c = d`` with ``n`` the
+    OUTWARD normal, so the same dictionary means opposite gradients at the two
+    ends. This helper writes each condition out in terms of the axis direction,
+    which makes sign errors visible.
+
+    Parameters
+    ----------
+    bc : tuple[dict | None, dict | None]
+        Lower and upper boundary dictionaries with keys ``a``, ``b``, ``d``.
+    x_f : array_like, optional
+        Face coordinates along the axis; used to print the boundary positions.
+    axis_name : str, optional
+        Name of the coordinate (default ``"x"``).
+    var : str, optional
+        Name of the field (default ``"c"``).
+
+    Returns
+    -------
+    str
+        One line per boundary, for example
+        ``lower (x=0, outward normal -x): -1*dc/dx + 0*c = 2  [Neumann]``.
+    """
+    lines = []
+    for side, sign, index in (("lower", "-", 0), ("upper", "+", -1)):
+        entry = bc[index] if bc is not None else None
+        where = f"{axis_name}={float(np.asarray(x_f)[index]):.6g}, " if x_f is not None else ""
+        head = f"{side} ({where}outward normal {sign}{axis_name})"
+        if entry is None:
+            lines.append(f"{head}: None, treated as a = b = d = 0")
+            continue
+        if is_outflow_bc(entry):
+            lines.append(f"{head}: outflow, face value = adjacent cell value, zero diffusive flux")
+            continue
+        a, b, d = (entry.get(key, 0.0) for key in ("a", "b", "d"))
+        a_text = _format_coefficient(np.asarray(a, dtype=float) * (-1.0 if sign == "-" else 1.0) + 0.0)
+        lines.append(
+            f"{head}: {a_text}*d{var}/d{axis_name} + {_format_coefficient(b)}*{var} = "
+            f"{_format_coefficient(d)}  [{_classify_bc(a, b)}]"
+        )
+    return "\n".join(lines)
+
+
+def is_outflow_bc(bc_side):
+    """Return True if a boundary dictionary is the pure-outflow marker.
+
+    ``{"outflow": True}`` marks a boundary through which material leaves with
+    the value of the adjacent cell (a stirred volume's exit, a tanks-in-series
+    outlet). It cannot be expressed with ``a``, ``b`` and ``d``, which describe
+    a reconstructed face value, so it is a separate marker.
+    """
+    if not isinstance(bc_side, dict) or not bc_side.get("outflow", False):
+        return False
+    if any(key in bc_side for key in ("a", "b", "d")):
+        raise ValueError("an outflow boundary takes no 'a', 'b' or 'd' coefficients")
+    return True
+
+
+def substitute_outflow_bc(bc, replacement):
+    """Replace outflow markers in ``bc`` by ``replacement``.
+
+    Returns the new bc (tuple, or single dict) and the outflow flags.
+    """
+    if bc is None:
+        return bc, (False, False)
+    if isinstance(bc, dict):
+        flag = is_outflow_bc(bc)
+        return (dict(replacement) if flag else bc), (flag,)
+    flags = tuple(is_outflow_bc(side) for side in bc)
+    if not any(flags):
+        return bc, flags
+    replaced = [dict(replacement) if flag else side for side, flag in zip(bc, flags)]
+    return (replaced if isinstance(bc, list) else tuple(replaced)), flags
