@@ -97,3 +97,9 @@ def test_observed_orders_rejects_variable_ratio_and_flags_divergence():
         observed_orders(lambda n: 1.0 / n**2, (10, 20, 30))
     out = observed_orders(lambda n: float(n % 3), (10, 20, 40))
     assert np.isnan(out["error_estimate"]) or out["orders"][-1] > 0
+
+
+def test_checks_reachable_after_bare_import():
+    # the package docstring and the plugin call pymrm.checks.residual_check after `import pymrm`
+    import pymrm
+    assert pymrm.checks.residual_check is residual_check
