@@ -248,6 +248,21 @@ for A, to show the traps are real for an unaided agent.
   therefore ships the same folder as a Gemini extension (`gemini-extension.json`)
   and, if its skills are namespaced, a Codex plugin, both tested by an eval run;
   the flat copy stays a fallback with a clash warning in the README.
+- **Codex and Gemini packaging** (tested 2026-09-27, Codex CLI 0.157.1, Gemini
+  CLI 0.61.0). No extra manifests were needed. Codex reads
+  `.claude-plugin/marketplace.json` and `plugin.json` as they are
+  (`codex plugin marketplace add computational-chemical-engineering/pymrm`) and
+  namespaces the skills (`$pymrm:build-model`). Gemini cannot install an
+  extension from a subfolder, but `gemini skills install <repo> --path
+  plugins/pymrm/skills` installs all four skills; they are not namespaced, and a
+  reinstall silently overwrites a skill of the same name. Decided with the
+  maintainer: keep the short names and document the clash check and
+  `--scope workspace`. The verifier agent is Claude-only: a Codex plugin does not
+  load `agents/` (a TOML agent works only from `~/.codex/agents/`), and Gemini's
+  agent loader rejects the Claude file (`tools` must be a list, `skills` is an
+  unknown key). Both tools use the fallback in `build-model` (a subagent or a
+  fresh session pointed at `verify-model`). Not yet done: a model-building run
+  in Gemini (no account logged in on the test machine).
 
 ## 11. Next phase (approved 2026-09-25)
 
