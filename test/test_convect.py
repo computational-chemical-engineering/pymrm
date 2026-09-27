@@ -15,6 +15,7 @@ from pymrm.convect import (
     vanleer,
 )
 from pymrm.grid import generate_grid
+from pymrm.interpolate import interp_cntr_to_stagg_tvd
 
 
 @pytest.fixture(params=["csc", "csr"])
@@ -203,16 +204,11 @@ def test_convflux_upwind_2d_shape(sparse_format):
 # ---------------------------------------------------------------------------
 
 def test_tvd_limiters_upwind_region():
-    """Most limiters should return 0 for c_norm ≤ 0 (oscillation region).
-
-    Note: stoic has a distinct functional form and can return positive values
-    for negative normalized concentrations, which is its documented behaviour.
-    """
+    """Every limiter returns 0 for c_norm <= 0 (non-monotone region)."""
     c_norm = np.array([-0.5, -0.1, 0.0])
     x_c = 0.4
     x_d = 0.6
-    # These limiters are known to return 0 in the upstream / non-monotone region
-    for lim in [minmod, osher, clam, muscl, smart, vanleer]:
+    for lim in [minmod, osher, clam, muscl, smart, stoic, vanleer]:
         result = lim(c_norm, x_c, x_d)
         np.testing.assert_array_less(result, 1e-10 + np.zeros_like(result))
 
@@ -271,3 +267,83 @@ def test_construct_convflux_upwind_int_scalar_shape(sparse_format):
     x_f = np.linspace(0, 1, 9)
     conv_matrix, conv_bc = construct_convflux_upwind(8, x_f, format=sparse_format)
     assert conv_matrix.shape[1] == 8
+
+
+ALL_LIMITERS = [upwind, minmod, osher, clam, muscl, smart, stoic, vanleer]
+
+
+@pytest.mark.parametrize("x_c", [0.2, 1 / 3, 0.4, 0.5, 0.6, 0.75])
+@pytest.mark.parametrize("face_fraction", [0.3, 0.5, 0.7])
+def test_tvd_limiters_bounded_on_nonuniform_stencils(x_c, face_fraction):
+    """c_c <= c_f <= 1 for 0 <= c_c <= 1, also for x_c != 1/2.
+
+    x_c = 1/3 is the stencil next to a boundary, where the upstream point is a
+    face half a cell away. The van Leer curve exceeded 1 there (c_f = 1.031 at
+    c_c = 0.75), which made explicit convection undershoot.
+    """
+    x_d = x_c + face_fraction * (1 - x_c)
+    c_c = np.linspace(0.0, 1.0, 2001)
+    for lim in ALL_LIMITERS:
+        c_f = c_c + lim(c_c, x_c, x_d)
+        assert np.all(c_f >= c_c - 1e-12), lim.__name__
+        assert np.all(c_f <= 1 + 1e-12), lim.__name__
+
+
+def test_stoic_uniform_grid_matches_published_form():
+    """STOIC on a uniform grid: 3c, (1+c)/2, 3/8+3c/4, 1 with breaks 1/5, 1/2, 5/6."""
+    c_c = np.linspace(0.0, 1.0, 601)
+    expected = np.where(c_c < 0.2, 3 * c_c,
+                        np.where(c_c < 0.5, 0.5 + 0.5 * c_c,
+                                 np.where(c_c < 5 / 6, 0.375 + 0.75 * c_c, 1.0)))
+    np.testing.assert_allclose(c_c + stoic(c_c, 0.5, 0.75), expected, atol=1e-12)
+
+
+@pytest.mark.parametrize("x_c", [0.2, 1 / 3, 0.5, 0.7])
+def test_tvd_limiters_continuous(x_c):
+    """The limiter curves have no jumps on any stencil (a jump can stall the
+    deferred-correction iteration). MUSCL jumped by 1/12 on a uniform grid."""
+    x_d = x_c + 0.5 * (1 - x_c)
+    c_c = np.linspace(0.0, 1.0, 20001)
+    for lim in ALL_LIMITERS:
+        c_f = c_c + lim(c_c, x_c, x_d)
+        assert np.max(np.abs(np.diff(c_f))) < 1e-3, lim.__name__
+
+
+def _inlet_slope(limiter):
+    """Largest c_f / c_c on the inlet stencil (x_c = 1/3, x_d = 2/3). Explicit
+    Euler with the correction stays bounded for Co * slope <= 1."""
+    c_c = np.linspace(1e-6, 1.0, 100001)
+    return float(np.max((c_c + limiter(c_c, 1 / 3, 2 / 3)) / c_c))
+
+
+def _explicit_step_extremes(limiter, courant, num_steps=60):
+    num_x = 20
+    x_f = np.linspace(0.0, 10.0, num_x + 1)
+    x_c = 0.5 * (x_f[1:] + x_f[:-1])
+    bc = ({"a": 0, "b": 1, "d": 1}, {"outflow": True})
+    c = np.zeros(num_x)
+    c_min, c_max = 0.0, 0.0
+    for _ in range(num_steps):
+        c_f, _ = interp_cntr_to_stagg_tvd(c, x_f, x_c, bc, 1.0, tvd_limiter=limiter, axis=0)
+        c = c + courant * (c_f[:-1] - c_f[1:])
+        c_min, c_max = min(c_min, c.min()), max(c_max, c.max())
+    return c_min, c_max
+
+
+@pytest.mark.parametrize("limiter", ALL_LIMITERS)
+def test_explicit_tvd_convection_stays_bounded(limiter):
+    """A step entering through a Dirichlet inlet stays within [0, 1] below the
+    limiter's Courant bound. van Leer undershot to -1/128 here before its cap."""
+    slope = _inlet_slope(limiter)
+    assert slope <= 4 + 1e-9, f"{limiter.__name__}: c_f / c_c up to {slope:.3g} on the inlet stencil"
+    courant = 0.9 / slope
+    c_min, c_max = _explicit_step_extremes(limiter, courant, num_steps=int(15 / courant))
+    assert c_min > -1e-12
+    assert c_max < 1 + 1e-12
+
+
+def test_explicit_tvd_convection_break_row():
+    """Above the Courant bound the same test does see an overshoot, so the
+    bounded test above can fail."""
+    c_min, c_max = _explicit_step_extremes(smart, 0.30)
+    assert c_max > 1 + 1e-4
