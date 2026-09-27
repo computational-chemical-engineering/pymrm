@@ -9,7 +9,7 @@ strictest (KaTeX accepts \\bm, JupyterLab's MathJax does not), so this script
 combines a KaTeX parse with rules for what the others need. It checks every
 Markdown cell against a portable subset (style guide section 3.1):
 
-- display maths as $$ ... $$ with the $$ lines separated from text by blank lines;
+- display maths as $$ ... $$;
 - inline maths $...$ without a space just inside the dollars and without \\ ;
 - environments (aligned, cases, array, ...) only inside $$, never a bare
   \\begin{align} or \\begin{equation};
@@ -24,8 +24,9 @@ default ~/.cache/pymrm-katex; install with
 `npm install --prefix ~/.cache/pymrm-katex katex@0.16`). Without them the
 parse step is skipped and the report says so.
 
-Findings are errors or warnings. Warnings (blank lines around $$, maths in a
-heading) are rules whose effect on the GitHub preview is not yet confirmed.
+Findings are errors or warnings. Errors are confirmed failures (\\label in VS
+Code, \\eqref on GitHub and Colab, KaTeX parse errors, \\bm in JupyterLab).
+Warnings are advisable but rendered in the test notebook, or not covered by it.
 Exit status 1 when an error is flagged.
 """
 
@@ -49,7 +50,12 @@ INLINE = re.compile(r"(?<![\\$])\$(?!\$)((?:[^$\\]|\\.)+?)(?<![\\$])\$(?!\$)", r
 BARE_ENV = re.compile(r"^\s*\\begin\{(align\*?|equation\*?|gather\*?|multline\*?|eqnarray\*?)\}", re.M)
 
 
-WARNINGS = ("no blank line before $$", "no blank line after $$", "maths in a heading")
+# Confirmed by rendering docs/math-render-test.ipynb (2026-09-27): on GitHub and in
+# Colab only \eqref failed, in VS Code only \label; blank lines around $$, a bare align
+# environment, \\ and * in inline maths and | in tables rendered. Those are
+# warnings (advisable), the confirmed failures and KaTeX parse errors are errors.
+WARNINGS = ("environment outside $$", "line break", "two or more *", "| inside maths",
+            "maths in a heading", "\\newcommand", "\\renewcommand", "\\def")
 
 
 def _blank_out(match):
@@ -84,21 +90,13 @@ def extract(markdown):
 
     # display maths: $$ ... $$
     for match in re.finditer(r"\$\$(.+?)\$\$", text, flags=re.S):
-        body = match.group(1)
-        expressions.append((body.strip(), True))
-        start, end = match.start(), match.end()
-        before = text[:start].rstrip(" ")
-        after = text[end:].lstrip(" ")
-        if before and not before.endswith("\n\n") and not before.endswith("\n"):
-            problems.append(("display", body, "$$ does not start on its own line"))
-        elif before.endswith("\n") and not before.endswith("\n\n") and before.strip():
-            problems.append(("display", body, "no blank line before $$ (GitHub may not render it)"))
-        if after and not after.startswith("\n"):
-            problems.append(("display", body, "text directly after the closing $$"))
-        elif after.startswith("\n") and not after.startswith("\n\n") and after.strip():
-            problems.append(("display", body, "no blank line after $$ (GitHub may not render it)"))
+        expressions.append((match.group(1).strip(), True))
     without_display = re.sub(r"\$\$(.+?)\$\$", " ", text, flags=re.S)
 
+    prose = INLINE.sub(" ", without_display)
+    for m in re.finditer(r"\\(eqref|ref)\{[^}]*\}", prose):
+        problems.append(("command", m.group(0),
+                         f"\\{m.group(1)} in the text gives no equation number on GitHub or Colab"))
     for m in BARE_ENV.finditer(without_display):
         problems.append(("environment", m.group(0).strip(), "environment outside $$; use aligned/cases inside $$"))
 
@@ -118,8 +116,8 @@ def extract(markdown):
         if stars >= 2:
             starred = [m.group(1) for m in INLINE.finditer(paragraph) if "*" in m.group(1)]
             problems.append(("inline", "  ".join(f"${b}$" for b in starred),
-                             "two or more * in inline maths in one paragraph can become italics on GitHub; "
-                             "use \\ast or ^{\\ast}"))
+                             "two or more * in inline maths in one paragraph may become italics in some "
+                             "Markdown renderers; \\ast or ^{\\ast} is safer"))
 
     for line in lines:
         if re.match(r"\s*#", line) and re.search(r"(?<!\\)\$", line):
