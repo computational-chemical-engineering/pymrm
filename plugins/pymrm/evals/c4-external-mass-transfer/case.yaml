@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: c4-external-mass-transfer
+context:
+  scaffold_script: scaffold.sh

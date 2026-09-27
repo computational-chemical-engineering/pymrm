@@ -1,9 +1,13 @@
 [run]
-omit = test/*
+omit =
+    test/*
+    plugins/*
 
 [report]
 fail_under = 85
-omit = test/*
+omit =
+    test/*
+    plugins/*
 
 [html]
 directory = test/coverage_html
