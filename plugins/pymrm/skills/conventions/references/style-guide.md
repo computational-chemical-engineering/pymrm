@@ -93,21 +93,24 @@ Use portable notebook Markdown by default:
 - Use ordinary Markdown headings, lists, links, tables, fenced code blocks, and
   LaTeX equations.
 - Use display equations with `$$ ... $$` and inline equations with `$...$`,
-  within this portable subset:
-  - `$$` on its own lines, with a blank line before and after the block;
-  - inline `$...$` without a space just inside the dollars and without `\\`;
-  - multi-line equations with `aligned`, `cases` or `array` INSIDE `$$`, never a
-    bare `\begin{align}` or `\begin{equation}`;
-  - no `\label`, `\ref`, `\eqref`; at most one `\tag` per display block;
-  - no macros (`\newcommand`, `\def`), no `\bm` (JupyterLab's MathJax lacks it;
-    use `\boldsymbol`);
-  - multi-letter subscripts in `\mathrm{}`; `\cdot` rather than `*`;
-  - no maths in headings; no `|` inside maths in a table (use `\vert`).
+  within this portable subset. Required (confirmed to break somewhere by
+  `docs/math-render-test.ipynb`):
+  - no `\label` (breaks VS Code) and no `\ref` or `\eqref`, also not in the text
+    (breaks the GitHub preview); refer to equations in words;
+  - at most one `\tag` per display block, and none in inline maths;
+  - no `\bm` (JupyterLab's MathJax lacks it; use `\boldsymbol`);
+  - every expression parses in KaTeX (the VS Code engine).
+  Advisable (rendered in the test, or untested):
+  - multi-line equations with `aligned`, `cases` or `array` inside `$$` rather
+    than a bare `\begin{align}`;
+  - no `\\` and no pairs of `*` in inline maths (`\ast`, `\cdot`);
+  - no macros (`\newcommand`, `\def`); they do not carry over between cells;
+  - multi-letter subscripts in `\mathrm{}`;
+  - no maths in headings; `\vert` rather than `|` inside maths in a table.
 - Check a notebook with the conventions skill's
   `scripts/check_notebook_math.py notebook.ipynb`, which lints these rules and
-  parses every expression with KaTeX when Node.js and KaTeX are installed. The
-  blank-line and heading rules are reported as warnings until their effect on
-  the GitHub preview is confirmed.
+  parses every expression with KaTeX when Node.js and KaTeX are installed. It
+  reports the required rules as errors and the advisable ones as warnings.
 - Avoid MyST-only directives such as `{figure}`, `{grid}`,
   admonitions, and colon-fenced layouts when the notebook must also be readable
   outside the Jupyter Book build.
