@@ -25,8 +25,8 @@ default ~/.cache/pymrm-katex; install with
 parse step is skipped and the report says so.
 
 Findings are errors or warnings. Errors are confirmed failures (\\label in VS
-Code, \\eqref on GitHub, KaTeX parse errors, \\bm in JupyterLab). Warnings are
-advisable but rendered in the test notebook, or not covered by it.
+Code, \\eqref on GitHub and Colab, KaTeX parse errors, \\bm in JupyterLab).
+Warnings are advisable but rendered in the test notebook, or not covered by it.
 Exit status 1 when an error is flagged.
 """
 
@@ -50,8 +50,8 @@ INLINE = re.compile(r"(?<![\\$])\$(?!\$)((?:[^$\\]|\\.)+?)(?<![\\$])\$(?!\$)", r
 BARE_ENV = re.compile(r"^\s*\\begin\{(align\*?|equation\*?|gather\*?|multline\*?|eqnarray\*?)\}", re.M)
 
 
-# Confirmed by rendering docs/math-render-test.ipynb (2026-09-27): on GitHub only
-# \eqref failed, in VS Code only \label; blank lines around $$, a bare align
+# Confirmed by rendering docs/math-render-test.ipynb (2026-09-27): on GitHub and in
+# Colab only \eqref failed, in VS Code only \label; blank lines around $$, a bare align
 # environment, \\ and * in inline maths and | in tables rendered. Those are
 # warnings (advisable), the confirmed failures and KaTeX parse errors are errors.
 WARNINGS = ("environment outside $$", "line break", "two or more *", "| inside maths",
@@ -95,7 +95,8 @@ def extract(markdown):
 
     prose = INLINE.sub(" ", without_display)
     for m in re.finditer(r"\\(eqref|ref)\{[^}]*\}", prose):
-        problems.append(("command", m.group(0), f"\\{m.group(1)} in the text does not render on GitHub"))
+        problems.append(("command", m.group(0),
+                         f"\\{m.group(1)} in the text gives no equation number on GitHub or Colab"))
     for m in BARE_ENV.finditer(without_display):
         problems.append(("environment", m.group(0).strip(), "environment outside $$; use aligned/cases inside $$"))
 

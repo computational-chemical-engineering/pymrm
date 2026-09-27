@@ -94,9 +94,9 @@ Use portable notebook Markdown by default:
   LaTeX equations.
 - Use display equations with `$$ ... $$` and inline equations with `$...$`,
   within this portable subset. Required (confirmed to break somewhere by
-  `docs/math-render-test.ipynb`; Colab rendered everything in it):
+  `docs/math-render-test.ipynb`):
   - no `\label` (breaks VS Code) and no `\ref` or `\eqref`, also not in the text
-    (breaks the GitHub preview); refer to equations in words;
+    (no equation number on GitHub or in Colab); refer to equations in words;
   - at most one `\tag` per display block, and none in inline maths;
   - no `\bm` (JupyterLab's MathJax lacks it; use `\boldsymbol`);
   - every expression parses in KaTeX (the VS Code engine).
