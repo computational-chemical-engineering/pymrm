@@ -346,7 +346,8 @@ two `\tag` in one block. The manual check of `docs/math-render-test.ipynb`
 (2026-09-27) found one failure per renderer: `\eqref` on GitHub and `\label` in
 VS Code; blank lines around `$$`, a bare `align`, `\\` and `*` in inline maths
 and `|` in tables all rendered. The checker now reports only confirmed failures
-(and KaTeX parse errors) as errors, the rest as warnings. Colab is untested.
+(and KaTeX parse errors) as errors, the rest as warnings. Colab rendered the
+whole notebook, `\label` and `\eqref` included.
 
 **Three-run targeted comparison and hard cases** (2026-09-26):
 - After replacing LLM numeric judges with deterministic range regexes (the

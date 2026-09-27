@@ -26,7 +26,7 @@ parse step is skipped and the report says so.
 
 Findings are errors or warnings. Errors are confirmed failures (\\label in VS
 Code, \\eqref on GitHub, KaTeX parse errors, \\bm in JupyterLab). Warnings are
-advisable but rendered in the test notebook, or untested.
+advisable but rendered in the test notebook, or not covered by it.
 Exit status 1 when an error is flagged.
 """
 
