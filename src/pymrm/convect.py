@@ -454,11 +454,15 @@ def clam(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def muscl(normalized_c_c, normalized_x_c, normalized_x_d):
-    """Compute the MUSCL TVD correction in normalized-variable space."""
+    """Compute the MUSCL TVD correction in normalized-variable space.
+
+    Uniform grid: 2 c_c up to 1/4, c_c + 1/4 up to 3/4, then 1.
+    """
     normalized_concentration_diff = np.maximum(
         0,
         np.where(
-            normalized_c_c < normalized_x_c / (2 * normalized_x_d),
+            # the first line meets c_c + x_d - x_c at c_c = x_c / 2
+            normalized_c_c < normalized_x_c / 2,
             ((2 * normalized_x_d - normalized_x_c) / normalized_x_c - 1)
             * normalized_c_c,  # noqa: E501
             np.where(
@@ -506,61 +510,54 @@ def smart(normalized_c_c, normalized_x_c, normalized_x_d):
 
 
 def stoic(normalized_c_c, normalized_x_c, normalized_x_d):
-    """Compute the STOIC TVD correction in normalized-variable space."""
-    normalized_concentration_diff = np.maximum(
-        0,
+    """Compute the STOIC TVD correction in normalized-variable space.
+
+    Piecewise: the SMART line ``c_f = k c_c`` up to its intersection with the
+    central-difference line, then central differencing up to ``c_c = x_c``,
+    then QUICK, then ``c_f = 1``. On a uniform grid (``x_c = 1/2``,
+    ``x_d = 3/4``) this is 3 c_c, (1 + c_c)/2, 3/8 + 3 c_c/4 and 1, with breaks
+    at 1/5, 1/2 and 5/6.
+    """
+    x_c = normalized_x_c
+    x_d = normalized_x_d
+    c_c = normalized_c_c
+    slope = x_d * (1 - 3 * x_c + 2 * x_d) / (x_c * (1 - x_c))
+    # intersection of c_f = slope * c_c with the central-difference line
+    c_break = x_c / (1 + 2 * x_d)
+    c_f = np.where(
+        c_c < c_break,
+        slope * c_c,
         np.where(
-            normalized_c_c
-            < normalized_x_c
-            * (normalized_x_d - normalized_x_c)
-            / (
-                normalized_x_c
-                + normalized_x_d
-                + 2 * normalized_x_d * normalized_x_d
-                - 4 * normalized_x_d * normalized_x_c
-            ),
-            normalized_x_d
-            * (1 - 3 * normalized_x_c + 2 * normalized_x_d)
-            / (normalized_x_c * (1 - normalized_x_c))
-            - normalized_c_c,  # noqa: E501
+            c_c < x_c,
+            (x_d - x_c + (1 - x_d) * c_c) / (1 - x_c),
             np.where(
-                normalized_c_c < normalized_x_c,
-                (
-                    normalized_x_d
-                    - normalized_x_c
-                    + (1 - normalized_x_d) * normalized_c_c
-                )
-                / (1 - normalized_x_c)
-                - normalized_c_c,  # noqa: E501
-                np.where(
-                    normalized_c_c
-                    < normalized_x_c
-                    / normalized_x_d
-                    * (1 + normalized_x_d - normalized_x_c),
-                    (
-                        normalized_x_d * (normalized_x_d - normalized_x_c)
-                        + normalized_x_d
-                        * (1 - normalized_x_d)
-                        / normalized_x_c
-                        * normalized_c_c
-                    )
-                    / (1 - normalized_x_c)
-                    - normalized_c_c,
-                    1 - normalized_c_c,
-                ),
+                c_c < x_c / x_d * (1 + x_d - x_c),
+                (x_d * (x_d - x_c) + x_d * (1 - x_d) / x_c * c_c) / (1 - x_c),
+                1.0,
             ),
         ),
-    )  # noqa: E501
+    )
+    normalized_concentration_diff = np.maximum(0, c_f - c_c)
     return normalized_concentration_diff
 
 
 def vanleer(normalized_c_c, normalized_x_c, normalized_x_d):
-    """Compute the van-Leer TVD correction in normalized-variable space."""
+    """Compute the van-Leer TVD correction in normalized-variable space.
+
+    The curve is the parabola through (0, 0), (x_c, x_d) and (1, 1). It rises
+    above ``c_f = 1`` when ``x_d - x_c > x_c (1 - x_c)``, for example next to a
+    boundary where the upstream point is a face half a cell away (x_c = 1/3,
+    x_d = 2/3); the correction is capped at ``1 - c_c`` to stay bounded. The
+    cap acts only above c_c = x_c and does not reduce the order.
+    """
     normalized_concentration_diff = np.maximum(
         0,
-        normalized_c_c
-        * (1 - normalized_c_c)
-        * (normalized_x_d - normalized_x_c)
-        / (normalized_x_c * (1 - normalized_x_c)),
+        np.minimum(
+            normalized_c_c
+            * (1 - normalized_c_c)
+            * (normalized_x_d - normalized_x_c)
+            / (normalized_x_c * (1 - normalized_x_c)),
+            1 - normalized_c_c,
+        ),
     )
     return normalized_concentration_diff
