@@ -127,10 +127,22 @@ JupyterLab, VS Code, Colab and on GitHub). Details: `plugins/pymrm/README.md`.
 
 ### Other agent tools
 
-The skills use the open Agent Skills format (`SKILL.md`). For Codex CLI or
-Gemini CLI, copy the skill folders into `~/.agents/skills/` (see
-`plugins/pymrm/README.md`); rename them if they clash with skills you already
-have.
+The skills use the open Agent Skills format (`SKILL.md`) and work in other
+tools too.
+
+```bash
+# Codex CLI: skills become $pymrm:build-model and so on
+codex plugin marketplace add computational-chemical-engineering/pymrm
+codex plugin add pymrm@pymrm
+
+# Gemini CLI: skills become build-model, conventions, model-patterns, verify-model
+gemini skills install https://github.com/computational-chemical-engineering/pymrm --path plugins/pymrm/skills
+```
+
+Gemini overwrites existing skills of the same name without asking, so check
+`gemini skills list` first (or add `--scope workspace`). The separate verifier
+agent is Claude-only; the other tools run verification through the
+`verify-model` skill. Details, updating and removal: `plugins/pymrm/README.md`.
 
 ## Helper utilities
 

@@ -55,18 +55,42 @@ To try a local checkout: `claude --plugin-dir plugins/pymrm`.
 
 ## Other agent tools
 
-Copy (or symlink) the three skill folders into the tool's skills directory:
+The skills are plain Agent Skills (`SKILL.md`), so other tools load them without
+changes. Tested on 2026-09-27 with Codex CLI 0.157 and Gemini CLI 0.61.
+
+**Codex CLI** reads this repository's marketplace file:
 
 ```bash
-# Codex CLI and Gemini CLI both read ~/.agents/skills
-mkdir -p ~/.agents/skills
-cp -r plugins/pymrm/skills/* ~/.agents/skills/
+codex plugin marketplace add computational-chemical-engineering/pymrm
+codex plugin add pymrm@pymrm
 ```
 
-In full mode `build-model` asks for the verifier to run in a separate context. In tools with
-subagents, point a subagent at the `verify-model` skill; otherwise start a fresh
-session and ask it to verify with that skill. Dedicated Codex and Gemini agent
-definitions are not included yet because they have not been tested.
+The skills are namespaced as in Claude Code: `$pymrm:build-model`,
+`$pymrm:conventions`, `$pymrm:model-patterns`, `$pymrm:verify-model`. To update,
+run `codex plugin marketplace upgrade pymrm` and add the plugin again; remove
+with `codex plugin remove pymrm@pymrm`.
+
+**Gemini CLI** installs the four skills from the repository folder:
+
+```bash
+gemini skills install https://github.com/computational-chemical-engineering/pymrm --path plugins/pymrm/skills
+```
+
+Gemini does not namespace skills, and an install silently overwrites a skill of
+the same name. Run `gemini skills list` first; if `build-model`, `conventions`,
+`model-patterns` or `verify-model` is taken, add `--scope workspace` to install
+into the current project only. Run the same command again to update; remove
+with `gemini skills uninstall <name>` for each of the four.
+
+**Any other tool** that reads Agent Skills: copy the folders in
+`plugins/pymrm/skills/` into its skills directory (often `~/.agents/skills/`),
+checking for name clashes in the same way.
+
+**The verifier.** Neither Codex nor Gemini can take the `model-verifier` agent
+from this folder: Codex plugins do not ship agents, and Gemini's skill install
+does not include them. In full mode `build-model` then asks for the verifier to
+run in a separate context: point a subagent at the `verify-model` skill, or
+start a fresh session and ask it to verify with that skill.
 
 ## Maintaining
 
