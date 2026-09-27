@@ -80,6 +80,7 @@ from .coupling import (
     construct_interface_matrices,
 )
 from .helpers import construct_coefficient_matrix, describe_bc
+from . import checks  # noqa: F401  (pymrm.checks after a bare import pymrm)
 from .ibm import (
     IBM,
     construct_ibm,
