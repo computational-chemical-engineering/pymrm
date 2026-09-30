@@ -309,6 +309,16 @@ def test_tvd_limiters_continuous(x_c):
         assert np.max(np.abs(np.diff(c_f))) < 1e-3, lim.__name__
 
 
+def test_clam_is_the_van_leer_parabola():
+    """CLAM is 2 c - c**2 on a uniform grid and equals vanleer on any stencil.
+    Before 2.5.0 clam returned the Osher curve (c_f = 1.5 c_c at c_c = 0.5)."""
+    c_c = np.linspace(0.0, 1.0, 601)
+    np.testing.assert_allclose(c_c + clam(c_c, 0.5, 0.75), 2 * c_c - c_c**2, atol=1e-12)
+    for x_c, x_d in [(1 / 3, 2 / 3), (0.2, 0.6), (0.6, 0.9)]:
+        np.testing.assert_array_equal(clam(c_c, x_c, x_d), vanleer(c_c, x_c, x_d))
+    assert not np.allclose(clam(c_c, 0.5, 0.75), osher(c_c, 0.5, 0.75))
+
+
 def _inlet_slope(limiter):
     """Largest c_f / c_c on the inlet stencil (x_c = 1/3, x_d = 2/3). Explicit
     Euler with the correction stays bounded for Co * slope <= 1."""
