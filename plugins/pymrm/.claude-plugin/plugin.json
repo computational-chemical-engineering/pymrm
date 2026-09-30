@@ -1,6 +1,6 @@
 {
   "name": "pymrm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Build scoped, verified pymrm reactor models from a process description: elicitation, fidelity scoping, specification, implementation, independent verification and a model card.",
   "author": {
     "name": "pymrm developers"
