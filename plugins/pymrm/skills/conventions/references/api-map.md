@@ -27,8 +27,11 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | values and gradients at the boundaries | `compute_boundary_values(c, x_f, x_c, bc, axis)` | gradients along `+axis`, not the outward normal (pitfalls P1, P8) |
 | face values from centres | `interp_cntr_to_stagg`, `interp_stagg_to_cntr` | linear interpolation |
 | Jacobian of a nonlinear source | `NumJac(shape)`, called as `g, jac = numjac(f, c)` | shape keeps a field axis (pitfalls P3, P4) |
-| nonlinear solve | `newton(fun, x0, tol, maxfev, solver, callback)` | `fun(x) -> (g, jac)`; absolute step tolerance (pitfalls P7) |
-| keep iterates physical | `clip_approach(values, dummy, lower_bounds=0)` as the `newton` callback | |
+| nonlinear solve | `newton(fun, x0, tol, maxfev, solver, callback)` | `fun(x) -> (g, jac)`; absolute step tolerance (pitfalls P7); direct LU at every size; `result.status`, `result.backward_error` |
+| hard nonlinear solve | `newton(..., damping="guarded"/"monotone", scale=..., bounds=..., backward_tol=1e-8, stagnation=True, refresh=...)` (after 2.5.0) | see "Hard nonlinear problems" below |
+| keep iterates where the residual is defined | `newton(..., bounds=(lower, upper))` (after 2.5.0); older: `clip_approach(values, dummy, lower_bounds=0)` as the `newton` callback | bounds for `T > 0`, `log`, `sqrt`; prefer kinetics smooth through zero over a bound at zero |
+| steady state by pseudo-time stepping | `pseudo_transient(fun, x0, mass, dt)` (after 2.5.0) | when Newton from the guess fails; `mass` in the units of the time term |
+| solutions along a parameter | `continuation(fun_p, x0, params)` (after 2.5.0) | warm starts with a secant predictor; stops at a fold instead of jumping branches |
 | see what a bc dictionary means | `describe_bc(bc, x_f)` (after 2.3.1) | prints each end as an equation in x (pitfalls P1) |
 | stirred-volume or tank outlet | `{"outflow": True}` as the bc dictionary (after 2.3.1) | face value = adjacent cell (pitfalls P6) |
 | Jacobian, refinement, threshold and residual checks | `pymrm.checks` (after 2.3.1; copy in `scripts/pymrm_checks.py`) | see `numerics.md` |
@@ -52,6 +55,33 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
   object. Use it when the Jacobian is constant and can be factorised once.
 - `maxfev=10` per time step is normal with the previous step as the guess.
 - Always check `result.success` AND the final residual norm.
+- The linear solve is a direct sparse LU at every size (after 2.5.0; before,
+  `solver=None` switched to ILU-BiCGSTAB above 50 000 unknowns). Iterative
+  solvers only on request: `solver="bicgstab"`.
+- `result.fun` is the residual AT `result.x` (after 2.5.0; before, at the
+  previous iterate). `result.status` says why it stopped; `result.history`
+  holds the step norm and damping per iteration.
+
+### Hard nonlinear problems (after 2.5.0)
+
+Try these in order; each is opt-in and documented in the `newton` docstring.
+
+1. Non-finite residual after a full step (overflow in an Arrhenius term,
+   `log` of a negative): `damping="guarded"`. Same steps as plain Newton
+   wherever those work.
+2. Full steps overshoot and oscillate (dead zones, half-order kinetics):
+   make the kinetics smooth and first order through zero
+   (`k c (c**2 + eps**2)**((n - 1)/2)` instead of `k c**n`), then
+   `damping="monotone"`. A hard bound at zero stalls instead (status 8).
+3. Unknowns of different units in one state: `scale=` the typical magnitude
+   per field; tolerances and damping then weigh them equally.
+4. Trace unknowns and the absolute `tol` (pitfalls P7): `backward_tol=1e-8`.
+5. `tol` below the round-off floor (switching terms, upwinding):
+   `stagnation=True` with `backward_tol`.
+6. Quantities lagged outside the Jacobian: `refresh=` instead of `callback=`.
+7. Still failing from a poor guess: `pseudo_transient(fun, x0, mass, dt)`.
+   Several steady states: `continuation(fun_p, x0, params)` from a known
+   solution; it reports a fold rather than jumping branches.
 
 ## Patterns beyond the core recipe
 

@@ -188,3 +188,114 @@ def test_newton_relative_tolerance_finds_trace_root():
 def test_newton_array_tolerance():
     res = newton(_trace_root, np.array([1e-8]), tol=np.array([1e-16]))
     assert res.success and np.isclose(res.x[0], 1e-10, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# newton: result fields and legacy call patterns
+# ---------------------------------------------------------------------------
+
+def test_newton_result_fields_and_fun_at_x():
+    x0 = np.array([1.0])
+    res = newton(_f_sqrt2, x0)
+    assert x0[0] == 1.0                                   # initial guess not modified
+    assert res.status == 0 and res.nfact == res.nit and res.nfev == res.nit + 1
+    assert abs(res.fun[0]) < 1e-12                        # residual AT x
+    assert res.backward_error < 1e-12
+    assert len(res.history) == res.nit
+    assert {"step_norm", "damping", "theta", "clipped"} <= set(res.history[0])
+
+
+def test_newton_prefactorised_splu():
+    from scipy.sparse.linalg import splu
+
+    def f(x):
+        return np.array([x[0] ** 2 - 2]), splu(csc_array([[2 * x[0]]]))
+
+    res = newton(f, np.array([1.0]), solver="splu")
+    assert res.success and res.x[0] == pytest.approx(np.sqrt(2))
+    assert np.isnan(res.backward_error)
+
+
+def test_newton_direction_changing_callable_keeps_plain_steps():
+    """A callable solver may cap the step (gallery I1.2); 'auto' must not damp it."""
+    from scipy.sparse.linalg import spsolve
+
+    def capped(jac, rhs):
+        dx = np.atleast_1d(spsolve(jac, rhs))
+        return np.clip(dx, -0.1, 0.1)
+
+    res = newton(_f_sqrt2, np.array([3.0]), solver=capped)
+    assert res.success and res.x[0] == pytest.approx(np.sqrt(2))
+    assert all(h["damping"] == 1.0 for h in res.history)
+
+
+def test_newton_callback_runs_once_per_iteration_before_the_next_evaluation():
+    order = []
+
+    def f(x):
+        order.append("f")
+        return _f_sqrt2(x)
+
+    def cb(x, g):
+        order.append("cb")
+
+    res = newton(f, np.array([1.0]), callback=cb)
+    assert order == ["f"] + ["cb", "f"] * res.nit
+
+
+def test_newton_clip_approach_callback_with_upper_bound():
+    def f(x):
+        return np.array([x[0] ** 2 - 2]), csc_array([[2 * x[0]]])
+
+    res = newton(f, np.array([0.1]), callback=lambda x, g: clip_approach(x, g, 0.0, 1.5))
+    assert res.success and res.x[0] == pytest.approx(np.sqrt(2))
+
+
+def test_newton_rejects_unknown_damping():
+    with pytest.raises(ValueError, match="damping"):
+        newton(_f_sqrt2, np.array([1.0]), damping="linesearch")
+
+
+def test_newton_accepts_scipy_bounds():
+    from scipy.optimize import Bounds
+
+    res = newton(_f_sqrt2, np.array([3.0]), bounds=Bounds(0.5, 4.0), damping="monotone")
+    assert res.success and res.x[0] == pytest.approx(np.sqrt(2))
+
+
+def test_newton_scale_applies_tol_to_the_scaled_step():
+    res = newton(_trace_root, np.array([1e-8]), scale=1e-10)
+    assert res.success and np.isclose(res.x[0], 1e-10, rtol=1e-6)
+
+
+def test_newton_fortran_ordered_initial_guess():
+    def f(x):
+        g = (x**2 - np.array([2.0, 3.0])).ravel()
+        return g, csc_array(np.diag(2.0 * x.ravel()))
+
+    x0 = np.asfortranarray(np.ones((4, 2)))
+    res = newton(f, x0)
+    assert res.success and np.allclose(res.x, np.sqrt([2.0, 3.0]))
+
+
+def test_newton_exact_initial_guess_with_damping():
+    res = newton(_f_sqrt2, np.array([np.sqrt(2.0)]), damping="monotone")
+    assert res.success
+
+
+def test_newton_final_evaluation_cannot_turn_a_result_into_an_exception():
+    calls = []
+
+    def f(x):
+        calls.append(1)
+        if len(calls) > 2:
+            raise ValueError("property out of range")
+        return _f_sqrt2(x)
+
+    res = newton(f, np.array([1.0]), maxfev=2)
+    assert not res.success and res.status == 2
+
+
+def test_newton_rejects_non_positive_scale():
+    with pytest.raises(ValueError, match="scale"):
+        newton(_f_sqrt2, np.array([1.0]), scale=0.0)
