@@ -173,7 +173,7 @@ def _trace_root(x):
 
 
 def test_newton_default_is_absolute_and_reports_step_norm():
-    res = newton(_trace_root, np.array([1e-8]))
+    res = newton(_trace_root, np.array([1e-8]), damping="none", backward_tol=None, stagnation=False)
     assert res.success and res.nit == 1          # stops on the absolute tolerance
     assert res.x[0] / 1e-10 > 40.0               # ... with a wrong answer
     assert np.isfinite(res.step_norm)

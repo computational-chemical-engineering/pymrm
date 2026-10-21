@@ -103,19 +103,25 @@ carries its own value (tanks in series, a cell model, a CSTR cascade).
 
 ## P7. `newton` stops on an ABSOLUTE step
 
-`newton(..., tol=1.49e-8)` stops when the infinity norm of the Newton step drops
-below `tol`, whatever the magnitude of the unknowns.
+`newton(..., tol=1.49e-8)` tests the infinity norm of the Newton step against
+`tol`, whatever the magnitude of the unknowns.
 
-- Symptom: a small unknown (mole fractions of a trace species, concentrations in
-  kmol, coverages near zero) "converges" at once to a wrong value with
-  `success=True`. A large unknown (pressure in Pa) may never meet the tolerance.
+- Symptom (2.5.0 and older, or `backward_tol=None`): a small unknown (mole
+  fractions of a trace species, concentrations in kmol, coverages near zero)
+  "converges" at once to a wrong value with `success=True`. A large unknown
+  (pressure in Pa) may never meet the tolerance.
 - Measured: solving `x^2 = 1e-20` from `x0 = 1e-8` returns `success=True` after
   one iteration with `x = 5e-9`, 50 times the true root.
+- After 2.5.0: the default `backward_tol=1e-8` makes the step test necessary but
+  not sufficient; the same solve iterates on to `x = 1e-10`. The backward error
+  judges each unknown against its field's magnitude, but never below `1e-6` of
+  the largest unknown: a trace field next to order-one fields is then resolved
+  to about `1e-14` absolute. Pass `scale=` (typical magnitude per field) for
+  full relative accuracy, and for a flat state that mixes units.
 - Do in any version: scale every unknown to order one before solving; with mixed
-  units scale each field separately.
-- New: `newton(..., tol=0.0, rtol=1e-10)` stops on a relative step and finds the
-  root above to 1e-8. `pymrm.checks.residual_check(fun, x)` judges a solution by
-  a scale-free backward error (0.33 for the wrong root above, 4e-17 for the
+  units scale each field separately. `newton(..., tol=0.0, rtol=1e-10)` stops on
+  a relative step. `pymrm.checks.residual_check(fun, x)` judges a solution by
+  a componentwise backward error (0.33 for the wrong root above, 4e-17 for the
   right one). An absolute residual threshold is not scale-free: it rejected
   converged solves in other units in agent runs.
 
@@ -131,3 +137,25 @@ The operators transport the reconstructed FACE value. A hand-written outlet flux
   3.8e-3. The gallery once published an outlet metric 11.4 % low for reading half
   a cell short of the boundary.
 - Do: `c_in_face, _, c_out_face, _ = compute_boundary_values(c, x_f, x_c, bc)`.
+
+## P9. Clipped kinetics stall Newton
+
+A rate written with `np.maximum(c, 0.0)` (or `c**n` with `n < 1`) has a zero
+or infinite derivative at `c = 0`. Near a dead zone Newton then overshoots
+below zero, the clipped rate loses the term that pulls `c` back, and the
+iteration cycles instead of converging. A hard lower bound at zero does not
+help: the iterates pile up on the bound.
+
+- Symptom: `success=False` after `maxfev` iterations with a profile that looks
+  almost right; or, with `stagnation=True`, status 7 (steps stop shrinking but
+  the backward error stays above `backward_tol`); with `bounds=0`, status 8.
+- Measured: slab, `phi^2 sqrt(max(c, 0))` with `phi = 30`, 100 cells, from
+  `c = 1`: plain Newton fails after 100 iterations; `damping="monotone"` stops
+  at the stagnation floor after about 37 (status 7), 6.8e-4 from the exact dead-zone
+  profile.
+- Do (after 2.5.0): make the rate smooth and first order through zero,
+  `phi^2 c (c**2 + eps**2)**-0.25` with `eps = 1e-6`, and use
+  `damping="monotone"`: status 0 after about 13 iterations, the same 6.8e-4 from the
+  exact profile (the discretisation error). Check that reducing `eps` tenfold
+  leaves the result unchanged. Keep `bounds` for unknowns the residual cannot
+  accept beyond a limit (`T > 0`, arguments of `log`).

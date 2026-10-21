@@ -10,7 +10,7 @@ from scipy.sparse import linalg
 
 # What ``damping="auto"`` resolves to when neither a callback nor a callable
 # linear solver is passed.
-_AUTO_DAMPING = "none"
+_AUTO_DAMPING = "guarded"
 
 # Fixed constants of the globalisation (see the notes of ``newton``).
 _LAM_FLOOR = 0.5      # smallest damping a bound alone may impose
@@ -42,6 +42,10 @@ class _SingularJacobian(Exception):
 
 
 class _LinearSolverFailed(Exception):
+    pass
+
+
+class _LastEvaluationFailed(Exception):
     pass
 
 
@@ -290,8 +294,8 @@ def newton(
     tau=0.99,
     scale=None,
     refresh=None,
-    backward_tol=None,
-    stagnation=False,
+    backward_tol=1e-8,
+    stagnation=True,
     row_scaling=True,
     recoverable=(FloatingPointError, OverflowError, ZeroDivisionError),
     verbose=0,
@@ -300,10 +304,11 @@ def newton(
 
     Every iteration solves ``J dx = g`` with a direct sparse LU factorisation
     and updates ``x <- x - lam dx``. With the default options the step length
-    ``lam`` is 1 (plain Newton). For hard problems, ``damping``, ``bounds`` and
-    ``scale`` make the iteration robust far from the solution, and
-    ``backward_tol`` makes the convergence verdict independent of the units of
-    the unknowns; see the Notes.
+    ``lam`` is 1 (plain Newton) unless the full step gives a non-finite
+    residual, and convergence requires both a small step (``tol``) and a small
+    backward error (``backward_tol``). For hard problems, ``damping``,
+    ``bounds`` and ``scale`` make the iteration robust far from the solution;
+    see the Notes.
 
     Parameters
     ----------
@@ -372,7 +377,7 @@ def newton(
         * ``'armijo'``: backtracking until the row-equilibrated residual norm
           decreases by the Armijo condition, with the same fallback. Use it
           when the simplified correction is unavailable or meaningless.
-        * ``'auto'``: currently ``'none'``. It stays ``'none'`` whenever a
+        * ``'auto'`` (default): ``'guarded'``, but ``'none'`` whenever a
           ``callback`` or a callable ``solver`` is given, since those may
           change the step after it is taken.
 
@@ -403,8 +408,10 @@ def newton(
         updates outside the Jacobian (lagged velocities, properties). The
         residual is re-evaluated afterwards. The damping test is then
         approximate, and the stagnation rule is off.
-    backward_tol : float, optional
-        If given, the step test is necessary but not sufficient: the backward
+    backward_tol : float or None, optional
+        If not None (default ``1e-8``), the step test is necessary but not
+        sufficient (unless the Jacobian is not a matrix, so that the backward
+        error cannot be formed): the backward
         error at the new ``x`` must also be below ``backward_tol``, else the
         iteration continues. The backward error is
         ``max_i |g_i| / (|J| (|x| + x_ref) + |J x - g|)_i``, the relative
@@ -414,14 +421,17 @@ def newton(
         one-dimensional state is one field). Components far below their
         field's magnitude, such as a reaction dead zone, are thus judged
         against the field, while a field that is small everywhere (a trace
-        species) is judged against itself. It is always reported in the
-        result. For a flat state that mixes units, pass ``scale``.
+        species) is judged against itself, down to ``1e-6`` of the largest
+        unknown. It is always reported in the result. For a flat state that
+        mixes units, pass ``scale``. ``None`` restores the plain step test.
     stagnation : bool, optional
-        Stop at the stagnation floor: once steps are taken in full near the
+        Stop at the stagnation floor (default True): once steps are taken in full near the
         solution, a step no smaller than 0.8 times the smallest of the five
         before it ends the iteration (round-off, or switching terms such as
         ``max(c, 0)`` and upwinding, keep the steps from shrinking further).
-        Whether that counts as success is decided by ``backward_tol``.
+        Whether that counts as success is decided by ``backward_tol``. Once
+        ``backward_tol`` passes, the rule also applies to steps that are not
+        yet within 100 tolerances.
     row_scaling : bool, optional
         Divide each row of the Jacobian by its largest entry before the direct
         LU factorisation. Improves pivoting when rows have different units.
@@ -480,11 +490,18 @@ def newton(
     change when it is reduced tenfold). A guard bound below zero, such as
     ``bounds=(-1e-3 * c_ref, None)``, then only stops wild overshoots.
 
-    **Convergence verdict.** The default step test is absolute. A trace
-    unknown much smaller than ``tol`` passes it immediately. ``backward_tol``
-    (for example ``1e-8``) guards against that without changing the meaning
-    of ``tol``; :func:`pymrm.checks.residual_check` gives a stricter,
-    purely componentwise verdict after the fact.
+    **Convergence verdict.** The step test is absolute. A trace unknown much
+    smaller than ``tol`` passes it immediately; the default
+    ``backward_tol=1e-8`` then keeps the iteration going until the residual
+    is also small relative to the equations, without changing the meaning of
+    ``tol``. :func:`pymrm.checks.residual_check` gives a stricter, purely
+    componentwise verdict after the fact.
+
+    **Changes after 2.5.0.** Before, ``newton`` took plain full steps, stopped on
+    the step test alone, returned the residual before the last step as
+    ``fun``, and switched to ILU-BiCGSTAB above 50 000 unknowns. Pass
+    ``damping="none", backward_tol=None, stagnation=False`` for the old
+    iteration.
     """
     x = np.array(initial_guess, dtype=float, order="C")
     shape = x.shape
@@ -519,6 +536,7 @@ def newton(
     nfev = 0
     nfact = 0
     history = []
+    state = {"last": False, "ev": None, "step": float("nan")}
 
     def evaluate(xv, guard):
         """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
@@ -529,6 +547,11 @@ def newton(
                 g_raw, jac = function(xv, *args)
             except recoverable:
                 return None
+            except Exception as exc:
+                if state["last"]:
+                    # The old iteration never evaluated here: report, do not raise.
+                    raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
+                raise
         else:
             g_raw, jac = function(xv, *args)
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
@@ -557,214 +580,228 @@ def newton(
     if ev is None:
         return finish(4, False, None, float("nan"), float("nan"), "at the initial guess")
 
-    lam_next = 1.0
-    window = []
-    step_inf = float("nan")
-    gate_failed = False
-    clipped = 0
+    def iterate():
+        nonlocal nfact, ev
+        state["ev"] = ev
+        lam_next = 1.0
+        window = []
+        step_inf = float("nan")
+        gate_failed = False
+        clipped = 0
 
-    for it in range(int(maxfev)):
-        g_raw, g, jac = ev
-        try:
-            solve, r = lin.factorize(jac)
-            nfact += 1
-            dx = np.asarray(solve(g_raw if lin.kind == "callable" else g),
-                            dtype=float).reshape(-1)
-        except _SingularJacobian as exc:
-            return finish(5, False, ev, step_inf, float("nan"), str(exc))
-        except _LinearSolverFailed as exc:
-            return finish(6, False, ev, step_inf, float("nan"), str(exc))
-        if not np.all(np.isfinite(dx)):
-            return finish(6, False, ev, step_inf, float("nan"), "non-finite Newton step")
-
-        dy = dx / d
-        step_inf = float(np.max(np.abs(dy))) if n else 0.0
-        y = x_flat / d
-        if relative:
-            limit = tol_vec + rtol * np.abs(y)
-            converged = bool(np.all(np.abs(dy) <= limit))
-            with np.errstate(divide="ignore", invalid="ignore"):
-                excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
-        else:
-            converged = step_inf < tol
-            excess = step_inf / tol if tol > 0 else (0.0 if step_inf == 0 else np.inf)
-        converged = converged or step_inf == 0.0
-        near = converged or (refresh is None and excess < _NEAR)
-
-        theta = float("nan")
-        if mode == "none":
-            # Plain (or bound-shortened) step; callback and refresh before the
-            # next evaluation, as the callers of the undamped iteration expect.
-            lam = 1.0
-            if not near and bnd.active:
-                lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
-            trial = x_flat - lam * dx
-            clipped = bnd.project(trial, x_flat) if bnd.active else 0
-            x_flat[:] = trial
-            history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
-                            "clipped": clipped})
-            if callback is not None:
-                callback(x, g_raw)
-            if refresh is not None:
-                refresh(x)
-            if relative and step_inf > 0.0:
-                # The relative test uses x after the step (and the callback).
-                converged = bool(np.all(np.abs(dy) <= tol_vec + rtol * np.abs(x_flat / d)))
-            last = converged or it == int(maxfev) - 1
+        for it in range(int(maxfev)):
+            g_raw, g, jac = ev
+            state["ev"] = ev
             try:
-                ev_new = evaluate(x, guard=last)
-            except Exception:
-                if not last:
-                    raise
-                ev_new = None
-            if ev_new is None:
-                if converged:
-                    # The step test decides, as before, even when the residual
-                    # cannot be evaluated at the new point.
-                    return finish(0, True, ev, step_inf, float("nan"),
-                                  "the residual at x could not be evaluated")
-                if last:
-                    return finish(2, False, ev, step_inf, float("nan"),
-                                  "the residual at x could not be evaluated")
-                return finish(4, False, ev, step_inf, float("nan"), "after a full step")
-            ev = ev_new
-        else:
-            accepted = None
-            lam_max = max(_LAM_FLOOR, bnd.max_step(x_flat, dx)) if bnd.active else 1.0
-            at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
-            if mode == "guarded":
-                # Full step (shortened only by the bounds far from the solution).
-                lam = 1.0 if near else lam_max
+                solve, r = lin.factorize(jac)
+                nfact += 1
+                dx = np.asarray(solve(g_raw if lin.kind == "callable" else g),
+                                dtype=float).reshape(-1)
+            except _SingularJacobian as exc:
+                return finish(5, False, ev, step_inf, float("nan"), str(exc))
+            except _LinearSolverFailed as exc:
+                return finish(6, False, ev, step_inf, float("nan"), str(exc))
+            if not np.all(np.isfinite(dx)):
+                return finish(6, False, ev, step_inf, float("nan"), "non-finite Newton step")
+
+            dy = dx / d
+            step_inf = float(np.max(np.abs(dy))) if n else 0.0
+            y = x_flat / d
+            if relative:
+                limit = tol_vec + rtol * np.abs(y)
+                converged = bool(np.all(np.abs(dy) <= limit))
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
+            else:
+                converged = step_inf < tol
+                excess = step_inf / tol if tol > 0 else (0.0 if step_inf == 0 else np.inf)
+            converged = converged or step_inf == 0.0
+            near = converged or (refresh is None and excess < _NEAR)
+            state["step"] = step_inf
+            state["last"] = converged or it == int(maxfev) - 1
+
+            theta = float("nan")
+            if mode == "none":
+                # Plain (or bound-shortened) step; callback and refresh before the
+                # next evaluation, as the callers of the undamped iteration expect.
+                lam = 1.0
+                if not near and bnd.active:
+                    lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
                 trial = x_flat - lam * dx
                 clipped = bnd.project(trial, x_flat) if bnd.active else 0
-                ev_t = evaluate(trial.reshape(shape), guard=True)
-                if lam == lam_max:
-                    at_lam_max = (trial, ev_t, clipped)
-                if ev_t is not None:
-                    accepted = (trial, ev_t, lam)
-                else:
-                    lam_next = 0.25 * lam
-            if accepted is None:
-                # Damped search: monotonicity test or Armijo, from lam_next.
-                lam = min(lam_next, lam_max)
-                dy_rms = _rms(dy)
-                row = r if r is not None else 1.0
-                phi0 = float(np.linalg.norm(row * g))
-                best = None
-                # Near the solution a failed test is usually round-off: search briefly.
-                lam_min = _LAM_NEAR if near else _LAM_MIN
-                while lam >= lam_min:
+                x_flat[:] = trial
+                history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
+                                "clipped": clipped})
+                if callback is not None:
+                    callback(x, g_raw)
+                if refresh is not None:
+                    refresh(x)
+                if relative and step_inf > 0.0:
+                    # The relative test uses x after the step (and the callback).
+                    converged = bool(np.all(np.abs(dy) <= tol_vec + rtol * np.abs(x_flat / d)))
+                last = converged or it == int(maxfev) - 1
+                try:
+                    ev_new = evaluate(x, guard=last)
+                except Exception:
+                    if not last:
+                        raise
+                    ev_new = None
+                if ev_new is None:
+                    if converged:
+                        # The step test decides, as before, even when the residual
+                        # cannot be evaluated at the new point.
+                        return finish(0, True, ev, step_inf, float("nan"),
+                                      "the residual at x could not be evaluated")
+                    if last:
+                        return finish(2, False, ev, step_inf, float("nan"),
+                                      "the residual at x could not be evaluated")
+                    return finish(4, False, ev, step_inf, float("nan"), "after a full step")
+                ev = ev_new
+            else:
+                accepted = None
+                lam_max = max(_LAM_FLOOR, bnd.max_step(x_flat, dx)) if bnd.active else 1.0
+                at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
+                if mode == "guarded":
+                    # Full step (shortened only by the bounds far from the solution).
+                    lam = 1.0 if near else lam_max
                     trial = x_flat - lam * dx
                     clipped = bnd.project(trial, x_flat) if bnd.active else 0
                     ev_t = evaluate(trial.reshape(shape), guard=True)
                     if lam == lam_max:
                         at_lam_max = (trial, ev_t, clipped)
-                    if ev_t is None:
-                        lam *= 0.25
-                        continue
-                    if mode == "armijo":
-                        phi = float(np.linalg.norm(row * ev_t[1]))
-                        if phi <= (1.0 - _ARMIJO_C * lam) * phi0:
-                            accepted = (trial, ev_t, lam)
-                            break
-                        if best is None or phi < best[0]:
-                            best = (phi, trial, ev_t, lam, clipped)
-                        lam *= 0.5
-                        continue
-                    try:
-                        rhs = ev_t[0] if lin.kind == "callable" else ev_t[1]
-                        dbar = np.asarray(solve(rhs), dtype=float).reshape(-1) / d
-                    except _LinearSolverFailed as exc:
-                        return finish(6, False, ev, step_inf, float("nan"), str(exc))
-                    theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
-                    if theta <= 1.0 - lam / 4.0:
-                        accepted = (trial, ev_t, lam)
-                        break
-                    mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
-                    lam = min(0.5 * lam, max(mu, 0.1 * lam))
-                if accepted is None and best is not None and best[0] < phi0:
-                    _, trial, ev_t, lam, clipped = best
-                    ev_t = evaluate(trial.reshape(shape), guard=True)  # restore model state
                     if ev_t is not None:
                         accepted = (trial, ev_t, lam)
-                escaped = False
-                if accepted is None and _ESCAPE:
-                    lam = lam_max
-                    if at_lam_max is not None:
-                        trial, ev_t, clipped = at_lam_max
-                        if ev_t is not None:
-                            ev_t = evaluate(trial.reshape(shape), guard=True)
                     else:
+                        lam_next = 0.25 * lam
+                if accepted is None:
+                    # Damped search: monotonicity test or Armijo, from lam_next.
+                    lam = min(lam_next, lam_max)
+                    dy_rms = _rms(dy)
+                    row = r if r is not None else 1.0
+                    phi0 = float(np.linalg.norm(row * g))
+                    best = None
+                    # Near the solution a failed test is usually round-off: search briefly.
+                    lam_min = _LAM_NEAR if near else _LAM_MIN
+                    while lam >= lam_min:
                         trial = x_flat - lam * dx
                         clipped = bnd.project(trial, x_flat) if bnd.active else 0
                         ev_t = evaluate(trial.reshape(shape), guard=True)
-                    if ev_t is not None:
-                        accepted = (trial, ev_t, lam)
-                        escaped = True
-                if accepted is None:
-                    extra = f"{lam_min:g} at iteration {it}"
+                        if lam == lam_max:
+                            at_lam_max = (trial, ev_t, clipped)
+                        if ev_t is None:
+                            lam *= 0.25
+                            continue
+                        if mode == "armijo":
+                            phi = float(np.linalg.norm(row * ev_t[1]))
+                            if phi <= (1.0 - _ARMIJO_C * lam) * phi0:
+                                accepted = (trial, ev_t, lam)
+                                break
+                            if best is None or phi < best[0]:
+                                best = (phi, trial, ev_t, lam, clipped)
+                            lam *= 0.5
+                            continue
+                        try:
+                            rhs = ev_t[0] if lin.kind == "callable" else ev_t[1]
+                            dbar = np.asarray(solve(rhs), dtype=float).reshape(-1) / d
+                        except _LinearSolverFailed as exc:
+                            return finish(6, False, ev, step_inf, float("nan"), str(exc))
+                        theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
+                        if theta <= 1.0 - lam / 4.0:
+                            accepted = (trial, ev_t, lam)
+                            break
+                        mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
+                        lam = min(0.5 * lam, max(mu, 0.1 * lam))
+                    if accepted is None and best is not None and best[0] < phi0:
+                        _, trial, ev_t, lam, clipped = best
+                        ev_t = evaluate(trial.reshape(shape), guard=True)  # restore model state
+                        if ev_t is not None:
+                            accepted = (trial, ev_t, lam)
+                    escaped = False
+                    if accepted is None and _ESCAPE:
+                        lam = lam_max
+                        if at_lam_max is not None:
+                            trial, ev_t, clipped = at_lam_max
+                            if ev_t is not None:
+                                ev_t = evaluate(trial.reshape(shape), guard=True)
+                        else:
+                            trial = x_flat - lam * dx
+                            clipped = bnd.project(trial, x_flat) if bnd.active else 0
+                            ev_t = evaluate(trial.reshape(shape), guard=True)
+                        if ev_t is not None:
+                            accepted = (trial, ev_t, lam)
+                            escaped = True
+                    if accepted is None:
+                        extra = f"{lam_min:g} at iteration {it}"
+                        if clipped:
+                            extra += f"; {clipped} components held by a bound"
+                        return finish(3, False, ev, step_inf, backward_error(g, jac), extra)
+                    lam_next = 1.0 if (escaped or mode == "guarded") else min(1.0, 4.0 * accepted[2])
+
+                trial, ev, lam = accepted
+                x_flat[:] = trial
+                history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
+                                "clipped": clipped})
+                stale = False
+                if callback is not None:
+                    # The callback may change x or model state: re-evaluate after it.
+                    callback(x, g_raw)
+                    stale = True
+                if refresh is not None:
+                    refresh(x)
+                    stale = True
+                if stale:
+                    ev_new = evaluate(x, guard=True)
+                    if ev_new is None:
+                        return finish(4, False, ev, step_inf, float("nan"),
+                                      "after the callback or refresh")
+                    ev = ev_new
+            if verbose:
+                print(f"newton it={it:3d} |dx|={step_inf:.3e} lam={lam:.3g} "
+                      f"theta={theta:.3g} clipped={clipped} nfev={nfev}")
+            stagnant = False
+            at_floor = near
+            if use_stagnation and not near and lam == 1.0 and backward_tol is not None:
+                # tol may lie below the round-off floor by more than _NEAR: once the
+                # backward error passes, non-shrinking full steps are that floor too.
+                at_floor = backward_error(ev[1], ev[2]) <= backward_tol
+            if use_stagnation and at_floor and lam == 1.0:
+                stagnant = (len(window) >= _STAGNATION_WINDOW
+                            and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
+                window.append(step_inf)
+            else:
+                window.clear()
+
+            if converged or stagnant:
+                be = backward_error(ev[1], ev[2])
+                # No gate when the backward error cannot be formed (a factorised or
+                # block Jacobian): the step test decides, as before.
+                gate = backward_tol is None or np.isnan(be) or be <= backward_tol
+                if converged and gate:
+                    return finish(0, True, ev, step_inf, be)
+                if stagnant:
                     if clipped:
-                        extra += f"; {clipped} components held by a bound"
-                    return finish(3, False, ev, step_inf, backward_error(g, jac), extra)
-                lam_next = 1.0 if (escaped or mode == "guarded") else min(1.0, 4.0 * accepted[2])
+                        return finish(8, False, ev, step_inf, be,
+                                      f"{clipped} components held by a bound")
+                    if gate:
+                        return finish(1, True, ev, step_inf, be,
+                                      f"|dx| = {step_inf:.2e} (tol {np.max(tol):.1e})")
+                    return finish(7, False, ev, step_inf, be, f"{be:.2e} at the stagnation floor")
+                gate_failed = True
+            else:
+                gate_failed = False
 
-            trial, ev, lam = accepted
-            x_flat[:] = trial
-            history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
-                            "clipped": clipped})
-            stale = False
-            if callback is not None:
-                # The callback may change x or model state: re-evaluate after it.
-                callback(x, g_raw)
-                stale = True
-            if refresh is not None:
-                refresh(x)
-                stale = True
-            if stale:
-                ev_new = evaluate(x, guard=True)
-                if ev_new is None:
-                    return finish(4, False, ev, step_inf, float("nan"),
-                                  "after the callback or refresh")
-                ev = ev_new
-        if verbose:
-            print(f"newton it={it:3d} |dx|={step_inf:.3e} lam={lam:.3g} "
-                  f"theta={theta:.3g} clipped={clipped} nfev={nfev}")
-        stagnant = False
-        at_floor = near
-        if use_stagnation and not near and lam == 1.0 and backward_tol is not None:
-            # tol may lie below the round-off floor by more than _NEAR: once the
-            # backward error passes, non-shrinking full steps are that floor too.
-            at_floor = backward_error(ev[1], ev[2]) <= backward_tol
-        if use_stagnation and at_floor and lam == 1.0:
-            stagnant = (len(window) >= _STAGNATION_WINDOW
-                        and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
-            window.append(step_inf)
-        else:
-            window.clear()
+        be = backward_error(ev[1], ev[2])
+        if gate_failed:
+            return finish(7, False, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
+        if clipped:
+            return finish(8, False, ev, step_inf, be, f"{clipped} components held by a bound")
+        return finish(2, False, ev, step_inf, be)
 
-        if converged or stagnant:
-            be = backward_error(ev[1], ev[2])
-            gate = backward_tol is None or be <= backward_tol
-            if converged and gate:
-                return finish(0, True, ev, step_inf, be)
-            if stagnant:
-                if clipped:
-                    return finish(8, False, ev, step_inf, be,
-                                  f"{clipped} components held by a bound")
-                if gate:
-                    return finish(1, True, ev, step_inf, be,
-                                  f"|dx| = {step_inf:.2e} (tol {np.max(tol):.1e})")
-                return finish(7, False, ev, step_inf, be, f"{be:.2e} at the stagnation floor")
-            gate_failed = True
-        else:
-            gate_failed = False
-
-    be = backward_error(ev[1], ev[2])
-    if gate_failed:
-        return finish(7, False, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
-    if clipped:
-        return finish(8, False, ev, step_inf, be, f"{clipped} components held by a bound")
-    return finish(2, False, ev, step_inf, be)
+    try:
+        return iterate()
+    except _LastEvaluationFailed as exc:
+        return finish(2, False, state["ev"], state["step"], float("nan"),
+                      f"the residual at the last trial point raised {exc}")
 
 
 def _mass_matrix(mass, shape):

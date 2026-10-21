@@ -58,7 +58,7 @@ def _two_fields(x):
 
 def test_backward_tol_fixes_the_absolute_tolerance_trap_per_field():
     x0 = np.tile([1.0 + 1e-9, 1e-8], (3, 1))
-    plain = newton(_two_fields, x0)
+    plain = newton(_two_fields, x0, damping="none", backward_tol=None, stagnation=False)
     assert plain.success and plain.x[0, 1] / 1e-10 > 40.0   # trace field 50x wrong
     assert plain.backward_error > 1e-4                      # ... and the result says so
     gated = newton(_two_fields, x0, backward_tol=1e-8)
@@ -137,7 +137,7 @@ def test_guarded_rescues_a_full_step_that_overflows():
     fun, shape = _weisz_hicks(phi=1.0, gamma=30.0, beta=0.5)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        plain = newton(fun, np.ones(shape), maxfev=100)
+        plain = newton(fun, np.ones(shape), maxfev=100, damping="none")
         guarded = newton(fun, np.ones(shape), maxfev=100, damping="guarded")
     assert plain.status == 4                           # non-finite residual
     assert guarded.status == 0 and guarded.x.min() < 1e-3   # ignited branch
@@ -221,14 +221,14 @@ def test_singular_jacobian_is_a_status():
 def test_double_root_is_not_reported_converged_with_backward_tol():
     def f(x):
         return np.array([x[0] ** 2]), csc_array([[2.0 * x[0]]])
-    assert newton(f, np.array([1.0])).success            # plain step test
+    assert newton(f, np.array([1.0]), damping="none", backward_tol=None, stagnation=False).success   # plain step test
     gated = newton(f, np.array([1.0]), backward_tol=1e-8, maxfev=60)
     assert not gated.success and gated.status == 7
 
 
 def test_stagnation_floor_ends_the_iteration():
     fun, shape, _ = _pellet(lambda c: 100.0 * c**2)
-    without = newton(fun, np.ones(shape), tol=1e-20, maxfev=40)   # below round-off
+    without = newton(fun, np.ones(shape), tol=1e-20, maxfev=40, stagnation=False)
     assert without.status == 2 and without.nit == 40
     floor = newton(fun, np.ones(shape), tol=1e-20, maxfev=40, stagnation=True,
                    backward_tol=1e-8)
@@ -240,7 +240,7 @@ def test_recoverable_exception_at_a_trial_point_shortens_the_step():
         with np.errstate(invalid="raise", divide="raise"):
             return np.array([np.log(x[0]) + 5.0]), csc_array([[1.0 / x[0]]])
     with pytest.raises(FloatingPointError):
-        newton(f, np.array([1.0]))                         # full step to x = -4
+        newton(f, np.array([1.0]), damping="none")         # full step to x = -4
     res = newton(f, np.array([1.0]), damping="guarded")
     assert res.status == 0 and res.x[0] == pytest.approx(np.exp(-5.0))
     assert res.history[0]["damping"] < 1.0
