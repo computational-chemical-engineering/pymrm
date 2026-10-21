@@ -70,7 +70,7 @@ from .interpolate import (
     compute_boundary_values,
     construct_boundary_value_matrices,
 )
-from .solve import newton, clip_approach
+from .solve import newton, clip_approach, pseudo_transient, continuation
 from .numjac import NumJac, stencil_block_diagonals
 from .coupling import (
     update_csc_array_indices,
@@ -151,6 +151,8 @@ __all__ = [
     "construct_boundary_value_matrices",
     "newton",
     "clip_approach",
+    "pseudo_transient",
+    "continuation",
     "update_csc_array_indices",
     "update_csr_array_indices",
     "update_array_indices",

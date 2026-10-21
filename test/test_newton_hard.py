@@ -315,3 +315,41 @@ def test_factorize_protocol_takes_part_in_the_damping_test():
     assert res.status == ref.status and res.nit == ref.nit
     assert solver.calls == res.nfact
     np.testing.assert_allclose(res.x, ref.x, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Pseudo-time stepping and continuation
+# ---------------------------------------------------------------------------
+
+def test_pseudo_transient_reaches_the_steady_state_newton_misses():
+    from pymrm import pseudo_transient
+    fun, shape = _weisz_hicks(phi=0.8, gamma=30.0, beta=0.5)
+    x0 = np.full(shape, 0.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        guarded = newton(fun, x0, damping="guarded")
+        monotone = newton(fun, x0, damping="monotone")
+        march = pseudo_transient(fun, x0, dt=1e-2)
+    assert not guarded.success and not monotone.success
+    assert march.success and march.steady.status == 0 and march.x.min() < 1e-3
+    assert 0 < march.nsteps <= 20
+
+
+def test_continuation_follows_a_branch_and_stops_at_its_fold():
+    from pymrm import continuation
+
+    def fun(c, phi):
+        return _weisz_hicks(phi=phi, gamma=20.0, beta=0.6)[0](c)
+    _, shape = _weisz_hicks(phi=0.1, gamma=20.0, beta=0.6)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        up = continuation(fun, np.ones(shape), np.linspace(0.1, 0.6, 11))
+        down = continuation(fun, np.zeros(shape), np.linspace(0.6, 0.1, 11))
+    assert not up.success and 0.55 < up.last_param < 0.6     # ignition fold
+    assert min(x.min() for x in up.xs) > 0.85                # never left the cold branch
+    assert not down.success and 0.25 < down.last_param < 0.35  # extinction fold
+    both = [p for p in up.params if p in down.params]
+    assert both                                              # the multiplicity window
+    for p in both:
+        assert up.xs[up.params.index(p)].min() > 0.85
+        assert down.xs[down.params.index(p)].min() < 0.05

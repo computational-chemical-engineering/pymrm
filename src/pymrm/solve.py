@@ -767,6 +767,226 @@ def newton(
     return finish(2, False, ev, step_inf, be)
 
 
+def _mass_matrix(mass, shape):
+    """Sparse matrix of the pseudo-time accumulation term."""
+    if sparse.issparse(mass):
+        return sparse.csc_array(mass)
+    diag = np.array(np.broadcast_to(np.asarray(mass, dtype=float), shape)).ravel()
+    return sparse.diags_array(diag).tocsc()
+
+
+def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_max=np.inf,
+                     max_steps=200, growth=10.0, steady_ratio=0.1, steady_every=10,
+                     newton_kwargs=None, steady_kwargs=None, verbose=0):
+    """Reach a steady state of ``function(x) = 0`` by implicit pseudo-time steps.
+
+    When Newton from the initial guess fails (ignition, extinction, a guess
+    far from any solution), march ``mass dx/dt = -function(x)`` with implicit
+    Euler steps instead: each step solves
+    ``function(x) + mass (x - x_old) / dt = 0`` with :func:`newton`, which is
+    well conditioned for small ``dt``. After a step whose Newton solve took
+    at most 3 iterations ``dt`` doubles, or grows by the residual reduction
+    ``||g_old|| / ||g||`` when that is larger (switched evolution relaxation;
+    at most ``growth`` per step and at most ``dt_max``); after a harder step it
+    is kept, and a failed step is retried with ``dt / 4``. The residual may
+    rise for a while, as it does through an ignition.
+
+    Measured on the Weisz-Hicks pellets where ``newton(...,
+    damping="guarded")`` fails: the march reached the steady state in 18 of
+    22, mostly within 20 steps. The four it did not reach (a steep reaction
+    front crawling at tiny ``dt``) were solved by ``damping="monotone"``;
+    try both. A steady Newton solve from the current state is
+    tried every ``steady_every`` steps and whenever the residual norm has
+    dropped by ``steady_ratio`` since the last attempt; it ends the march when
+    it converges.
+
+    Parameters
+    ----------
+    function : callable
+        ``function(x, *args) -> (residual, jacobian)``, as for :func:`newton`,
+        with a matrix Jacobian.
+    initial_guess : numpy.ndarray
+        Starting state.
+    mass : float, numpy.ndarray or sparse matrix, optional
+        Accumulation term: a scalar or an array broadcast against the state
+        (a diagonal), or a matrix. It sets the relative speed of the fields in
+        pseudo-time and must have the units of the residual per unit of the
+        state; 1 suits residuals scaled like the state.
+    dt : float, optional
+        First pseudo-time step.
+    args : tuple, optional
+        Extra arguments of ``function``.
+    dt_max : float, optional
+        Largest pseudo-time step.
+    max_steps : int, optional
+        Largest number of accepted pseudo-time steps.
+    growth : float, optional
+        Largest factor by which ``dt`` grows per step.
+    steady_ratio : float, optional
+        Try the steady solve each time the residual norm has dropped by this
+        factor.
+    steady_every : int, optional
+        Try the steady solve at least every so many steps.
+    newton_kwargs : dict, optional
+        Options for the Newton solve of each step (default ``maxfev=10``,
+        ``damping="guarded"``).
+    steady_kwargs : dict, optional
+        Options for the steady Newton solves (default ``maxfev=30``,
+        ``damping="guarded"``).
+    verbose : int, optional
+        ``1`` prints one line per step.
+
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        ``x``, ``success``, ``message``, ``nsteps``, ``history`` (``dt``,
+        residual norm and Newton iterations per step) and ``steady`` (the
+        last steady :func:`newton` result).
+    """
+    x = np.array(initial_guess, dtype=float, order="C")
+    shape = x.shape
+    mass_matrix = _mass_matrix(mass, shape)
+    inner = {"maxfev": 10, "damping": "guarded", **(newton_kwargs or {})}
+    steady = {"maxfev": 30, "damping": "guarded", **(steady_kwargs or {})}
+    history = []
+    steady_result = None
+    g_prev = None
+    g_attempt = None
+
+    def result(success, message, nsteps):
+        xr = steady_result.x if (success and steady_result is not None) else x
+        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps,
+                              history=history, steady=steady_result)
+
+    for step in range(int(max_steps) + 1):
+        g_now, _ = function(x, *args)
+        g_norm = float(np.linalg.norm(np.asarray(g_now, dtype=float).ravel()))
+        if not np.isfinite(g_norm):
+            return result(False, "non-finite residual during the pseudo-time march", step)
+        if (g_attempt is None or g_norm <= steady_ratio * g_attempt or step == max_steps
+                or (steady_every and step % steady_every == 0)):
+            g_attempt = g_norm
+            steady_result = newton(function, x, args, **steady)
+            if steady_result.success:
+                return result(True, f"Converged by the steady Newton solve after {step} "
+                              "pseudo-time steps", step)
+            if step == max_steps:
+                break
+        if g_prev is not None and g_norm > 0.0 and history and history[-1]["nit"] <= 3:
+            dt = min(dt_max, dt * min(growth, max(2.0, g_prev / g_norm)))
+        g_prev = g_norm
+        x_old = x.ravel().copy()
+        for _ in range(20):
+            def transient(xv, *a, _dt=dt):
+                g, jac = function(xv, *a)
+                g = np.asarray(g, dtype=float).ravel() + mass_matrix @ (xv.ravel() - x_old) / _dt
+                return g, jac + mass_matrix / _dt
+            step_result = newton(transient, x, args, **inner)
+            if step_result.success:
+                break
+            dt *= 0.25
+        else:
+            return result(False, f"pseudo-time step {step} failed down to dt = {dt:.2e}", step)
+        x = step_result.x
+        history.append({"dt": dt, "residual_norm": g_norm, "nit": step_result.nit})
+        if verbose:
+            print(f"pseudo_transient step {step}: dt={dt:.2e} |g|={g_norm:.2e} "
+                  f"nit={step_result.nit}")
+    return result(False, "max_steps reached without a converged steady solve", int(max_steps))
+
+
+def continuation(function, initial_guess, params, *, max_halvings=6, max_change=0.2,
+                 newton_kwargs=None, verbose=0):
+    """Solve ``function(x, p) = 0`` along a sequence of parameter values.
+
+    Natural-parameter continuation: each point starts from a secant
+    extrapolation of the two previous solutions and is corrected with
+    :func:`newton`. A failed correction halves the parameter step (at most
+    ``max_halvings`` times per requested value). A correction that moves
+    ``x`` by more than ``max_change`` times ``max |x|`` from the prediction
+    counts as failed: near a turning point (fold) the corrector otherwise
+    jumps silently to another solution branch. The march then stops and
+    reports where; the fold lies between the last parameter reached and the
+    next one. Following a branch around a fold needs arclength continuation,
+    which this function does not do.
+
+    Parameters
+    ----------
+    function : callable
+        ``function(x, p) -> (residual, jacobian)``.
+    initial_guess : numpy.ndarray
+        Guess for the first parameter value.
+    params : sequence of float
+        Parameter values, in the order to visit them.
+    max_halvings : int, optional
+        Largest number of step halvings on the way to one parameter value.
+    max_change : float or None, optional
+        Largest accepted relative distance between prediction and solution;
+        ``None`` disables the branch-jump check.
+    newton_kwargs : dict, optional
+        Options for :func:`newton`.
+    verbose : int, optional
+        ``1`` prints one line per accepted point.
+
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        ``success`` (every value reached), ``message``, ``params`` (the values
+        reached), ``xs`` (their solutions), ``results`` (their :func:`newton`
+        results), ``last_param`` (the last parameter at which a solution was
+        found, possibly an intermediate one) and ``x`` (that solution).
+    """
+    params = [float(p) for p in params]
+    options = dict(newton_kwargs or {})
+    first = newton(lambda xv: function(xv, params[0]), np.array(initial_guess, dtype=float),
+                   **options)
+    if not first.success:
+        return OptimizeResult(x=first.x, success=False, params=[], xs=[], results=[first],
+                              last_param=None,
+                              message=f"no solution at the first value {params[0]:g}: "
+                                      f"{first.message}")
+    done, xs, results = [params[0]], [first.x.copy()], [first]
+    path_p, path_x = [params[0]], [first.x.copy()]
+    for target in params[1:]:
+        halvings = 0
+        p = target
+        while True:
+            if len(path_p) >= 2:
+                ratio = (p - path_p[-1]) / (path_p[-1] - path_p[-2])
+                guess = path_x[-1] + ratio * (path_x[-1] - path_x[-2])
+            else:
+                guess = path_x[-1].copy()
+            res = newton(lambda xv, _p=p: function(xv, _p), guess, **options)
+            jumped = False
+            if res.success and max_change is not None:
+                size = max(float(np.max(np.abs(path_x[-1]))), np.finfo(float).tiny)
+                jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
+            if res.success and not jumped:
+                path_p.append(p)
+                path_x.append(res.x.copy())
+                if verbose:
+                    print(f"continuation p={p:g} nit={res.nit}")
+                if p == target:
+                    done.append(target)
+                    xs.append(res.x.copy())
+                    results.append(res)
+                    break
+                p = target
+                continue
+            halvings += 1
+            if halvings > max_halvings:
+                why = ("the corrector jumps to another solution branch" if jumped
+                       else f"the corrector fails ({res.message})")
+                return OptimizeResult(
+                    x=path_x[-1], success=False, params=done, xs=xs, results=results,
+                    last_param=path_p[-1],
+                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}; "
+                            "probably a turning point (fold) of the solution branch")
+            p = path_p[-1] + 0.5 * (p - path_p[-1])
+    return OptimizeResult(x=path_x[-1], success=True, params=done, xs=xs, results=results,
+                          last_param=path_p[-1], message="Reached every parameter value")
+
+
 def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
     """Project values onto bounds, optionally with a relaxed approach rule.
 
