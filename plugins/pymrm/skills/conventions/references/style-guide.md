@@ -386,8 +386,12 @@ Use:
 conv_mat, conv_bc = construct_convflux_upwind(shape, x_f, x_c, bc, v=v, axis=axis)
 ```
 
-If TVD is used, keep the first-order upwind part in the constant Jacobian and
-add the limiter correction separately.
+If TVD is used in a steady problem or a Newton solve, use `ConvFluxTVD`: it
+returns the limited fluxes and their exact Jacobian, and `newton` with
+`damping="monotone"` converges for every limiter. In a time step, deferred
+correction is also acceptable: the first-order upwind part in the constant
+Jacobian, the limiter correction in the residual, one or two inner iterations
+(pitfalls P10).
 
 ### 9.3 Accumulation
 

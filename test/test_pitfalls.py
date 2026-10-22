@@ -1,7 +1,8 @@
 """Executable record of the pitfalls documented for modelling agents.
 
 Each test demonstrates one entry of
-``plugins/pymrm/skills/conventions/references/pitfalls.md`` (ids P1 to P8; entries note what changed after pymrm 2.3.1).
+``plugins/pymrm/skills/conventions/references/pitfalls.md`` (ids P1 to P10; entries note what
+changed after pymrm 2.3.1).
 The tests pin CURRENT behaviour, including behaviour that is a trap rather than a
 feature. If a test here fails after an API change, the change has made the
 documented pitfall untrue: update ``pitfalls.md`` in the same PR, then update or
@@ -261,3 +262,61 @@ def test_p9_clipped_kinetics_stall_newton():
     res = newton(smooth, np.ones(shape), damping="monotone")
     assert res.status == 0 and res.nit <= 16
     assert np.max(np.abs(res.x.ravel() - exact)) == pytest.approx(6.8e-4, rel=0.05)
+
+
+# P10 ------------------------------------------------------------------------
+def _graetz(limiter, nx=40, ny=10, diffusivity=0.1):
+    """Parabolic flow along x, diffusion across, c = 0 at the wall y = 0."""
+    from pymrm import ConvFluxTVD, interp_cntr_to_stagg_tvd
+    shape = (nx, ny)
+    x_f, y_f = np.linspace(0.0, 4.0, nx + 1), np.linspace(0.0, 1.0, ny + 1)
+    y_c = 0.5 * (y_f[1:] + y_f[:-1])
+    v = np.broadcast_to((2 * y_c - y_c**2)[None, :], (nx + 1, ny))
+    bc_x = ({"a": 0.0, "b": 1.0, "d": 1.0}, {"outflow": True})
+    conv, conv_bc = construct_convflux_upwind(shape, x_f, bc=bc_x, v=v, axis=0)
+    div_x, div_y = construct_div(shape, x_f, axis=0), construct_div(shape, y_f, axis=1)
+    grad, grad_bc = construct_grad(shape, y_f, bc=({"a": 0, "b": 1, "d": 0}, {"a": 1, "b": 0, "d": 0}), axis=1)
+    diff, diff_bc = (-diffusivity * div_y @ grad).tocsc(), _dense(-diffusivity * div_y @ grad_bc)
+    jac_upwind = (div_x @ conv + diff).tocsc()
+
+    def deferred(n_iter):
+        c = spsolve(jac_upwind, -(_dense(div_x @ conv_bc) + diff_bc))
+        for _ in range(n_iter):
+            _, dc = interp_cntr_to_stagg_tvd(c.reshape(shape), x_f, None, bc_x, v, limiter, axis=0)
+            g = jac_upwind @ c + _dense(div_x @ conv_bc) + diff_bc + div_x @ (v * dc).ravel()
+            c = c - spsolve(jac_upwind, g)
+        return np.abs(g).max()
+
+    tvd = ConvFluxTVD(shape, x_f, bc=bc_x, tvd_limiter=limiter, axis=0)
+
+    def model(c):
+        flux, jac = tvd(c, v)
+        return div_x @ flux.ravel() + diff @ c + diff_bc, div_x @ jac + diff
+
+    def model_upwind_jacobian(c):
+        return model(c)[0], jac_upwind
+
+    return deferred, model, model_upwind_jacobian, nx * ny
+
+
+def test_p10_steady_deferred_correction_stalls():
+    from pymrm import clam, minmod, muscl, osher, smart, stoic, vanleer
+    for limiter, floor in ((vanleer, 1e-3), (muscl, 1e-2)):
+        deferred, _, _, _ = _graetz(limiter)
+        assert deferred(300) > floor                # stalls: about 4e-3 and 3e-2 to 6e-2
+    deferred, _, _, _ = _graetz(minmod)
+    assert 1e-9 < deferred(300) < 1e-6              # converges, slowly: about 8e-8
+
+    for limiter in (minmod, osher, clam, vanleer, muscl, smart, stoic):
+        _, model, _, n = _graetz(limiter)
+        res = newton(model, np.zeros(n), tol=1e-12, maxfev=100, damping="monotone")
+        assert res.status == 0 and 5 <= res.nit <= 12   # 5 to 12 steps
+    _, model, _, n = _graetz(smart)
+    assert newton(model, np.zeros(n), tol=1e-12, maxfev=100).status != 0   # undamped Newton cycles
+
+    # the upwind Jacobian inside newton: damping rescues van Leer slowly, minmod barely
+    _, _, upwind_jac, n = _graetz(vanleer)
+    assert newton(upwind_jac, np.zeros(n), tol=1e-12, maxfev=300, damping="none").status != 0
+    assert 20 < newton(upwind_jac, np.zeros(n), tol=1e-12, maxfev=300, damping="monotone").nit < 60   # about 31
+    _, _, upwind_jac, n = _graetz(minmod)
+    assert newton(upwind_jac, np.zeros(n), tol=1e-12, maxfev=300, damping="monotone").nit > 100      # about 130

@@ -22,7 +22,8 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | diffusive gradient at faces | `construct_grad(shape, x_f, x_c, bc, axis)` | returns `(grad, grad_bc)`; with `shapes_d`, `(grad, grad_bc_left, grad_bc_right)` (pitfalls P5) |
 | divergence of face fluxes | `construct_div(shape, x_f, nu, axis)` | `nu`: 0 slab, 1 cylinder, 2 sphere, or a callable area profile (structure S13) |
 | upwind convective flux | `construct_convflux_upwind(shape, x_f, x_c, bc, v, axis)` | `v` at faces, scalar or broadcastable array |
-| higher-order convection | `interp_cntr_to_stagg_tvd(c, x_f, x_c, bc, v, tvd_limiter, axis)` | returns `(face_values, correction)`; deferred correction, see below |
+| higher-order (TVD) convection, steady or Newton | `ConvFluxTVD(shape, x_f, x_c, bc, tvd_limiter, axis)`, called as `flux, jac = tvd(c, v)` | face fluxes and their exact Jacobian; `shapes_d` and `jac_v=True` add the Jacobians to the boundary data and the velocity; see below (pitfalls P10) |
+| TVD face values for deferred correction in a time step | `interp_cntr_to_stagg_tvd(c, x_f, x_c, bc, v, tvd_limiter, axis)` | returns `(face_values, correction)`; see below |
 | per-cell or per-face coefficients as a matrix | `construct_coefficient_matrix(coef, shape, axis)` | face diffusivities, accumulation weights, sinks on selected cells (pitfalls P6) |
 | values and gradients at the boundaries | `compute_boundary_values(c, x_f, x_c, bc, axis)` | gradients along `+axis`, not the outward normal (pitfalls P1, P8) |
 | face values from centres | `interp_cntr_to_stagg`, `interp_stagg_to_cntr` | linear interpolation |
@@ -93,8 +94,33 @@ Try these in order; each is opt-in and documented in the `newton` docstring.
 
 ## Patterns beyond the core recipe
 
-**Deferred correction for TVD convection** (structure S5). Keep first-order
-upwind in the constant Jacobian; add the limiter correction to the residual:
+**TVD convection with Newton.** `ConvFluxTVD` returns the TVD face fluxes and
+their exact Jacobian: the upwind part, the limiter derivative and the boundary
+faces. Build it once, call it in the residual:
+
+```python
+tvd = ConvFluxTVD(shape, x_f, x_c, bc=bc, tvd_limiter=vanleer, axis=0)
+
+def model(c):
+    flux, jac = tvd(c, v)
+    return div @ flux.ravel() + other @ c + g_0, div @ jac + other
+
+sol = newton(model, c0, damping="monotone")      # undamped Newton can cycle (P10)
+```
+
+Every limiter converges in about 5 to 25 steps. With `shapes_d` the call takes
+`d=(ext_left, ext_right)` and also returns `jac_bc_left, jac_bc_right`
+(derivatives only: `flux` already holds the boundary data). With `jac_v=True` it
+appends `jac_v`, whose entries are the face values, for a velocity that depends
+on the state: for Darcy flow `v = -(K/mu) (grad @ p + grad_bc)` the block is
+`div @ jac_v @ (-(K/mu) * grad)`. `v` is a face velocity, accepted in the same
+forms as by `construct_convflux_upwind`; the columns of `jac_v` follow the
+shape of `v` as passed, and `jac_v=True` refuses a cell-centred `v`. An
+initial guess with `v = 0` everywhere gives a zero convective Jacobian.
+
+**Deferred correction for TVD convection** (structure S5), inside a time step:
+keep first-order upwind in the constant Jacobian and add the limiter correction
+to the residual:
 
 ```python
 conv, conv_bc = construct_convflux_upwind(shape, x_f, x_c, bc, v, axis=0)
@@ -103,8 +129,10 @@ c_f, dc_f = interp_cntr_to_stagg_tvd(c, x_f, x_c, bc, v, tvd_limiter=minmod, axi
 g = jac @ c.reshape(-1, 1) - c_old.reshape(-1, 1) / dt + div @ (conv_bc + v * dc_f.reshape(-1, 1))
 ```
 
-One or two inner iterations per time step. Validation: sharper than first-order
-upwind and still bounded.
+One or two inner iterations per time step, at a small Courant number. Not for a
+steady state: it converges slowly with minmod and stalls with van Leer, MUSCL
+and SMART (pitfalls P10). Validation: sharper than first-order upwind and still
+bounded.
 
 **Apparent rate of a particle from its surface flux.** Take the surface-face
 rows of the flux operator rather than re-integrating the source; with

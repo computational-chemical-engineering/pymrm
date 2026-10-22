@@ -362,16 +362,7 @@ def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
         array = np.full(shape_f, array)
         return array
 
-    if len(shape) != 1 and array.ndim == 1:
-        shape_new = [1] * len(shape)
-        if array.size in (shape[axis], shape_f[axis]):
-            shape_new[axis] = -1
-        else:
-            for i in range(len(shape) - 1, -1, -1):
-                if array.size == shape[i]:
-                    shape_new[i] = shape[i]
-                    break
-        array = array.reshape(shape_new)
+    array = _align_to_axes(array, shape, axis)
     if array.ndim != len(shape):
         raise ValueError("The array has the wrong number of dimensions.")
     if array.shape[axis] == shape[axis]:
@@ -381,6 +372,22 @@ def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
         array_f = array
     array_f = np.broadcast_to(array_f, shape_f)
     return array_f
+
+
+def _align_to_axes(array, shape, axis):
+    """Give a 1-D array the axes of ``shape``: along ``axis`` if its length is
+    the cell or face count there, else along the last axis of that length."""
+    if len(shape) == 1 or array.ndim != 1:
+        return array
+    shape_new = [1] * len(shape)
+    if array.size in (shape[axis], shape[axis] + 1):
+        shape_new[axis] = -1
+    else:
+        for i in range(len(shape) - 1, -1, -1):
+            if array.size == shape[i]:
+                shape_new[i] = shape[i]
+                break
+    return array.reshape(shape_new)
 
 
 def compute_boundary_values(
