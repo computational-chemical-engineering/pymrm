@@ -257,6 +257,22 @@ def test_stagnation_floor_ends_the_iteration():
     assert floor.status == 1 and floor.success and floor.nit <= 25
 
 
+@pytest.mark.parametrize("damping", ["monotone", "armijo"])
+def test_damped_steps_at_a_round_off_floor_count_for_stagnation(damping):
+    """Noise of 5e-11 above tol = 1e-12: the stagnation rule ends the iteration
+    within a few steps although the damping test fails on the noise (measured on
+    a fuel-cell model: 93 iterations instead of 8 when damped steps reset it)."""
+    rng = np.random.default_rng(1)
+    a = diags_array(np.full(200, 2.0)).tocsc()
+
+    def noisy(u):
+        return a @ (u - 1.0) + 5e-11 * rng.standard_normal(200), a
+
+    res = newton(noisy, np.full(200, 5.0), tol=1e-12, damping=damping, stagnation=True,
+                 backward_tol=None, maxfev=100)
+    assert res.status == 1 and res.nit <= 30     # 100 (maxfev) when damped steps reset it
+
+
 def test_recoverable_exception_at_a_trial_point_shortens_the_step():
     def f(x):
         with np.errstate(invalid="raise", divide="raise"):
