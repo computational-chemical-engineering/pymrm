@@ -85,6 +85,9 @@ returns boundary terms.
 - The inner Jacobian is block diagonal (one particle per outer cell). Eliminate
   it with a Schur complement inside the linear solve: pass a function as
   `newton(..., solver=...)` that receives the blocks and returns the update.
+  From 3.0.0 an object with a `factorize(jac)` method returning an object
+  with `.solve(rhs)` also works, and lets `damping="monotone"` reuse the
+  factorisation; a plain function keeps the undamped iteration.
   `splu` of the block-diagonal inner Jacobian is cheap. When each particle
   couples only to its own outer cell, the Schur correction is DIAGONAL and one
   solve against the summed coupling columns gives it (see the exemplar); never

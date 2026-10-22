@@ -61,7 +61,7 @@ def test_find_roots_reports_all_and_failures():
 def test_residual_check_is_scale_free():
     def trace(x):
         return np.array([x[0] ** 2 - 1e-20]), csc_array(np.array([[2.0 * x[0]]]))
-    wrong = newton(trace, np.array([1e-8]))                          # 50x off, success=True
+    wrong = newton(trace, np.array([1e-8]), damping="none", backward_tol=None, stagnation=False)  # 50x off, success=True
     assert not residual_check(trace, wrong.x)["ok"]
     right = newton(trace, np.array([1e-8]), tol=0.0, rtol=1e-12)
     assert residual_check(trace, right.x)["ok"]

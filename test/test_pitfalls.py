@@ -174,9 +174,13 @@ def test_p7_newton_stops_on_absolute_step():
     def f(x):
         return np.array([x[0] ** 2 - s]), csc_array(np.array([[2.0 * x[0]]]))
 
-    res = newton(f, np.array([1e-8]))
+    res = newton(f, np.array([1e-8]), damping="none", backward_tol=None, stagnation=False)   # the iteration before 2.5.0
     assert res.success and res.nit == 1
     assert res.x[0] / np.sqrt(s) > 40.0
+
+    # from 3.0.0 the default backward-error gate keeps iterating to the root
+    res_gate = newton(f, np.array([1e-8]))
+    assert res_gate.success and np.isclose(res_gate.x[0], np.sqrt(s), rtol=1e-8)
 
     scale = 1e-10
 
@@ -219,3 +223,41 @@ def test_p8_outlet_value_from_the_face_not_the_last_cell():
     face, last_cell = _dispersion_balance(8)
     assert abs(face) < 1e-12
     assert abs(last_cell) > 3e-3                # measured 3.8e-3 at n=8
+
+
+# P9 -------------------------------------------------------------------------
+def _half_order_slab(rate, n=100):
+    from pymrm import NumJac
+    x_f = np.linspace(0.0, 1.0, n + 1)
+    shape = (n, 1)
+    bc = ({"a": 1.0, "b": 0.0, "d": 0.0}, {"a": 0.0, "b": 1.0, "d": 1.0})
+    grad, grad_bc = construct_grad(shape, x_f, bc=bc)
+    div = construct_div(shape, x_f, nu=0)
+    jac_const = (div @ -grad).tocsc()
+    g_const = (div @ -grad_bc).toarray().reshape(-1, 1)
+    numjac = NumJac(shape)
+
+    def fun(c):
+        g_r, j_r = numjac(rate, c.reshape(shape))
+        return g_const + jac_const @ c.reshape(-1, 1) + g_r.reshape(-1, 1), jac_const + j_r
+
+    z = 0.5 * (x_f[:-1] + x_f[1:])
+    z0 = 1.0 - np.sqrt(12.0) / 30.0
+    exact = np.where(z > z0, (900.0 / 12.0) ** 2 * np.clip(z - z0, 0.0, None) ** 4, 0.0)
+    return fun, shape, exact
+
+
+def test_p9_clipped_kinetics_stall_newton():
+    clipped, shape, exact = _half_order_slab(lambda c: 900.0 * np.sqrt(np.maximum(c, 0.0)))
+    plain = newton(clipped, np.ones(shape), damping="none", backward_tol=None,
+                   stagnation=False)
+    assert not plain.success and plain.nit == 100
+    damped = newton(clipped, np.ones(shape), damping="monotone")
+    assert damped.nit > 50                         # about 70 iterations
+    bounded = newton(clipped, np.ones(shape), damping="monotone", bounds=0.0)
+    assert bounded.nit > 20                        # about 27 iterations
+
+    smooth, _, _ = _half_order_slab(lambda c: 900.0 * c * (c**2 + 1e-12) ** -0.25)
+    res = newton(smooth, np.ones(shape), damping="monotone")
+    assert res.status == 0 and res.nit <= 16
+    assert np.max(np.abs(res.x.ravel() - exact)) == pytest.approx(6.8e-4, rel=0.05)

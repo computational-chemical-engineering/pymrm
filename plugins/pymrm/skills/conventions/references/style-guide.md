@@ -445,14 +445,25 @@ of the teaching objective.
    field-shaped state, `(n_x, 1)` for one field. Use `axes_diagonals` only on
    shapes with at least two axes, and only when the source term itself reads
    neighbouring cells (pitfalls P3, P4).
-3. Use `clip_approach(...)` when positivity or boundedness is physically
-   required.
+3. Write rates that are smooth and first order through zero concentration
+   (`k c (c**2 + eps**2)**((n - 1)/2)` instead of `k c**n` with `n < 1`;
+   no `np.maximum(c, 0)`), so that a slightly negative iterate gives a
+   restoring rate (pitfalls P9). Use `newton(..., bounds=...)` (from 3.0.0;
+   `clip_approach(...)` as the callback before) only for unknowns the residual
+   cannot accept beyond a limit: `T > 0`, arguments of `log` or `sqrt`.
 4. For linear steady problems, use `spsolve(...)` directly.
 5. Do not rebuild constant sparse matrices inside the time loop.
-6. `newton` stops when the infinity norm of the STEP falls below `tol`, an
-   absolute number. Scale unknowns so that they are of order one, or a
-   trace-level unknown reports success after one step with a wrong value
-   (pitfalls P7). Check `result.success` and the final residual.
+6. `newton` tests the infinity norm of the STEP against `tol`, an absolute
+   number. Scale unknowns so that they are of order one (or pass `scale=`).
+   Up to 2.5.0 a trace-level unknown reports success after one step with a
+   wrong value; from 3.0.0 the default `backward_tol=1e-8` keeps iterating
+   (pitfalls P7). Check `result.success`; `result.status` and
+   `result.message` say why a solve stopped.
+7. When a solve fails from a reasonable guess, follow the order in the API
+   map's "Hard nonlinear problems": `damping="guarded"` (the default after
+   2.5.0), then regularised kinetics with `damping="monotone"`, `scale=`,
+   then `pseudo_transient` or `continuation`. Do not wrap `newton` in a
+   home-made line search.
 
 Preferred `solve()` pattern:
 
