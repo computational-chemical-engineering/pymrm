@@ -219,7 +219,7 @@ def interp_cntr_to_stagg_tvd(
         fctr_m = fctr_m + np.zeros(shape_bc)
         fctr_m = np.reshape(fctr_m, shape_bc_d)
         staggered_values[:, 1, :] += fctr_m
-        staggered_values.reshape(shape_f)
+        staggered_values = staggered_values.reshape(shape_f)
         delta_staggered_values = np.zeros(shape_f)
     else:
         # bc 0
@@ -647,6 +647,14 @@ def construct_boundary_value_matrices(
     tuple
         ``(matrix, mat_bc)`` where ``matrix`` maps cell-centered values to
         boundary values and ``mat_bc`` maps inhomogeneous boundary terms.
+
+    Raises
+    ------
+    ValueError
+        If the axis has a single cell: the boundary value then depends on the
+        conditions at both ends, which this function does not receive.
+    NotImplementedError
+        For an outflow boundary.
     """
     if is_outflow_bc(bc):
         raise NotImplementedError(
@@ -662,7 +670,11 @@ def construct_boundary_value_matrices(
     shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
-    # Handle special case with one cell in the dimension axis
+    if shape_t[1] < 2:
+        raise ValueError(
+            "construct_boundary_value_matrices needs at least two cells along axis; "
+            "with one cell the boundary value depends on both boundary conditions"
+        )
 
     if bound_id == 0:
         idx_c_0 = 0

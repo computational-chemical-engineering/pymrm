@@ -251,35 +251,32 @@ def construct_grad_bc(
         i_f_bc = np.ravel_multi_index(
             (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        values_bc = np.empty((n0, 2, n2))
-        value = np.broadcast_to(
+
+        def on_bc(value):
+            return np.reshape(np.broadcast_to(value, shape_bc), shape_bc_d)
+
+        # values_bc_src[:, face, source]: with one cell, each face value depends
+        # on the data of both boundaries
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = on_bc(
             (
-                (
-                    a[1]
-                    * (-alpha_0_left * alpha_0_right + alpha_2_left * alpha_2_right)
-                    - alpha_0_left * b[1]
-                )
-                * d[0]
-                - alpha_2_left * b[0] * d[1]
+                a[1] * (-alpha_0_left * alpha_0_right + alpha_2_left * alpha_2_right)
+                - alpha_0_left * b[1]
             )
-            * fctr,
-            shape_bc,
+            * d[0]
+            * fctr
         )
-        values_bc[:, 0, :] = np.reshape(value, shape_bc_d)
-        value = np.broadcast_to(
+        values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * b[0] * d[1] * fctr)
+        values_bc_src[:, 1, 1, :] = on_bc(
             (
-                (
-                    a[0]
-                    * (+alpha_0_left * alpha_0_right - alpha_2_left * alpha_2_right)
-                    + alpha_0_right * b[0]
-                )
-                * d[1]
-                + alpha_2_right * b[1] * d[0]
+                a[0] * (+alpha_0_left * alpha_0_right - alpha_2_left * alpha_2_right)
+                + alpha_0_right * b[0]
             )
-            * fctr,
-            shape_bc,
+            * d[1]
+            * fctr
         )
-        values_bc[:, 1, :] = np.reshape(value, shape_bc_d)
+        values_bc_src[:, 1, 0, :] = on_bc(alpha_2_right * b[1] * d[0] * fctr)
+        values_bc = values_bc_src.sum(axis=2)
     else:
         # Cell indices: 2 near left boundary + 2 near right boundary
         cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
@@ -343,6 +340,9 @@ def construct_grad_bc(
         values[:, -2, :] = b_fctr * alpha_2
         values[:, -1, :] = -b_fctr * alpha_1
         values_bc[:, -1, :] = d_fctr
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
+        values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         grad_bc = csc_array(
             (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
@@ -364,11 +364,15 @@ def construct_grad_bc(
                 shape_d = shapes_d[i]
                 num_cols = math.prod(shape_d)
             i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc)
+            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
+            faces = [0, 1] if n1 == 1 else [i]
             grad_bc[i] = csc_array(
                 (
-                    values_bc[:, i, :].ravel(),
-                    (i_f_bc[:, i, :].ravel(), i_cols_bc.ravel()),
+                    values_bc_src[:, faces, i, :].ravel(),
+                    (
+                        i_f_bc[:, faces, :].ravel(),
+                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                    ),
                 ),
                 shape=(math.prod(shape_f_t), num_cols),
             )
