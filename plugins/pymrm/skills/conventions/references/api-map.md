@@ -62,6 +62,9 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
   solve the one before the final step (as before). `result.status` says why it
   stopped; `result.history` holds the step norm and damping per iteration
   (from 3.0.0).
+- A singular Jacobian or a non-finite residual or step raises (as before);
+  from 3.0.0 as `pymrm.NewtonBreakdown`, a `ValueError` whose `.result` holds
+  the status and the last iterate. Non-convergence is `result.success=False`.
 
 ### Hard nonlinear problems (from 3.0.0)
 

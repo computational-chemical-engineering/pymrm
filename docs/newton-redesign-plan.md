@@ -347,4 +347,41 @@ section 3. Numbers in section 9.
 - **`continuation` rejects a corrector that jumps** (more than 20 % of `max|x|`
   from the prediction): without that check natural continuation silently
   crossed from the cold to the hot branch at the ignition fold.
+- **Breakdowns raise.** The plan had "failure is reported, not raised". The
+  old iteration in fact raised on every breakdown (a singular sparse Jacobian
+  or a non-finite residual gave a NaN step, and the step norm raised
+  `ValueError`), and gallery code catches that (D1.1). Statuses 4 to 6 now
+  raise `NewtonBreakdown`, a `LinAlgError` and so a `ValueError`, with the
+  result attached; non-convergence (statuses 2, 3, 7, 8) is returned.
+- **The old options reproduce 2.5.0 bit for bit**, including CSR Jacobians
+  (spsolve factors their transpose) and dense ones (`scipy.linalg.solve`).
 
+
+## 9. Measurements
+
+**Corpus.** Every `newton` call in 93 files: the pymrm-gallery pages, the
+pymrm-book notebooks and teacher solutions, and the pymrm exemplars and
+tutorials. Each call was logged with its options, outcome and solution and
+compared with pymrm 2.5.0 call by call (matched by caller and occurrence).
+Final runs, on the code released as 3.0.0:
+
+| run | files | calls compared | Newton iterations | lost / gained successes | solutions changed |
+|---|---|---|---|---|---|
+| 2.5.0 | 93 (D1.1 needs 4500 s) | 660 548 | 2 954 255 | | |
+| 3.0.0, `damping="none", backward_tol=None` | 93 | 660 548 | 2 954 255 | 0 / 0 | none, bit for bit |
+| 3.0.0, defaults | 93 | 660 548 | 2 958 738 (+0.15 %) | 0 / 0 | none above 1e-6 relative |
+
+J4.1 and J4.6 exceeded the 1800 s limit of the 2.5.0 run; they are compared
+over the calls that run made. Wall times of the 3.0.0 runs are up to 20 %
+longer because both ran at the same time on one machine; the iteration counts
+show the work is unchanged. The solver's own overhead is about 0.1 ms per
+iteration on a one-unknown problem and not measurable at 2000 unknowns.
+
+**Weisz-Hicks pellets** (84 cases, section 8): converged with `"none"` 60,
+`"guarded"` 62 (mean 8.4 evaluations against 7.7), `"monotone"` 69 (15.9),
+`"armijo"` 61. `pseudo_transient` solves 18 of the 22 that `"guarded"` misses.
+
+**Linear solver** at 2e5 unknowns (2-D, 5 fields): sparse LU 8.5 s and 918 MB
+for the whole solve; ILU-preconditioned BiCGSTAB, the 2.5.0 choice at this
+size, failed after 166 s. One linear solve: 1.1 s with LU, 14 to 28 s with
+BiCGSTAB.
