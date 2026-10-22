@@ -44,4 +44,5 @@ jobs:
     - name: Run examples
       run: |
         python -m pip install .
+        python -m pip install pyamg   # optional AMG solver in newton_linear_solvers
         python scripts/run_examples.py
