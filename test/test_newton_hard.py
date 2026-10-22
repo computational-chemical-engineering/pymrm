@@ -119,14 +119,14 @@ def test_regularised_kinetics_with_monotone_damping_converge():
     assert np.max(np.abs(res_small.x - res.x)) < 1e-6
 
 
-def test_a_bound_at_zero_stalls_where_the_regularised_rate_converges():
+def test_regularised_rate_beats_a_bound_at_zero_and_clipping():
     fun, shape, _ = _pellet(_clipped)
-    bounded = newton(fun, np.zeros(shape), damping="monotone", bounds=0.0,
-                     backward_tol=1e-8, stagnation=True)
-    assert not bounded.success and bounded.status == 8   # held by the bound
     fun_reg, _, _ = _pellet(_regularised)
-    free = newton(fun_reg, np.zeros(shape), damping="monotone", backward_tol=1e-8)
-    assert free.status == 0
+    clipped = newton(fun, np.ones(shape), damping="monotone")
+    bounded = newton(fun, np.ones(shape), damping="monotone", bounds=0.0)
+    free = newton(fun_reg, np.ones(shape), damping="monotone")
+    assert free.status == 0 and free.nit <= 16
+    assert bounded.nit > 1.5 * free.nit and clipped.nit > 3 * free.nit
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +208,26 @@ def test_scale_equals_an_explicit_change_of_variables():
 # ---------------------------------------------------------------------------
 
 def test_singular_jacobian_is_a_status():
+    jac = csc_array(np.array([[1.0, -1.0], [-1.0, 1.0]]))     # exactly singular
+
+    def fun(x):
+        return jac @ x - np.array([1.0, 0.0]), jac
+    for row_scaling in (False, True):
+        res = newton(fun, np.zeros(2), row_scaling=row_scaling)
+        assert not res.success and res.status == 5
+
+
+def test_nearly_singular_jacobian_is_not_a_success():
     shape, _, jac_const, _ = _slab_operators(20)
     neumann = jac_const.copy()
-    neumann[-1, -1] -= neumann[-1, -1] + neumann[-1, -2]   # make the last row zero-sum
+    neumann[-1, -1] -= neumann[-1, -1] + neumann[-1, -2]   # zero-sum rows, up to round-off
 
     def fun(c):
         return neumann @ c.ravel() - 1.0, neumann
-    res = newton(fun, np.zeros(shape))
-    assert not res.success and res.status == 5
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = newton(fun, np.zeros(shape))
+    assert not res.success
 
 
 def test_double_root_is_not_reported_converged_with_backward_tol():

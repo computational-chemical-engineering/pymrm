@@ -143,16 +143,15 @@ The operators transport the reconstructed FACE value. A hand-written outlet flux
 A rate written with `np.maximum(c, 0.0)` (or `c**n` with `n < 1`) has a zero
 or infinite derivative at `c = 0`. Near a dead zone Newton then overshoots
 below zero, the clipped rate loses the term that pulls `c` back, and the
-iteration cycles instead of converging. A hard lower bound at zero does not
-help: the iterates pile up on the bound.
+iteration cycles instead of converging, or converges only after many damped
+steps. A hard lower bound at zero helps, but less than a smooth rate.
 
 - Symptom: `success=False` after `maxfev` iterations with a profile that looks
-  almost right; or, with `stagnation=True`, status 7 (steps stop shrinking but
-  the backward error stays above `backward_tol`); with `bounds=0`, status 8.
+  almost right (status 2, or 7 when the steps are small but the backward error
+  stays above `backward_tol`), or success only after tens of iterations.
 - Measured: slab, `phi^2 sqrt(max(c, 0))` with `phi = 30`, 100 cells, from
-  `c = 1`: plain Newton fails after 100 iterations; `damping="monotone"` stops
-  at the stagnation floor after about 37 (status 7), 6.8e-4 from the exact dead-zone
-  profile.
+  `c = 1`: plain Newton fails after 100 iterations; `damping="monotone"` needs
+  about 70, and about 27 with `bounds=0`.
 - Do (after 2.5.0): make the rate smooth and first order through zero,
   `phi^2 c (c**2 + eps**2)**-0.25` with `eps = 1e-6`, and use
   `damping="monotone"`: status 0 after about 13 iterations, the same 6.8e-4 from the

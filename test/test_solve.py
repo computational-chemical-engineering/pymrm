@@ -198,9 +198,9 @@ def test_newton_result_fields_and_fun_at_x():
     x0 = np.array([1.0])
     res = newton(_f_sqrt2, x0)
     assert x0[0] == 1.0                                   # initial guess not modified
-    assert res.status == 0 and res.nfact == res.nit and res.nfev == res.nit + 1
-    assert abs(res.fun[0]) < 1e-12                        # residual AT x
-    assert res.backward_error < 1e-12
+    assert res.status == 0 and res.nfact == res.nit and res.nfev == res.nit
+    assert abs(res.fun[0]) < 1e-8                         # residual before the last step
+    assert res.backward_error < 1e-8
     assert len(res.history) == res.nit
     assert {"step_norm", "damping", "theta", "clipped"} <= set(res.history[0])
 
@@ -240,7 +240,7 @@ def test_newton_callback_runs_once_per_iteration_before_the_next_evaluation():
         order.append("cb")
 
     res = newton(f, np.array([1.0]), callback=cb)
-    assert order == ["f"] + ["cb", "f"] * res.nit
+    assert order == ["f"] + ["cb", "f"] * (res.nit - 1) + ["cb"]   # as before 2.5.0
 
 
 def test_newton_clip_approach_callback_with_upper_bound():

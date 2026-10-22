@@ -72,10 +72,12 @@ def install(logdir, tag):
                 fh.write(json.dumps(record) + "\n")
             raise
         record["time"] = time.perf_counter() - t0
-        for key in ("success", "nit", "nfev", "nfact", "status", "message", "step_norm"):
+        for key in ("success", "nit", "nfev", "nfact", "status", "message", "step_norm",
+                    "backward_error"):
             if key in result:
                 value = result[key]
-                record[key] = value.item() if isinstance(value, np.generic) else value
+                name = "be_newton" if key == "backward_error" else key
+                record[name] = value.item() if isinstance(value, np.generic) else value
         x = np.asarray(result.x, dtype=np.float64)
         record["x_offset"] = state["offset"]
         record["x_finite"] = bool(np.all(np.isfinite(x)))

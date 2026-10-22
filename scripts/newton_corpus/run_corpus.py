@@ -90,10 +90,11 @@ def main():
     ap.add_argument("--lib")
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--timeout", type=int, default=1800)
-    ap.add_argument("--only", default="")
+    ap.add_argument("--only", default="", help="comma-separated substrings of file paths")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
-    files = [h for r in a.roots for h in discover(r) if a.only in str(h[1])]
+    only = [o for o in a.only.split(",") if o] or [""]
+    files = [h for r in a.roots for h in discover(r) if any(o in str(h[1]) for o in only)]
     if a.list:
         for root, path in files:
             print(tag_of(root, path))

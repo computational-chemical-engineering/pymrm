@@ -20,6 +20,7 @@ _ESCAPE = True        # then take the (bounded) full step if its residual is fin
 _NEAR = 100.0         # steps within _NEAR times the tolerance are taken in full
 _STAGNATION_WINDOW = 5
 _STAGNATION_RATIO = 0.8
+_FLOOR_STEP = 1.0e-10  # outside _NEAR, a floor step is at most this relative to x
 _ARMIJO_C = 1.0e-4
 _BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
@@ -296,7 +297,7 @@ def newton(
     refresh=None,
     backward_tol=1e-8,
     stagnation=True,
-    row_scaling=True,
+    row_scaling=False,
     recoverable=(FloatingPointError, OverflowError, ZeroDivisionError),
     verbose=0,
 ):
@@ -411,9 +412,10 @@ def newton(
     backward_tol : float or None, optional
         If not None (default ``1e-8``), the step test is necessary but not
         sufficient (unless the Jacobian is not a matrix, so that the backward
-        error cannot be formed): the backward
-        error at the new ``x`` must also be below ``backward_tol``, else the
-        iteration continues. The backward error is
+        error cannot be formed): the backward error of the iterate the step is
+        taken from must also be below ``backward_tol``, else the iteration
+        continues. The final Newton step then only improves it, and no
+        evaluation is spent beyond those of plain Newton. The backward error is
         ``max_i |g_i| / (|J| (|x| + x_ref) + |J x - g|)_i``, the relative
         change of the equation coefficients that would make ``x`` exact, with
         ``x_ref`` the magnitude of each unknown's field: ``scale`` if given,
@@ -425,16 +427,20 @@ def newton(
         unknown. It is always reported in the result. For a flat state that
         mixes units, pass ``scale``. ``None`` restores the plain step test.
     stagnation : bool, optional
-        Stop at the stagnation floor (default True): once steps are taken in full near the
-        solution, a step no smaller than 0.8 times the smallest of the five
-        before it ends the iteration (round-off, or switching terms such as
-        ``max(c, 0)`` and upwinding, keep the steps from shrinking further).
-        Whether that counts as success is decided by ``backward_tol``. Once
-        ``backward_tol`` passes, the rule also applies to steps that are not
-        yet within 100 tolerances.
+        Stop at the stagnation floor (default True): when the step test cannot
+        be met because round-off, or switching terms such as ``max(c, 0)`` and
+        upwinding, keep the steps from shrinking, a full step no smaller than
+        0.8 times the smallest of the five before it ends the iteration with
+        success, provided ``backward_tol`` passes; otherwise the iteration
+        continues. It applies to steps within 100 tolerances, and to steps below
+        1e-10 of ``|x|`` once ``backward_tol`` passes.
     row_scaling : bool, optional
         Divide each row of the Jacobian by its largest entry before the direct
         LU factorisation. Improves pivoting when rows have different units.
+        Off by default: it changes the pivot order and with it the round-off,
+        and continuations that pass close to a turning point with a
+        tolerance near round-off then end on a different branch (measured on
+        a gallery page).
     recoverable : tuple of exception types, optional
         Exceptions that mark a damped trial point as unusable: the step is
         shortened. Non-finite residuals are treated the same way. Exceptions
@@ -447,10 +453,13 @@ def newton(
     scipy.optimize.OptimizeResult
         ``x`` (shape of ``initial_guess``), ``success``, ``status``,
         ``message``, ``nit`` (Newton iterations), ``nfev`` (function
-        evaluations), ``nfact`` (factorisations), ``fun`` (the residual at
-        ``x``, as returned by ``function``), ``step_norm`` (infinity norm of
-        the last Newton step), ``backward_error`` (at ``x``; ``nan`` when the
-        Jacobian is a factorisation), and ``history``, a list with per
+        evaluations), ``nfact`` (factorisations), ``fun`` (the residual of
+        the last evaluated iterate, as returned by ``function``: for a
+        converged solve the iterate before the final step, which ``x`` only
+        improves; evaluate ``function(x)`` for the residual at ``x``),
+        ``step_norm`` (infinity norm of the last Newton step),
+        ``backward_error`` (of the same iterate as ``fun``; ``nan`` when the
+        Jacobian is not a matrix), and ``history``, a list with per
         iteration ``step_norm``, ``damping``, ``theta`` (monotonicity ratio)
         and ``clipped`` (components held by a bound).
 
@@ -497,11 +506,13 @@ def newton(
     ``tol``. :func:`pymrm.checks.residual_check` gives a stricter, purely
     componentwise verdict after the fact.
 
-    **Changes after 2.5.0.** Before, ``newton`` took plain full steps, stopped on
-    the step test alone, returned the residual before the last step as
-    ``fun``, and switched to ILU-BiCGSTAB above 50 000 unknowns. Pass
-    ``damping="none", backward_tol=None, stagnation=False`` for the old
-    iteration.
+    **Changes after 2.5.0.** Before, ``newton`` took plain full steps even
+    into a non-finite residual, stopped on the step test alone, and switched
+    to ILU-BiCGSTAB above 50 000 unknowns. Pass ``damping="none",
+    backward_tol=None, stagnation=False`` for the old iteration; it then
+    takes the same steps and evaluations as before. A singular Jacobian or a
+    non-finite residual now ends the solve with a status instead of
+    continuing with NaN.
     """
     x = np.array(initial_guess, dtype=float, order="C")
     shape = x.shape
@@ -582,16 +593,30 @@ def newton(
 
     def iterate():
         nonlocal nfact, ev
-        state["ev"] = ev
         lam_next = 1.0
-        window = []
+        window = []          # step norms of the recent full steps at the floor
         step_inf = float("nan")
+        be = float("nan")
         gate_failed = False
         clipped = 0
+
+        def final_step(status, extra=""):
+            """Take the converged step without evaluating there, as plain Newton did."""
+            trial = x_flat - dx
+            n_clip = bnd.project(trial, x_flat) if bnd.active else 0
+            x_flat[:] = trial
+            history.append({"step_norm": step_inf, "damping": 1.0, "theta": float("nan"),
+                            "clipped": n_clip})
+            if callback is not None:
+                callback(x, g_raw)
+            if refresh is not None:
+                refresh(x)
+            return finish(status, True, ev, step_inf, be, extra)
 
         for it in range(int(maxfev)):
             g_raw, g, jac = ev
             state["ev"] = ev
+            last_it = it == int(maxfev) - 1
             try:
                 solve, r = lin.factorize(jac)
                 nfact += 1
@@ -618,7 +643,27 @@ def newton(
             converged = converged or step_inf == 0.0
             near = converged or (refresh is None and excess < _NEAR)
             state["step"] = step_inf
-            state["last"] = converged or it == int(maxfev) - 1
+            state["last"] = converged or last_it
+
+            # The verdict uses the residual at x, before the step: no evaluation
+            # beyond those of plain Newton. Near a solution the step only improves it.
+            be = float("nan")
+            if near or last_it or relative:
+                be = backward_error(g, jac)
+            at_floor = near
+            if use_stagnation and not near and backward_tol is not None:
+                # tol may lie below the round-off floor by more than _NEAR: once the
+                # backward error passes, non-shrinking steps are that floor too. The
+                # step must also be round-off small relative to x: a nearly singular
+                # system has a tiny backward error at a huge x.
+                y_size = float(np.max(np.abs(y))) if n else 0.0
+                at_floor = step_inf <= _FLOOR_STEP * y_size
+                if at_floor:
+                    be = backward_error(g, jac)
+                    at_floor = be <= backward_tol
+            gate = backward_tol is None or np.isnan(be) or be <= backward_tol
+            stagnant = (use_stagnation and at_floor and len(window) >= _STAGNATION_WINDOW
+                        and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
 
             theta = float("nan")
             if mode == "none":
@@ -639,25 +684,30 @@ def newton(
                 if relative and step_inf > 0.0:
                     # The relative test uses x after the step (and the callback).
                     converged = bool(np.all(np.abs(dy) <= tol_vec + rtol * np.abs(x_flat / d)))
-                last = converged or it == int(maxfev) - 1
-                try:
-                    ev_new = evaluate(x, guard=last)
-                except Exception:
-                    if not last:
-                        raise
-                    ev_new = None
+                if converged and gate:
+                    return finish(0, True, ev, step_inf, be)
+                if stagnant and gate:
+                    if clipped:
+                        return finish(8, False, ev, step_inf, be,
+                                      f"{clipped} components held by a bound")
+                    return finish(1, True, ev, step_inf, be,
+                                  f"|dx| = {step_inf:.2e} (tol {np.max(tol):.1e})")
+                gate_failed = converged
+                if last_it:
+                    break
+                ev_new = evaluate(x, guard=False)
                 if ev_new is None:
-                    if converged:
-                        # The step test decides, as before, even when the residual
-                        # cannot be evaluated at the new point.
-                        return finish(0, True, ev, step_inf, float("nan"),
-                                      "the residual at x could not be evaluated")
-                    if last:
-                        return finish(2, False, ev, step_inf, float("nan"),
-                                      "the residual at x could not be evaluated")
                     return finish(4, False, ev, step_inf, float("nan"), "after a full step")
                 ev = ev_new
             else:
+                if converged and gate:
+                    return final_step(0)
+                if stagnant and gate:
+                    if clipped:
+                        return finish(8, False, ev, step_inf, be,
+                                      f"{clipped} components held by a bound")
+                    return final_step(1, f"|dx| = {step_inf:.2e} (tol {np.max(tol):.1e})")
+                gate_failed = converged
                 accepted = None
                 lam_max = max(_LAM_FLOOR, bnd.max_step(x_flat, dx)) if bnd.active else 1.0
                 at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
@@ -677,7 +727,7 @@ def newton(
                     # Damped search: monotonicity test or Armijo, from lam_next.
                     lam = min(lam_next, lam_max)
                     dy_rms = _rms(dy)
-                    row = r if r is not None else 1.0
+                    row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
                     phi0 = float(np.linalg.norm(row * g))
                     best = None
                     # Near the solution a failed test is usually round-off: search briefly.
@@ -758,39 +808,13 @@ def newton(
             if verbose:
                 print(f"newton it={it:3d} |dx|={step_inf:.3e} lam={lam:.3g} "
                       f"theta={theta:.3g} clipped={clipped} nfev={nfev}")
-            stagnant = False
-            at_floor = near
-            if use_stagnation and not near and lam == 1.0 and backward_tol is not None:
-                # tol may lie below the round-off floor by more than _NEAR: once the
-                # backward error passes, non-shrinking full steps are that floor too.
-                at_floor = backward_error(ev[1], ev[2]) <= backward_tol
-            if use_stagnation and at_floor and lam == 1.0:
-                stagnant = (len(window) >= _STAGNATION_WINDOW
-                            and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
+            if stagnant:
+                window.clear()      # the backward error did not pass: keep iterating
+            elif use_stagnation and at_floor and lam == 1.0:
                 window.append(step_inf)
             else:
                 window.clear()
 
-            if converged or stagnant:
-                be = backward_error(ev[1], ev[2])
-                # No gate when the backward error cannot be formed (a factorised or
-                # block Jacobian): the step test decides, as before.
-                gate = backward_tol is None or np.isnan(be) or be <= backward_tol
-                if converged and gate:
-                    return finish(0, True, ev, step_inf, be)
-                if stagnant:
-                    if clipped:
-                        return finish(8, False, ev, step_inf, be,
-                                      f"{clipped} components held by a bound")
-                    if gate:
-                        return finish(1, True, ev, step_inf, be,
-                                      f"|dx| = {step_inf:.2e} (tol {np.max(tol):.1e})")
-                    return finish(7, False, ev, step_inf, be, f"{be:.2e} at the stagnation floor")
-                gate_failed = True
-            else:
-                gate_failed = False
-
-        be = backward_error(ev[1], ev[2])
         if gate_failed:
             return finish(7, False, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
         if clipped:

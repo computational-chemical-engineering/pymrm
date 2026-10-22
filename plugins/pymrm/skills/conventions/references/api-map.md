@@ -58,9 +58,10 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 - The linear solve is a direct sparse LU at every size (after 2.5.0; before,
   `solver=None` switched to ILU-BiCGSTAB above 50 000 unknowns). Iterative
   solvers only on request: `solver="bicgstab"`.
-- `result.fun` is the residual AT `result.x` (after 2.5.0; before, at the
-  previous iterate). `result.status` says why it stopped; `result.history`
-  holds the step norm and damping per iteration.
+- `result.fun` is the residual of the last evaluated iterate: for a converged
+  solve the one before the final step (as before). `result.status` says why it
+  stopped; `result.history` holds the step norm and damping per iteration
+  (after 2.5.0).
 
 ### Hard nonlinear problems (after 2.5.0)
 

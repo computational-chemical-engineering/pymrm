@@ -31,6 +31,27 @@ def x_of(rec, xs):
     return xs[rec["x_offset"]:rec["x_offset"] + rec["n"]]
 
 
+def keyed(records):
+    """Records keyed by (caller, n-th call from that caller), in call order.
+
+    Matching by the global call index breaks when a model calls newton inside
+    its own residual function: a solver that evaluates the residual a
+    different number of times then shifts every later index. The caller
+    location and its occurrence count are stable for top-level calls.
+    """
+    out, seen = {}, {}
+    for r in sorted(records, key=lambda r: r["idx"]):
+        k = r.get("caller", "?")
+        seen[k] = seen.get(k, 0) + 1
+        out[(k, seen[k])] = r
+    return out
+
+
+def matched(rb, rn):
+    kb, kn = keyed(rb), keyed(rn)
+    return [(kb[k], kn[k]) for k in kb if k in kn]
+
+
 def summarise(run):
     summary = json.loads((run / "summary.json").read_text())
     n_calls = n_success = 0
@@ -75,7 +96,7 @@ def compare(base, new, xtol):
         rn, xn = load(new, tag)
         if len(rb) != len(rn):
             report["ncalls"].append((tag, len(rb), len(rn)))
-        for a, b in zip(rb, rn):
+        for a, b in matched(rb, rn):
             tot["calls"] += 1
             tot["nit_b"] += a.get("nit", 0) or 0
             tot["nit_n"] += b.get("nit", 0) or 0
