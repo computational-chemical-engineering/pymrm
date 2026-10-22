@@ -357,6 +357,16 @@ section 3. Numbers in section 9.
   (spsolve factors their transpose) and dense ones (`scipy.linalg.solve`).
 
 
+- **Bounds limit only crossing steps (3.0.1).** 3.0.0 shortened every step that
+  removed more than `tau` of a component's distance to its bound, even when the
+  full step landed inside. Near a dead zone that turned Newton linear (a factor
+  100 per step), and a linear pellet no longer converged in one step (gallery
+  G1.8, found when migrating `clip_approach` callbacks to `bounds`). From 3.0.1
+  only a full step that crosses a bound by more than `1e-8` of the distance is
+  shortened; a shallower crossing is round-off in `x - dx` and is mirrored back
+  inside. A bound at a singularity (`log`) can now be approached closely in one
+  step: use `damping="monotone"` there.
+
 ## 9. Measurements
 
 **Corpus.** Every `newton` call in 93 files: the pymrm-gallery pages, the

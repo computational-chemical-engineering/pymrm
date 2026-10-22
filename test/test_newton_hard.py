@@ -288,6 +288,66 @@ def test_bounds_broadcast_per_field_and_keep_the_iterates_inside():
     assert min(s[:, 0].min() for s in seen) > 0.0
 
 
+def test_a_solution_near_a_bound_still_converges_in_one_step():
+    """Linear sphere pellet, phi = 300: the solution is below 1e-100 at the centre.
+
+    Only a step that crosses the bound is shortened, so the first full step,
+    which lands inside (up to round-off), is taken as plain Newton takes it.
+    """
+    phi2 = 300.0**2
+    fun0, shape, _ = _pellet(lambda c: phi2 * c, n=200, nu=2)
+    iterates = []
+
+    def fun(c):
+        iterates.append(np.array(c, dtype=float).ravel())
+        return fun0(c)
+
+    plain_one = newton(fun0, np.ones(shape), maxfev=1).x
+    one = newton(fun, np.ones(shape), bounds=(0.0, np.inf), maxfev=1)
+    # the same step; its round-off crossings (7e-11 of a distance of 1) are
+    # mirrored into the bound
+    assert np.max(np.abs(plain_one)[plain_one < 0.0]) < 1e-8
+    np.testing.assert_allclose(one.x, np.abs(plain_one), rtol=0.0, atol=1e-15)
+    plain = newton(fun0, np.ones(shape), tol=1e-13)
+    iterates.clear()
+    res = newton(fun, np.ones(shape), bounds=(0.0, np.inf), tol=1e-13)
+    assert res.status == 0 and res.nit == plain.nit
+    assert min(float(np.min(x)) for x in iterates) >= 0.0 and np.min(res.x) >= 0.0
+
+
+def test_a_step_landing_exactly_on_a_bound_stays_inside():
+    """``log(x0 / 1e-10) + 1`` from 1e-10: the full step lands exactly on 0."""
+    def f(x):
+        return np.array([np.log(x[0] / 1e-10) + 1.0, x[1] - 1.0]), diags_array([1.0 / x[0], 1.0]).tocsc()
+
+    res = newton(f, np.array([1e-10, 1.0]), bounds=(0.0, np.inf), maxfev=1)
+    assert res.x[0] > 0.0 and np.all(np.isfinite(f(res.x)[0]))
+
+    # at a nonzero bound eps * distance is below the float spacing: still inside
+    def g(x):
+        return np.log((x - 1.0) / 2.0**-30) + 1.0, diags_array(1.0 / (x - 1.0)).tocsc()
+
+    for lower, x0 in ((1.0, 1.0 + 2.0**-30),):
+        res = newton(g, np.array([x0]), bounds=(lower, np.inf), maxfev=1)
+        assert res.x[0] > lower and np.all(np.isfinite(g(res.x)[0]))
+    # and the same at an upper bound
+    res = newton(lambda x: (-g(2.0 - x)[0], g(2.0 - x)[1]), np.array([1.0 - 2.0**-30]),
+                 bounds=(-np.inf, 1.0), maxfev=1)
+    assert res.x[0] < 1.0
+
+
+def test_a_round_off_crossing_near_a_huge_bound_does_not_overflow():
+    # the root lies 1e298 below the bound 1e308: a crossing of 1e-9 of the distance
+    def f(x):
+        return x - (1e308 - 1e298), diags_array([1.0]).tocsc()
+
+    with np.errstate(over="ignore"):    # the reported backward error overflows here
+        res = newton(f, np.array([1.1e308]), bounds=(1e308, np.inf), maxfev=1,
+                     backward_tol=None)
+    # the step is taken and reflected inside; overflow made it non-finite and refused
+    assert 1e308 <= res.x[0] < 1.01e308
+
+
 def test_initial_guess_outside_the_bounds_is_projected_with_a_warning():
     def f(x):
         return x**2 - 4.0, diags_array(2.0 * x).tocsc()
