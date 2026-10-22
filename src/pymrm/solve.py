@@ -293,7 +293,10 @@ class _Bounds:
             shallow = mask & ~genuine & (dist > 0.0) & (sign * (trial - bound) <= 0.0)
             # reflect through the offset (no 2 * bound, which can overflow)
             offset = np.maximum(sign * (bound[shallow] - trial[shallow]), eps * dist[shallow])
-            trial[shallow] = bound[shallow] + sign * offset
+            inside = bound[shallow] + sign * offset
+            # an offset below the spacing of floats at the bound rounds back onto it
+            step_in = np.nextafter(bound[shallow], x[shallow])
+            trial[shallow] = np.where(sign * (inside - step_in) < 0.0, step_in, inside)
         return held
 
 

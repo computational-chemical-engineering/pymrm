@@ -323,6 +323,18 @@ def test_a_step_landing_exactly_on_a_bound_stays_inside():
     res = newton(f, np.array([1e-10, 1.0]), bounds=(0.0, np.inf), maxfev=1)
     assert res.x[0] > 0.0 and np.all(np.isfinite(f(res.x)[0]))
 
+    # at a nonzero bound eps * distance is below the float spacing: still inside
+    def g(x):
+        return np.log((x - 1.0) / 2.0**-30) + 1.0, diags_array(1.0 / (x - 1.0)).tocsc()
+
+    for lower, x0 in ((1.0, 1.0 + 2.0**-30),):
+        res = newton(g, np.array([x0]), bounds=(lower, np.inf), maxfev=1)
+        assert res.x[0] > lower and np.all(np.isfinite(g(res.x)[0]))
+    # and the same at an upper bound
+    res = newton(lambda x: (-g(2.0 - x)[0], g(2.0 - x)[1]), np.array([1.0 - 2.0**-30]),
+                 bounds=(-np.inf, 1.0), maxfev=1)
+    assert res.x[0] < 1.0
+
 
 def test_a_round_off_crossing_near_a_huge_bound_does_not_overflow():
     # the root lies 1e298 below the bound 1e308: a crossing of 1e-9 of the distance
