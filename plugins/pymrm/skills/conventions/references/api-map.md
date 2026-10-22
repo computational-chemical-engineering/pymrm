@@ -36,6 +36,7 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | stirred-volume or tank outlet | `{"outflow": True}` as the bc dictionary (after 2.3.1) | face value = adjacent cell (pitfalls P6) |
 | Jacobian, refinement, threshold and residual checks | `pymrm.checks` (after 2.3.1; copy in `scripts/pymrm_checks.py`) | see `numerics.md` |
 | couple sub-domains in one system | `update_array_indices` (place a block into a larger state), `construct_interface_matrices` | structure S7; `update_csc_array_indices` is deprecated; see `assembly-styles.md` |
+| boundary value or boundary rows as an operator (film, wall reaction, bulk source) | `construct_boundary_value_matrices`; an identity placed with `update_array_indices` selects boundary-face rows | never compute flat indices by hand; see "Reaching a boundary" below |
 
 ## `NumJac` stencils
 
@@ -106,16 +107,46 @@ g = jac @ c.reshape(-1, 1) - c_old.reshape(-1, 1) / dt + div @ (conv_bc + v * dc
 One or two inner iterations per time step. Validation: sharper than first-order
 upwind and still bounded.
 
-**Apparent rate of a particle from its surface flux.** Take the surface-face
-rows of the flux operator rather than re-integrating the source; with
+**Apparent rate of a particle from its surface flux.** Take the surface flux
+from the operators rather than re-integrating the source; with
 `A/V = (nu + 1)/R` the effectiveness factor follows. The volume integral of the
 source equals this flux identically (the divergence telescopes), so comparing
-the two is a structural identity, not a check.
+the two is a structural identity, not a check. For a 1-D particle the surface
+is the last face along r (the last `n_c` rows of the flux operator for `n_c`
+fields); for a field with more axes, reach the boundary as in the next
+paragraph.
 
-**Extra unknowns at a boundary** (surface reaction, film). Pass
-`shapes_d=((1, n_c), None)` to `construct_grad`; the rectangular
-`grad_bc_left` couples the interior to a boundary unknown whose own equation is
-the surface balance.
+**Reaching a boundary without hand-computed indices.** Never build a selection
+matrix or a flat offset by hand (`np.arange(n) * (n_r + 1) + n_r`,
+`ravel_multi_index`): pymrm gives both pieces.
+- The boundary ROWS of any face operator (a face gradient, a flux): select
+  them with an identity placed by `update_array_indices`. For a field
+  `(n_z, n_r, n_c)` and its outer face along axis 1:
+  `outer = update_array_indices(eye_array(n_z * n_c), (shape_bnd, shape_bnd),
+  (shape_bnd, shape_faces), offset=(None, (0, n_r, 0)))` with `shape_bnd =
+  (n_z, 1, n_c)` and `shape_faces = (n_z, n_r + 1, n_c)`; the offset is the
+  face index along the boundary axis (0 for the lower face, the number of cells
+  for the upper one). Then `outer @ grad` and `outer @ grad_bc` are the surface
+  gradient rows. This is the robust route for a film flux, also when a large Bi
+  switches the film off.
+- The boundary VALUE as an operator: `construct_boundary_value_matrices(shape,
+  x_f, bc=bc_right, axis=..., bound_id=1, shape_d=...)` returns `(mat, mat_bc)`
+  with rows on the boundary shape (`shape` with that axis set to 1), so
+  `c_s = mat @ c + mat_bc @ c_ext`. With `shape_d` the condition reads
+  `a dc/dn + b c_s = d c_ext`, so the flux could be written as
+  `a dc/dn = d c_ext - b c_s`; for large `b/a` this cancels (digits are lost
+  from about Bi = 1e6), so take the flux from the gradient rows above and use
+  the value where a value is needed (a wall concentration in a rate).
+
+**Extra unknowns at a boundary** (surface reaction, film, a wall
+concentration). Keep them in the state as one more position along the
+boundary-normal axis (a wall value at `j = 0` before the fluid cells, a bulk
+value at `j = n_r` after the particle cells), and place every block with
+`update_array_indices`. A wall reaction `r(c_w)`: give the fluid the flux
+condition with `shapes_d` (`d` is the coefficient on the external field `r`),
+and make the wall row `c_w - (mat @ c + mat_bc @ r(c_w)) = 0` with
+`construct_boundary_value_matrices` for the same condition; this is second
+order, while evaluating `r` at the wall-adjacent cell value is first order.
 
 **Nested scales** (structure S8, reactor with particles). Solve the particle,
 eliminate its interior with a Schur complement (`splu` of the particle Jacobian,

@@ -13,12 +13,17 @@ what the instrumentation saw. It catches, at run time:
 - P7: newton finishing with success while its step tolerance is not small
       against the size of the unknowns (absolute-tolerance trap), or a newton
       call that did not succeed;
-- deprecated update_csc_array_indices calls.
+- deprecated update_csc_array_indices calls;
+- IDX (read from the source, not at run time): flat indices computed by hand,
+      a ravel_multi_index call or a sparse matrix built from (data, (rows, cols))
+      index arrays, where update_array_indices (an identity placed at a boundary
+      selects its rows) or construct_boundary_value_matrices should do it.
 
 A clean report is not proof of correctness; it only means these symptoms were
 not seen on the code paths the run executed.
 """
 
+import ast
 import runpy
 import sys
 
@@ -90,12 +95,39 @@ pymrm.solve.newton = _checked_newton
 pymrm.update_csc_array_indices = _checked_update_csc
 
 
+_SPARSE = {"csc_array", "csr_array", "coo_array", "csc_matrix", "csr_matrix", "coo_matrix"}
+
+
+def scan_source(text):
+    """(line number, message) for every hand-computed index in a model's source: a call of
+    ravel_multi_index, or a sparse matrix built from (data, (rows, cols)) index arrays."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name == "ravel_multi_index":
+            found.append((node.lineno, "ravel_multi_index computes flat indices by hand"))
+        elif (name in _SPARSE and node.args and isinstance(node.args[0], ast.Tuple)
+              and len(node.args[0].elts) == 2 and isinstance(node.args[0].elts[1], ast.Tuple)):
+            found.append((node.lineno, "a sparse matrix built from (data, (rows, cols)) index arrays"))
+    return sorted(found)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
     script = sys.argv[1]
     sys.argv = sys.argv[1:]
+    for number, message in scan_source(open(script, encoding="utf-8").read()):
+        _note("IDX", f"line {number}: {message}; place blocks with update_array_indices and reach "
+                     "boundaries as in api-map.md, 'Reaching a boundary'")
     status = 0
     try:
         runpy.run_path(script, run_name="__main__")

@@ -36,7 +36,6 @@ J * sigma versus J / sigma error is invisible to every check.
 
 import numpy as np
 from scipy.integrate import solve_bvp
-from scipy.sparse import csc_array
 from scipy.sparse.linalg import spsolve
 
 from pymrm import (compute_boundary_values, construct_coefficient_matrix, construct_convflux_upwind,
@@ -89,26 +88,28 @@ class MembraneReactor:
         t_perm, g_perm, *_ = self._channel(self.shape_perm, bc_perm, self.v_perm)
 
         n = self.n_z
-        # local (per-cell) coupling blocks, as diagonal coefficient matrices
+        # local (per-cell) coupling blocks, as diagonal coefficient matrices. A block that
+        # couples two fields is a diagonal on a one-field sub-shape (n, 1), placed at the
+        # (row field, column field) offsets: no flat index is computed by hand.
         da, st, sg = self.damkohler, self.stanton, self.sigma
+        field = (n, 1)
+
+        def cell(value):
+            return construct_coefficient_matrix(np.full(field, value), shape=field)
+
         k_ret = np.zeros(self.shape_ret)
         k_ret[:, 0] = da                          # A consumed
         rxn_ret = construct_coefficient_matrix(k_ret, shape=self.shape_ret)
-        produce = csc_array((np.full(n, -da), (np.arange(n) * 2 + 1, np.arange(n) * 2)),
-                            shape=(2 * n, 2 * n))  # B produced from A in the same cell
         memb_ret_ret = construct_coefficient_matrix(np.tile([0.0, st], (n, 1)), shape=self.shape_ret)
-        memb_ret_perm = csc_array((np.full(n, -st), (np.arange(n) * 2 + 1, np.arange(n))),
-                                  shape=(2 * n, n))  # retentate B row: -St * p_B (so J = St (c_B - p_B))
-        memb_perm_ret = csc_array((np.full(n, -st / sg), (np.arange(n), np.arange(n) * 2 + 1)),
-                                  shape=(n, 2 * n))
         memb_perm_perm = construct_coefficient_matrix(np.full(self.shape_perm, st / sg),
                                                       shape=self.shape_perm)
         # residual rows: transport + consumption - production + J (retentate B), transport - J/sigma (permeate)
         self.jac = (
-            self._place(t_ret + rxn_ret + produce + memb_ret_ret, self.shape_ret, self.shape_ret, (0, 0), (0, 0))
-            + self._place(memb_ret_perm, self.shape_ret, self.shape_perm, (0, 0), (0, 2))
-            + self._place(memb_perm_ret, self.shape_perm, self.shape_ret, (0, 2), (0, 0))
+            self._place(t_ret + rxn_ret + memb_ret_ret, self.shape_ret, self.shape_ret, (0, 0), (0, 0))
             + self._place(t_perm + memb_perm_perm, self.shape_perm, self.shape_perm, (0, 2), (0, 2))
+            + self._place(cell(-da), field, field, (0, 1), (0, 0))        # B_ret row: B produced from A
+            + self._place(cell(-st), field, field, (0, 1), (0, 2))        # B_ret row: -St p_B (J = St (c_B - p_B))
+            + self._place(cell(-st / sg), field, field, (0, 2), (0, 1))   # B_perm row: -(St/sigma) c_B
         ).tocsc()
         self.g_const = np.zeros(self.shape)
         self.g_const[:, :2] = g_ret.reshape(self.shape_ret)
