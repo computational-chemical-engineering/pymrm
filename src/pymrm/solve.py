@@ -14,6 +14,7 @@ _AUTO_DAMPING = "guarded"
 
 # Fixed constants of the globalisation (see the notes of ``newton``).
 _LAM_FLOOR = 0.5      # smallest damping a bound alone may impose
+_CROSS_RTOL = 1e-8    # a bound crossing shallower than this times the distance is round-off
 _LAM_MIN = 1.0e-4     # the damping search ends below this damping
 _LAM_NEAR = 0.2       # ... or below this one when the step is within _NEAR tolerances
 _ESCAPE = True        # then take the (bounded) full step if its residual is finite
@@ -248,37 +249,47 @@ class _Bounds:
                           "outside the bounds and have been projected onto them.",
                           RuntimeWarning, stacklevel=3)
 
-    def max_step(self, x, dx):
-        """Largest damping that removes at most ``tau`` of any distance to a bound."""
-        lam = 1.0
+    def _sides(self, x, dx):
+        """Per bound side: sign, mask, bound, distance of ``x`` and overshoot of the full step."""
+        full = x - dx
         if self.lower is not None:
-            m = self.lo_mask & (dx > 0.0) & (x > self.lower)
-            if np.any(m):
-                lam = min(lam, float(np.min(self.tau * (x[m] - self.lower[m]) / dx[m])))
+            lo = np.where(self.lo_mask, self.lower, 0.0)
+            yield 1.0, self.lo_mask, lo, x - lo, lo - full
         if self.upper is not None:
-            m = self.hi_mask & (dx < 0.0) & (x < self.upper)
+            hi = np.where(self.hi_mask, self.upper, 0.0)
+            yield -1.0, self.hi_mask, hi, hi - x, full - hi
+
+    def max_step(self, x, dx):
+        """Largest damping that removes at most ``tau`` of the distance to a bound.
+
+        Only components whose full step genuinely crosses their bound limit the
+        step; a full step that lands inside the bound, however close, is taken
+        (a linear problem with a solution near the bound then converges in one
+        step). A crossing shallower than ``_CROSS_RTOL`` times the distance is
+        round-off in ``x - dx`` and does not count.
+        """
+        lam = 1.0
+        for sign, mask, _, dist, over in self._sides(x, dx):
+            m = mask & (dist > 0.0) & (over > _CROSS_RTOL * dist)
             if np.any(m):
-                lam = min(lam, float(np.min(self.tau * (self.upper[m] - x[m]) / -dx[m])))
+                lam = min(lam, float(np.min(self.tau * dist[m] / (sign * dx[m]))))
         return lam
 
-    def project(self, trial, x):
-        """Keep each component within ``1 - tau`` of its distance to a bound."""
-        clipped = 0
-        if self.lower is not None:
-            floor = np.where(self.lo_mask,
-                             self.lower + (1.0 - self.tau) * (x - np.where(self.lo_mask, self.lower, 0.0)),
-                             -np.inf)
-            m = trial < floor
-            clipped += int(m.sum())
-            trial[m] = floor[m]
-        if self.upper is not None:
-            ceil = np.where(self.hi_mask,
-                            self.upper - (1.0 - self.tau) * (np.where(self.hi_mask, self.upper, 0.0) - x),
-                            np.inf)
-            m = trial > ceil
-            clipped += int(m.sum())
-            trial[m] = ceil[m]
-        return clipped
+    def project(self, trial, x, dx):
+        """Hold genuinely crossing components ``1 - tau`` of their distance from the bound.
+
+        A round-off crossing is mirrored back into the bound and not counted.
+        Returns the number of components held.
+        """
+        held = 0
+        for sign, mask, bound, dist, over in self._sides(x, dx):
+            genuine = mask & (over > _CROSS_RTOL * dist)
+            hold = genuine & (sign * (trial - bound) < (1.0 - self.tau) * dist)
+            trial[hold] = bound[hold] + sign * (1.0 - self.tau) * dist[hold]
+            held += int(hold.sum())
+            shallow = mask & ~genuine & (sign * (trial - bound) < 0.0)
+            trial[shallow] = 2.0 * bound[shallow] - trial[shallow]
+        return held
 
 
 def _field_reference(x, shape, scale, x0_size=0.0):
@@ -447,12 +458,17 @@ def newton(
         broadcasts against the shape of ``initial_guess`` (shape ``(nc,)``
         gives one bound per field, ``(nz, 1)`` one per cell). Use ``-np.inf``
         or ``np.inf`` for unbounded components. A single scalar or array means
-        a lower bound. No step removes more than ``tau`` of the distance of a
-        component to its bound (with a floor of 0.5 on ``lam``, below which
-        the components are projected individually). A component may sit on
-        its bound; an initial guess outside is projected, with a warning.
-        Use bounds where the residual is undefined (``T > 0``, arguments of
-        ``log`` or ``sqrt``), not to enforce physical positivity: see Notes.
+        a lower bound. A full step that crosses a bound is shortened so that
+        it removes at most ``tau`` of the distance of that component to its
+        bound (with a floor of 0.5 on ``lam``, below which the crossing
+        components are held individually). A full step that lands inside the
+        bounds is taken, however close to a bound, so a solution near a bound
+        still converges quadratically. A component may sit on its bound; an
+        initial guess outside is projected, with a warning. Use bounds where
+        the residual is undefined (``T > 0``, arguments of ``log`` or
+        ``sqrt``), not to enforce physical positivity: see Notes. Where the
+        residual is singular at the bound (``log``), prefer
+        ``damping="monotone"``: a step may land very close to the bound.
     tau : float, optional
         Fraction-to-the-boundary parameter of ``bounds``.
     scale : float or numpy.ndarray, optional
@@ -684,7 +700,7 @@ def newton(
         def final_step(status, extra=""):
             """Take the converged step without evaluating there, as plain Newton did."""
             trial = x_flat - dx
-            n_clip = bnd.project(trial, x_flat) if bnd.active else 0
+            n_clip = bnd.project(trial, x_flat, dx) if bnd.active else 0
             x_flat[:] = trial
             history.append({"step_norm": step_inf, "damping": 1.0, "theta": float("nan"),
                             "clipped": n_clip})
@@ -747,7 +763,7 @@ def newton(
                 if not near and bnd.active:
                     lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
                 trial = x_flat - lam * dx
-                clipped = bnd.project(trial, x_flat) if bnd.active else 0
+                clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
                 x_flat[:] = trial
                 history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
                                 "clipped": clipped})
@@ -789,7 +805,7 @@ def newton(
                     # Full step (shortened only by the bounds far from the solution).
                     lam = 1.0 if near else lam_max
                     trial = x_flat - lam * dx
-                    clipped = bnd.project(trial, x_flat) if bnd.active else 0
+                    clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
                     ev_t = evaluate(trial.reshape(shape), guard=True)
                     if lam == lam_max:
                         at_lam_max = (trial, ev_t, clipped)
@@ -808,7 +824,7 @@ def newton(
                     lam_min = _LAM_NEAR if near else _LAM_MIN
                     while lam >= lam_min:
                         trial = x_flat - lam * dx
-                        clipped = bnd.project(trial, x_flat) if bnd.active else 0
+                        clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
                         ev_t = evaluate(trial.reshape(shape), guard=True)
                         if lam == lam_max:
                             at_lam_max = (trial, ev_t, clipped)
@@ -852,7 +868,7 @@ def newton(
                                 ev_t = evaluate(trial.reshape(shape), guard=True)
                         else:
                             trial = x_flat - lam * dx
-                            clipped = bnd.project(trial, x_flat) if bnd.active else 0
+                            clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
                             ev_t = evaluate(trial.reshape(shape), guard=True)
                         if ev_t is not None:
                             accepted = (trial, ev_t, lam)

@@ -288,6 +288,33 @@ def test_bounds_broadcast_per_field_and_keep_the_iterates_inside():
     assert min(s[:, 0].min() for s in seen) > 0.0
 
 
+def test_a_solution_near_a_bound_still_converges_in_one_step():
+    """Linear sphere pellet, phi = 300: the solution is below 1e-100 at the centre.
+
+    Only a step that crosses the bound is shortened, so the first full step,
+    which lands inside (up to round-off), is taken as plain Newton takes it.
+    """
+    phi2 = 300.0**2
+    fun0, shape, _ = _pellet(lambda c: phi2 * c, n=200, nu=2)
+    iterates = []
+
+    def fun(c):
+        iterates.append(np.array(c, dtype=float).ravel())
+        return fun0(c)
+
+    plain_one = newton(fun0, np.ones(shape), maxfev=1).x
+    one = newton(fun, np.ones(shape), bounds=(0.0, np.inf), maxfev=1)
+    # the same step; its round-off crossings (7e-11 of a distance of 1) are
+    # mirrored into the bound
+    assert np.max(np.abs(plain_one)[plain_one < 0.0]) < 1e-8
+    np.testing.assert_allclose(one.x, np.abs(plain_one), rtol=0.0, atol=1e-15)
+    plain = newton(fun0, np.ones(shape), tol=1e-13)
+    iterates.clear()
+    res = newton(fun, np.ones(shape), bounds=(0.0, np.inf), tol=1e-13)
+    assert res.status == 0 and res.nit == plain.nit
+    assert min(float(np.min(x)) for x in iterates) >= 0.0 and np.min(res.x) >= 0.0
+
+
 def test_initial_guess_outside_the_bounds_is_projected_with_a_warning():
     def f(x):
         return x**2 - 4.0, diags_array(2.0 * x).tocsc()
