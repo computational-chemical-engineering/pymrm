@@ -230,19 +230,32 @@ def test_nearly_singular_jacobian_is_not_a_success():
     assert not res.success
 
 
-def test_double_root_is_not_reported_converged_with_backward_tol():
+def test_double_root_converges_to_the_scale_of_the_problem():
+    """x^2 = 0 from x = 1: linear convergence, judged against the initial scale."""
     def f(x):
         return np.array([x[0] ** 2]), csc_array([[2.0 * x[0]]])
-    assert newton(f, np.array([1.0]), damping="none", backward_tol=None, stagnation=False).success   # plain step test
-    gated = newton(f, np.array([1.0]), backward_tol=1e-8, maxfev=60)
-    assert not gated.success and gated.status == 7
+    plain = newton(f, np.array([1.0]), damping="none", backward_tol=None)
+    assert plain.success and plain.x[0] > 1e-9          # stops on the step, x ~ 1e-8
+    gated = newton(f, np.array([1.0]), maxfev=100)
+    assert gated.success and abs(gated.x[0]) < 1e-12
+
+
+def test_singular_jacobian_returns_nan_x_as_before():
+    jac = csc_array(np.array([[1.0, -1.0], [-1.0, 1.0]]))
+
+    def fun(x):
+        return jac @ x - np.array([1.0, 0.0]), jac
+    res = newton(fun, np.array([0.5, 0.25]))
+    assert res.status == 5 and np.all(np.isnan(res.x))
+    np.testing.assert_array_equal(res.x_last, [0.5, 0.25])
 
 
 def test_stagnation_floor_ends_the_iteration():
     fun, shape, _ = _pellet(lambda c: 100.0 * c**2)
-    without = newton(fun, np.ones(shape), tol=1e-20, maxfev=40, stagnation=False)
+    # the round-off floor of the step is about 1e-15, within 100 tol = 1e-14
+    without = newton(fun, np.ones(shape), tol=1e-16, maxfev=40, stagnation=False)
     assert without.status == 2 and without.nit == 40
-    floor = newton(fun, np.ones(shape), tol=1e-20, maxfev=40, stagnation=True,
+    floor = newton(fun, np.ones(shape), tol=1e-16, maxfev=40, stagnation=True,
                    backward_tol=1e-8)
     assert floor.status == 1 and floor.success and floor.nit <= 25
 

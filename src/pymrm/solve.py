@@ -19,8 +19,7 @@ _LAM_NEAR = 0.2       # ... or below this one when the step is within _NEAR tole
 _ESCAPE = True        # then take the (bounded) full step if its residual is finite
 _NEAR = 100.0         # steps within _NEAR times the tolerance are taken in full
 _STAGNATION_WINDOW = 5
-_STAGNATION_RATIO = 0.8
-_FLOOR_STEP = 1.0e-10  # outside _NEAR, a floor step is at most this relative to x
+_STAGNATION_RATIO = 1.0  # a step no smaller than the smallest of the window
 _ARMIJO_C = 1.0e-4
 _BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
@@ -227,25 +226,26 @@ class _Bounds:
         return clipped
 
 
-def _field_reference(x, shape, scale):
+def _field_reference(x, shape, scale, x0_size=0.0):
     """Magnitude of each unknown's field: ``scale``, else the field's largest |x|.
 
     Fields lie along the last axis (pymrm's convention); a one-dimensional
     state is one field. No field reference is below ``_GLOBAL_FLOOR`` times
-    the largest ``|x|``.
+    the largest ``|x|``, or the largest ``|x|`` of the initial guess.
     """
     if scale is not None:
         return np.abs(scale)
     ax = np.abs(x).reshape(shape)
-    overall = float(np.max(ax)) if x.size else 0.0
+    largest = float(np.max(ax)) if x.size else 0.0
+    # The initial guess carries the problem's scale when the solution is ~0.
+    floor = _GLOBAL_FLOOR * max(largest, x0_size)
     if len(shape) >= 2:
-        ref = np.max(ax.reshape(-1, shape[-1]), axis=0)
-        # A floor at _GLOBAL_FLOOR of the largest unknown keeps a single-field
-        # state stored without a field axis, (nz, nr), from being judged column
-        # by column; a trace field is still judged far below its neighbours.
-        ref = np.maximum(ref, _GLOBAL_FLOOR * overall)
+        # The floor also keeps a single-field state stored without a field
+        # axis, (nz, nr), from being judged column by column; a trace field is
+        # still judged far below its neighbours.
+        ref = np.maximum(np.max(ax.reshape(-1, shape[-1]), axis=0), floor)
         return np.broadcast_to(ref, shape).reshape(-1)
-    return np.full(x.size, overall)
+    return np.full(x.size, max(largest, floor))
 
 
 def _backward_error(g, jac, x, x_ref):
@@ -296,7 +296,7 @@ def newton(
     scale=None,
     refresh=None,
     backward_tol=1e-8,
-    stagnation=True,
+    stagnation=False,
     row_scaling=False,
     recoverable=(FloatingPointError, OverflowError, ZeroDivisionError),
     verbose=0,
@@ -427,13 +427,14 @@ def newton(
         unknown. It is always reported in the result. For a flat state that
         mixes units, pass ``scale``. ``None`` restores the plain step test.
     stagnation : bool, optional
-        Stop at the stagnation floor (default True): when the step test cannot
-        be met because round-off, or switching terms such as ``max(c, 0)`` and
-        upwinding, keep the steps from shrinking, a full step no smaller than
-        0.8 times the smallest of the five before it ends the iteration with
+        Stop at the stagnation floor: when the step test cannot be met because
+        round-off, or switching terms such as ``max(c, 0)`` and upwinding, keep
+        the steps from shrinking, a full step within 100 tolerances that is no
+        smaller than the smallest of the five before it ends the iteration with
         success, provided ``backward_tol`` passes; otherwise the iteration
-        continues. It applies to steps within 100 tolerances, and to steps below
-        1e-10 of ``|x|`` once ``backward_tol`` passes.
+        continues. A converging iteration, however slowly, makes a new smallest
+        step every time and is never stopped. Off by default: code written for
+        the old iteration may rely on a ``tol`` below the floor failing.
     row_scaling : bool, optional
         Divide each row of the Jacobian by its largest entry before the direct
         LU factorisation. Improves pivoting when rows have different units.
@@ -461,7 +462,9 @@ def newton(
         ``backward_error`` (of the same iterate as ``fun``; ``nan`` when the
         Jacobian is not a matrix), and ``history``, a list with per
         iteration ``step_norm``, ``damping``, ``theta`` (monotonicity ratio)
-        and ``clipped`` (components held by a bound).
+        and ``clipped`` (components held by a bound). With status 5 or 6
+        there is no Newton step: ``x`` is NaN (as before 3.0.0) and
+        ``x_last`` holds the last iterate.
 
         ``status``: 0 converged; 1 converged to the stagnation floor;
         2 ``maxfev`` reached; 3 damping fell below its minimum; 4 non-finite
@@ -506,10 +509,10 @@ def newton(
     ``tol``. :func:`pymrm.checks.residual_check` gives a stricter, purely
     componentwise verdict after the fact.
 
-    **Changes after 2.5.0.** Before, ``newton`` took plain full steps even
+    **Changes in 3.0.0.** Before, ``newton`` took plain full steps even
     into a non-finite residual, stopped on the step test alone, and switched
     to ILU-BiCGSTAB above 50 000 unknowns. Pass ``damping="none",
-    backward_tol=None, stagnation=False`` for the old iteration; it then
+    backward_tol=None`` for the old iteration; it then
     takes the same steps and evaluations as before. A singular Jacobian or a
     non-finite residual now ends the solve with a status instead of
     continuing with NaN.
@@ -518,6 +521,8 @@ def newton(
     shape = x.shape
     n = x.size
     x_flat = x.reshape(-1)  # view: updates of x_flat update x
+    with np.errstate(invalid="ignore"):
+        x0_size = float(np.nanmax(np.abs(x_flat))) if n and np.any(np.isfinite(x_flat)) else 0.0
 
     if lin_solver_kwargs is None:
         lin_solver_kwargs = {}
@@ -578,14 +583,21 @@ def newton(
     def backward_error(g_flat, jac):
         if not _is_matrix(jac):
             return float("nan")
-        return _backward_error(g_flat, jac, x_flat, _field_reference(x_flat, shape, d_user))
+        return _backward_error(g_flat, jac, x_flat,
+                               _field_reference(x_flat, shape, d_user, x0_size))
 
     def finish(status, success, ev, step_norm, be, extra=""):
         g_raw = None if ev is None else ev[0]
         message = _MESSAGES[status] + (f": {extra}" if extra else "")
-        return OptimizeResult(x=x, success=bool(success), status=status, message=message,
-                              nit=len(history), nfev=nfev, nfact=nfact, fun=g_raw,
-                              step_norm=step_norm, backward_error=be, history=history)
+        result = OptimizeResult(x=x, success=bool(success), status=status, message=message,
+                                nit=len(history), nfev=nfev, nfact=nfact, fun=g_raw,
+                                step_norm=step_norm, backward_error=be, history=history)
+        if status in (5, 6):
+            # No Newton step exists: x is NaN, as the old iteration returned it,
+            # so that code judging x by its residual sees the failure.
+            result.x_last = x.copy()
+            x_flat[:] = np.nan
+        return result
 
     ev = evaluate(x, guard=False)
     if ev is None:
@@ -651,16 +663,6 @@ def newton(
             if near or last_it or relative:
                 be = backward_error(g, jac)
             at_floor = near
-            if use_stagnation and not near and backward_tol is not None:
-                # tol may lie below the round-off floor by more than _NEAR: once the
-                # backward error passes, non-shrinking steps are that floor too. The
-                # step must also be round-off small relative to x: a nearly singular
-                # system has a tiny backward error at a huge x.
-                y_size = float(np.max(np.abs(y))) if n else 0.0
-                at_floor = step_inf <= _FLOOR_STEP * y_size
-                if at_floor:
-                    be = backward_error(g, jac)
-                    at_floor = be <= backward_tol
             gate = backward_tol is None or np.isnan(be) or be <= backward_tol
             stagnant = (use_stagnation and at_floor and len(window) >= _STAGNATION_WINDOW
                         and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))

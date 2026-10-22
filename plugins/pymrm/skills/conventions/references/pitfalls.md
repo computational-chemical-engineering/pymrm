@@ -112,7 +112,7 @@ carries its own value (tanks in series, a cell model, a CSTR cascade).
   (pressure in Pa) may never meet the tolerance.
 - Measured: solving `x^2 = 1e-20` from `x0 = 1e-8` returns `success=True` after
   one iteration with `x = 5e-9`, 50 times the true root.
-- After 2.5.0: the default `backward_tol=1e-8` makes the step test necessary but
+- From 3.0.0: the default `backward_tol=1e-8` makes the step test necessary but
   not sufficient; the same solve iterates on to `x = 1e-10`. The backward error
   judges each unknown against its field's magnitude, but never below `1e-6` of
   the largest unknown: a trace field next to order-one fields is then resolved
@@ -152,7 +152,7 @@ steps. A hard lower bound at zero helps, but less than a smooth rate.
 - Measured: slab, `phi^2 sqrt(max(c, 0))` with `phi = 30`, 100 cells, from
   `c = 1`: plain Newton fails after 100 iterations; `damping="monotone"` needs
   about 70, and about 27 with `bounds=0`.
-- Do (after 2.5.0): make the rate smooth and first order through zero,
+- Do (from 3.0.0): make the rate smooth and first order through zero,
   `phi^2 c (c**2 + eps**2)**-0.25` with `eps = 1e-6`, and use
   `damping="monotone"`: status 0 after about 13 iterations, the same 6.8e-4 from the
   exact profile (the discretisation error). Check that reducing `eps` tenfold

@@ -288,14 +288,63 @@ Consequences for the library and its guidance:
 
 1. Callback and callable-solver sites: keep them undamped under `"auto"`
    (recommended; safe for about 30 sites), or damp them as well?
-   Provisional: undamped.
+   Provisional: undamped. Kept: the corpus shows these sites unchanged.
 2. Gate: threshold `1e-8`, and "step test met, gate failed at `maxfev`" returns
    `success=False`? Recommended yes; this is what fixes P7. Provisional: yes.
 3. `fun` at `x`: accept one extra residual evaluation per solve (up to about 30 %
    more evaluations in pseudo-time loops with 2 to 3 iterations per step)?
-   Provisional: yes.
+   Provisional: yes. Reversed after measurement (section 8): 28 % more
+   evaluations over the corpus. The gate now uses the residual of the iterate
+   the final step is taken from, and `fun` stays the residual before that step.
 4. `clip_approach`: deprecate after the migration, or keep permanently?
    Provisional: keep, undecided until the gallery migration is done.
 
 Not part of this plan: `pcec/solver.py:170-175` contains a dead branch (a `refresh`
 check inside a block guarded by `refresh is None`); remove it when pcec is ported.
+
+## 8. What the implementation changed in this plan
+
+Findings from the experiments and the corpus runs that overrode the design of
+section 3. Numbers in section 9.
+
+- **Default damping is `"guarded"`, not `"monotone"`.** On 84 Weisz-Hicks
+  pellets (4 parameter pairs, 7 Thiele moduli, 3 initial guesses) plain Newton
+  converged in 60, `"guarded"` in 62 at the same cost, `"monotone"` in 69 at
+  about twice the evaluations, and `"monotone"` lost cases plain Newton solves:
+  the natural monotonicity test cannot pass the ghost of an ignition turning
+  point. `"guarded"` takes the plain Newton steps wherever these are finite, so
+  it can only add solutions. `"monotone"` falls back to the full step when its
+  search fails ("escape"); that took it from about 50 to 69 of 84.
+- **The backward error has a floor at the field scale.** Purely componentwise
+  (as `residual_check`), it is about 1 in a reaction dead zone where `c` is
+  tiny and correct, so the gate would never pass there. Each unknown is judged
+  against `|x| + x_ref`, `x_ref` the field's largest `|x|` (or `scale`), with
+  `x_ref` at least `1e-6` of the largest unknown so that a single-field 2-D state
+  without a field axis is not judged column by column.
+- **Row equilibration is off by default.** It changes SuperLU's pivots; a
+  gallery continuation near a turning point with `tol=1e-12` then ended on a
+  different branch.
+- **No final evaluation.** The verdict uses the residual before the final step
+  (decision 3 reversed).
+- **Stagnation is opt-in and stricter.** As a default it turned 1700 corpus
+  calls that failed at `maxfev` (a `tol` below the round-off floor) into
+  successes, and pages built around the old outcome changed course: a
+  continuation ladder (D1.1) took 86 000 instead of 35 000 solves, a page
+  crashed downstream (J4.8), and a teacher solution with `rtol=1e-10` stopped
+  after 9 of the 54 iterations it needs. The rule now applies only within 100
+  tolerances, requires a step no smaller than the smallest of the previous
+  five (slow linear convergence always makes a new smallest step), and never
+  ends a solve with failure.
+- **The near-solution full-step shortcut was dropped from `"monotone"`.** With
+  sharp regularised kinetics (`eps = 1e-7`) full steps within `100 tol` cycled;
+  instead the search is cut short near the solution (smallest damping 0.2) and
+  then escapes to the full step.
+- **`pseudo_transient` controls `dt` by the Newton iteration count**, not by
+  the residual ratio alone: through an ignition the residual rises and the
+  ratio rule shrank `dt` until the march stalled. It reached the steady state in
+  18 of the 22 pellets where `"guarded"` fails; `"monotone"` solved the other
+  four.
+- **`continuation` rejects a corrector that jumps** (more than 20 % of `max|x|`
+  from the prediction): without that check natural continuation silently
+  crossed from the cold to the hot branch at the ignition fold.
+

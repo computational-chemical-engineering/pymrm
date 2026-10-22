@@ -178,7 +178,7 @@ def test_p7_newton_stops_on_absolute_step():
     assert res.success and res.nit == 1
     assert res.x[0] / np.sqrt(s) > 40.0
 
-    # after 2.5.0 the default backward-error gate keeps iterating to the root
+    # from 3.0.0 the default backward-error gate keeps iterating to the root
     res_gate = newton(f, np.array([1e-8]))
     assert res_gate.success and np.isclose(res_gate.x[0], np.sqrt(s), rtol=1e-8)
 

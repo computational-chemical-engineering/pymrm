@@ -448,7 +448,7 @@ of the teaching objective.
 3. Write rates that are smooth and first order through zero concentration
    (`k c (c**2 + eps**2)**((n - 1)/2)` instead of `k c**n` with `n < 1`;
    no `np.maximum(c, 0)`), so that a slightly negative iterate gives a
-   restoring rate (pitfalls P9). Use `newton(..., bounds=...)` (after 2.5.0;
+   restoring rate (pitfalls P9). Use `newton(..., bounds=...)` (from 3.0.0;
    `clip_approach(...)` as the callback before) only for unknowns the residual
    cannot accept beyond a limit: `T > 0`, arguments of `log` or `sqrt`.
 4. For linear steady problems, use `spsolve(...)` directly.
@@ -456,7 +456,7 @@ of the teaching objective.
 6. `newton` tests the infinity norm of the STEP against `tol`, an absolute
    number. Scale unknowns so that they are of order one (or pass `scale=`).
    Up to 2.5.0 a trace-level unknown reports success after one step with a
-   wrong value; after 2.5.0 the default `backward_tol=1e-8` keeps iterating
+   wrong value; from 3.0.0 the default `backward_tol=1e-8` keeps iterating
    (pitfalls P7). Check `result.success`; `result.status` and
    `result.message` say why a solve stopped.
 7. When a solve fails from a reasonable guess, follow the order in the API
