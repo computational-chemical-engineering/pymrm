@@ -232,22 +232,26 @@ def construct_convflux_bc(
         i_f_bc = np.ravel_multi_index(
             (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        values_bc = np.empty((n0, 2, n2))
-        values_bc[:, 0, :] = np.broadcast_to(
-            ((a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]) * fctr,
-            shape_bc,
-        ).reshape(shape_bc_d)
-        values_bc[:, 1, :] = np.broadcast_to(
-            ((a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]) * fctr,
-            shape_bc,
-        ).reshape(shape_bc_d)
+
+        def on_bc(value):
+            return np.broadcast_to(value, shape_bc).reshape(shape_bc_d)
+
+        # values_bc_src[:, face, source]: with one cell, each face value depends
+        # on the data of both boundaries
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = on_bc((a[1] * alpha_0_right + b[1]) * d[0] * fctr)
+        values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * a[0] * d[1] * fctr)
+        values_bc_src[:, 1, 1, :] = on_bc((a[0] * alpha_0_left + b[0]) * d[1] * fctr)
+        values_bc_src[:, 1, 0, :] = on_bc(-alpha_2_right * a[1] * d[0] * fctr)
         for side in (0, 1):
             if outflow[side]:
-                values[:, side, :], values_bc[:, side, :] = 1.0, 0.0
+                values[:, side, :], values_bc_src[:, side, :, :] = 1.0, 0.0
+        values_bc = values_bc_src.sum(axis=2)
 
         if isinstance(v, (float, int)):
             values *= v
             values_bc *= v
+            values_bc_src *= v
         else:
             slicer = [slice(None)] * len(shape)
             slicer[axis] = [0, -1]
@@ -257,6 +261,7 @@ def construct_convflux_bc(
             values *= v[tuple(slicer)]
             values_bc = values_bc.reshape(shape_f_b)
             values_bc *= v[tuple(slicer)]
+            values_bc_src *= v[tuple(slicer)].reshape((n0, 2, 1, n2))
         conv_matrix = _sparse_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
@@ -341,6 +346,10 @@ def construct_convflux_bc(
             slicer[axis] = [0, -1]
             values_bc = values_bc.reshape(shape_f_b)
             values_bc *= v[tuple(slicer)]
+        values_bc = values_bc.reshape((n0, 2, n2))
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
+        values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
 
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         conv_bc = csc_array(
@@ -355,8 +364,7 @@ def construct_convflux_bc(
         conv_matrix.sort_indices()
         return conv_matrix, conv_bc
     else:
-        values = values.reshape((shape_t[0], 4, shape_t[2]))
-        values_bc = values_bc.reshape((shape_t[0], 2, shape_t[2]))
+        values = values.reshape((shape_t[0], -1, shape_t[2]))
         conv_bc = [None] * 2
         shapes_d = list(shapes_d)
         for i in range(2):
@@ -364,11 +372,15 @@ def construct_convflux_bc(
                 shapes_d[i] = (1,) * len(shape_bc)
             num_cols = math.prod(shapes_d[i])
             i_cols_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[i])
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc)
+            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
+            faces = [0, 1] if n1 == 1 else [i]
             conv_bc[i] = csc_array(
                 (
-                    values_bc[:, i, :].ravel(),
-                    (i_f_bc[:, i, :].ravel(), i_cols_bc.ravel()),
+                    values_bc_src[:, faces, i, :].ravel(),
+                    (
+                        i_f_bc[:, faces, :].ravel(),
+                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                    ),
                 ),
                 shape=(math.prod(shape_f_t), num_cols),
             )
