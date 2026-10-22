@@ -13,7 +13,7 @@ import pytest
 from scipy.sparse import csc_array, diags_array
 from scipy.sparse.linalg import splu
 
-from pymrm import NumJac, construct_div, construct_grad, newton
+from pymrm import NewtonBreakdown, NumJac, construct_div, construct_grad, newton
 
 
 def _slab_operators(n, nu=0):
@@ -137,9 +137,10 @@ def test_guarded_rescues_a_full_step_that_overflows():
     fun, shape = _weisz_hicks(phi=1.0, gamma=30.0, beta=0.5)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        plain = newton(fun, np.ones(shape), maxfev=100, damping="none")
+        with pytest.raises(NewtonBreakdown) as plain:     # non-finite residual
+            newton(fun, np.ones(shape), maxfev=100, damping="none")
         guarded = newton(fun, np.ones(shape), maxfev=100, damping="guarded")
-    assert plain.status == 4                           # non-finite residual
+    assert plain.value.result.status == 4
     assert guarded.status == 0 and guarded.x.min() < 1e-3   # ignited branch
 
 
@@ -207,14 +208,20 @@ def test_scale_equals_an_explicit_change_of_variables():
 # Failure is reported, not raised
 # ---------------------------------------------------------------------------
 
-def test_singular_jacobian_is_a_status():
+def test_singular_jacobian_raises_with_the_result_attached():
     jac = csc_array(np.array([[1.0, -1.0], [-1.0, 1.0]]))     # exactly singular
 
     def fun(x):
         return jac @ x - np.array([1.0, 0.0]), jac
     for row_scaling in (False, True):
-        res = newton(fun, np.zeros(2), row_scaling=row_scaling)
-        assert not res.success and res.status == 5
+        with pytest.raises(NewtonBreakdown) as err:
+            newton(fun, np.array([0.5, 0.25]), row_scaling=row_scaling)
+        assert err.value.result.status == 5
+        np.testing.assert_array_equal(err.value.result.x, [0.5, 0.25])
+    with pytest.raises(ValueError):          # as up to 2.5.0
+        newton(fun, np.zeros(2))
+    with pytest.raises(np.linalg.LinAlgError):
+        newton(lambda x: (jac.toarray() @ x - 1.0, jac.toarray()), np.zeros(2))
 
 
 def test_nearly_singular_jacobian_is_not_a_success():
@@ -238,16 +245,6 @@ def test_double_root_converges_to_the_scale_of_the_problem():
     assert plain.success and plain.x[0] > 1e-9          # stops on the step, x ~ 1e-8
     gated = newton(f, np.array([1.0]), maxfev=100)
     assert gated.success and abs(gated.x[0]) < 1e-12
-
-
-def test_singular_jacobian_returns_nan_x_as_before():
-    jac = csc_array(np.array([[1.0, -1.0], [-1.0, 1.0]]))
-
-    def fun(x):
-        return jac @ x - np.array([1.0, 0.0]), jac
-    res = newton(fun, np.array([0.5, 0.25]))
-    assert res.status == 5 and np.all(np.isnan(res.x))
-    np.testing.assert_array_equal(res.x_last, [0.5, 0.25])
 
 
 def test_stagnation_floor_ends_the_iteration():
@@ -378,3 +375,19 @@ def test_continuation_follows_a_branch_and_stops_at_its_fold():
     for p in both:
         assert up.xs[up.params.index(p)].min() > 0.85
         assert down.xs[down.params.index(p)].min() < 0.05
+
+
+def test_continuation_from_a_zero_solution_with_a_repeated_value():
+    """Bratu, u'' + lam exp(u) = 0: from u = 0 at lam = 0 up to the fold at 3.514."""
+    from pymrm import continuation
+    n = 50
+    h = 1.0 / (n + 1)
+    lap = diags_array([np.ones(n - 1), -2.0 * np.ones(n), np.ones(n - 1)], offsets=[-1, 0, 1]) / h**2
+
+    def fun(u, lam):
+        return lap @ u + lam * np.exp(u), (lap + diags_array(lam * np.exp(u))).tocsc()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [0.0, 1.0, 1.0, 2.0, 3.0, 3.6])
+    assert res.params == [0.0, 1.0, 1.0, 2.0, 3.0]
+    assert not res.success and 3.4 < res.last_param < 3.514

@@ -299,3 +299,30 @@ def test_newton_final_evaluation_cannot_turn_a_result_into_an_exception():
 def test_newton_rejects_non_positive_scale():
     with pytest.raises(ValueError, match="scale"):
         newton(_f_sqrt2, np.array([1.0]), scale=0.0)
+
+
+def test_newton_accepts_lil_and_dok_jacobians():
+    from scipy.sparse import lil_array, dok_array
+
+    for kind in (lil_array, dok_array):
+        def f(x, kind=kind):
+            return np.array([x[0] ** 2 - 2]), kind(np.array([[2 * x[0]]]))
+        res = newton(f, np.array([1.0]))
+        assert res.success and res.x[0] == pytest.approx(np.sqrt(2))
+
+
+def test_newton_old_options_reproduce_spsolve_on_csr_bit_for_bit():
+    from scipy.sparse import csr_array
+    from scipy.sparse.linalg import spsolve
+
+    rng = np.random.default_rng(1)
+    a = csr_array(np.eye(30) * 4 + rng.standard_normal((30, 30)) * (rng.random((30, 30)) < 0.2))
+
+    def f(x):
+        return a @ x + 0.1 * x**3 - 1.0, csr_array(a + np.diag(0.3 * x**2))
+    res = newton(f, np.zeros(30), damping="none", backward_tol=None, maxfev=8)
+    x = np.zeros(30)
+    for _ in range(res.nit):                 # the 2.5.0 iteration
+        g, jac = f(x)
+        x = x - spsolve(jac, g)
+    np.testing.assert_array_equal(res.x, x)

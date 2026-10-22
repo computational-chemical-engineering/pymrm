@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 from scipy import sparse
-from scipy.linalg import LinAlgWarning, lu_factor, lu_solve
+from scipy.linalg import LinAlgWarning, lu_factor, lu_solve, solve as dense_solve
 from scipy.optimize import Bounds, OptimizeResult
 from scipy.sparse import linalg
 
@@ -37,6 +37,29 @@ _MESSAGES = {
 }
 
 
+class NewtonBreakdown(np.linalg.LinAlgError):
+    """Raised by :func:`newton` when no Newton step can be formed.
+
+    A singular Jacobian (status 5), a non-finite residual or Jacobian that no
+    damping can avoid (status 4) or a non-finite Newton step (status 6). It is
+    a ``LinAlgError`` and so a ``ValueError``, as the exceptions these cases
+    raised up to pymrm 2.5.0. ``result`` holds the
+    :class:`scipy.optimize.OptimizeResult` with the status and the last
+    iterate ``x``.
+    """
+
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result
+
+
+class KrylovBreakdown(NewtonBreakdown, RuntimeError):
+    """An iterative linear solver did not converge (status 6).
+
+    Also a ``RuntimeError``, as raised up to pymrm 2.5.0.
+    """
+
+
 class _SingularJacobian(Exception):
     pass
 
@@ -64,9 +87,14 @@ def _row_scale(jac):
 class _LinearSolver:
     """Builds, per Newton iteration, a ``solve(rhs)`` for the Jacobian."""
 
-    def __init__(self, solver, kwargs, row_scaling):
+    # keyword arguments of scipy.sparse.linalg.splu
+    _SPLU_KEYS = ("permc_spec", "diag_pivot_thresh", "relax", "panel_size", "options")
+
+    def __init__(self, solver, kwargs, row_scaling, legacy=False):
         self.kwargs = dict(kwargs or {})
         self.row_scaling = row_scaling
+        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit
+        self.legacy = legacy and not row_scaling
         self.kind = None
         if solver is None or (isinstance(solver, str) and solver in ("spsolve", "lu")):
             self.kind = "direct"
@@ -81,6 +109,15 @@ class _LinearSolver:
         else:
             raise ValueError("Unsupported solver method.")
         self.solver = solver
+        self.splu_kwargs = {}
+        if self.kind == "direct":
+            for key, value in self.kwargs.items():
+                if key in self._SPLU_KEYS:
+                    self.splu_kwargs[key] = value
+                elif key != "use_umfpack":
+                    warnings.warn(f"newton: lin_solver_kwargs['{key}'] is not an option of "
+                                  "the direct solver and is ignored.", RuntimeWarning,
+                                  stacklevel=4)
 
     def factorize(self, jac):
         """Return ``(solve, row_scale)`` for this Jacobian."""
@@ -97,12 +134,19 @@ class _LinearSolver:
         return (lambda rhs: solver(jac, rhs, **kwargs)), None
 
     def _direct(self, jac):
+        options = {"permc_spec": "COLAMD", **self.splu_kwargs}
         if sparse.issparse(jac):
+            if self.legacy and jac.format == "csr":
+                # spsolve factors the transpose of a CSR matrix and solves with it
+                try:
+                    lu = linalg.splu(sparse.csc_array(jac.T), **options)
+                except RuntimeError as exc:
+                    raise _SingularJacobian(str(exc)) from exc
+                return (lambda rhs: lu.solve(np.asarray(rhs, dtype=float), trans="T")), None
             a = sparse.csc_array(jac)
             r = _row_scale(a) if self.row_scaling else None
             if r is not None:
                 a = sparse.csc_array(sparse.diags_array(r) @ a)
-            options = {"permc_spec": "COLAMD", **self.kwargs}
             try:
                 lu = linalg.splu(a, **options)
             except RuntimeError as exc:
@@ -110,6 +154,17 @@ class _LinearSolver:
             if r is None:
                 return lu.solve, None
             return (lambda rhs: lu.solve(r * rhs)), r
+        if self.legacy:
+            # scipy.linalg.solve detects structure (symmetric, triangular), as before
+            a = np.asarray(jac)
+            dense_kwargs = self.kwargs
+
+            def solve(rhs):
+                try:
+                    return dense_solve(a, np.asarray(rhs), **dense_kwargs)
+                except np.linalg.LinAlgError as exc:
+                    raise _SingularJacobian(str(exc)) from exc
+            return solve, None
         a = np.asarray(jac, dtype=float)
         r = _row_scale(a) if self.row_scaling else None
         if r is not None:
@@ -462,20 +517,26 @@ def newton(
         ``backward_error`` (of the same iterate as ``fun``; ``nan`` when the
         Jacobian is not a matrix), and ``history``, a list with per
         iteration ``step_norm``, ``damping``, ``theta`` (monotonicity ratio)
-        and ``clipped`` (components held by a bound). With status 5 or 6
-        there is no Newton step: ``x`` is NaN (as before 3.0.0) and
-        ``x_last`` holds the last iterate.
+        and ``clipped`` (components held by a bound).
 
         ``status``: 0 converged; 1 converged to the stagnation floor;
-        2 ``maxfev`` reached; 3 damping fell below its minimum; 4 non-finite
-        residual; 5 singular Jacobian; 6 linear solver failed; 7 step test
+        2 ``maxfev`` reached; 3 damping fell below its minimum; 7 step test
         met but ``backward_error > backward_tol``; 8 stopped on a bound (the
-        bound is likely cutting off the solution).
+        bound is likely cutting off the solution). Statuses 4 (non-finite
+        residual or Jacobian that no damping avoids), 5 (singular Jacobian)
+        and 6 (non-finite Newton step, or an iterative linear solver that did
+        not converge) are raised as :class:`NewtonBreakdown`, whose ``result``
+        holds this object.
 
     Raises
     ------
     ValueError
-        If ``solver`` or ``damping`` is not supported.
+        If ``solver``, ``damping`` or ``scale`` is not supported.
+    NewtonBreakdown
+        When no Newton step can be formed (statuses 4 to 6). It is a
+        ``numpy.linalg.LinAlgError`` and so a ``ValueError``, as the
+        exceptions these cases raised up to 2.5.0; :class:`KrylovBreakdown`
+        (an iterative solver failed) is also a ``RuntimeError``.
 
     Notes
     -----
@@ -513,9 +574,10 @@ def newton(
     into a non-finite residual, stopped on the step test alone, and switched
     to ILU-BiCGSTAB above 50 000 unknowns. Pass ``damping="none",
     backward_tol=None`` for the old iteration; it then
-    takes the same steps and evaluations as before. A singular Jacobian or a
-    non-finite residual now ends the solve with a status instead of
-    continuing with NaN.
+    takes the same steps, evaluations and results as before. A singular
+    Jacobian, a non-finite residual or step, or an iterative linear solver
+    that does not converge still raise, now as :class:`NewtonBreakdown`
+    with the result attached.
     """
     x = np.array(initial_guess, dtype=float, order="C")
     shape = x.shape
@@ -535,6 +597,8 @@ def newton(
         mode = damping
     else:
         raise ValueError(f"Unsupported damping {damping!r}.")
+    lin.legacy = mode == "none" and not row_scaling
+    legacy_exact = mode == "none" and backward_tol is None
 
     d_user = None if scale is None else \
         np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
@@ -552,7 +616,7 @@ def newton(
     nfev = 0
     nfact = 0
     history = []
-    state = {"last": False, "ev": None, "step": float("nan")}
+    state = {"last": False, "ev": None, "step": float("nan"), "bad": None}
 
     def evaluate(xv, guard):
         """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
@@ -572,11 +636,14 @@ def newton(
             g_raw, jac = function(xv, *args)
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
         g_flat = g_raw.reshape(-1)
+        if sparse.issparse(jac) and jac.format not in ("csr", "csc", "coo", "bsr", "dia"):
+            jac = jac.tocsc()      # lil, dok: no .data array of the stored values
         finite = np.all(np.isfinite(g_flat))
         if finite and _is_matrix(jac):
             data = jac.data if sparse.issparse(jac) else jac
             finite = np.all(np.isfinite(data))
         if not finite:
+            state["bad"] = g_raw
             return None
         return g_raw, g_flat, jac
 
@@ -586,17 +653,19 @@ def newton(
         return _backward_error(g_flat, jac, x_flat,
                                _field_reference(x_flat, shape, d_user, x0_size))
 
-    def finish(status, success, ev, step_norm, be, extra=""):
-        g_raw = None if ev is None else ev[0]
+    def finish(status, success, ev, step_norm, be, extra="", krylov=False):
+        if ev is None:
+            g_raw = state["bad"] if status == 4 else None
+        else:
+            g_raw = ev[0]
         message = _MESSAGES[status] + (f": {extra}" if extra else "")
         result = OptimizeResult(x=x, success=bool(success), status=status, message=message,
                                 nit=len(history), nfev=nfev, nfact=nfact, fun=g_raw,
                                 step_norm=step_norm, backward_error=be, history=history)
-        if status in (5, 6):
-            # No Newton step exists: x is NaN, as the old iteration returned it,
-            # so that code judging x by its residual sees the failure.
-            result.x_last = x.copy()
-            x_flat[:] = np.nan
+        if status in (4, 5, 6):
+            # No usable Newton step: raise, as these cases did up to 2.5.0
+            # (callers catch ValueError, LinAlgError or RuntimeError).
+            raise (KrylovBreakdown if krylov else NewtonBreakdown)(message, result)
         return result
 
     ev = evaluate(x, guard=False)
@@ -623,6 +692,8 @@ def newton(
                 callback(x, g_raw)
             if refresh is not None:
                 refresh(x)
+            if status == 1 and n_clip:
+                return finish(8, False, ev, step_inf, be, f"{n_clip} components held by a bound")
             return finish(status, True, ev, step_inf, be, extra)
 
         for it in range(int(maxfev)):
@@ -637,7 +708,7 @@ def newton(
             except _SingularJacobian as exc:
                 return finish(5, False, ev, step_inf, float("nan"), str(exc))
             except _LinearSolverFailed as exc:
-                return finish(6, False, ev, step_inf, float("nan"), str(exc))
+                return finish(6, False, ev, step_inf, float("nan"), str(exc), krylov=True)
             if not np.all(np.isfinite(dx)):
                 return finish(6, False, ev, step_inf, float("nan"), "non-finite Newton step")
 
@@ -652,7 +723,8 @@ def newton(
             else:
                 converged = step_inf < tol
                 excess = step_inf / tol if tol > 0 else (0.0 if step_inf == 0 else np.inf)
-            converged = converged or step_inf == 0.0
+            if not legacy_exact:
+                converged = converged or step_inf == 0.0
             near = converged or (refresh is None and excess < _NEAR)
             state["step"] = step_inf
             state["last"] = converged or last_it
@@ -755,9 +827,12 @@ def newton(
                         try:
                             rhs = ev_t[0] if lin.kind == "callable" else ev_t[1]
                             dbar = np.asarray(solve(rhs), dtype=float).reshape(-1) / d
-                        except _LinearSolverFailed as exc:
-                            return finish(6, False, ev, step_inf, float("nan"), str(exc))
+                        except _LinearSolverFailed:
+                            dbar = np.full(n, np.inf)    # no test possible: reject the trial
                         theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
+                        if not np.isfinite(theta):
+                            lam *= 0.5
+                            continue
                         if theta <= 1.0 - lam / 4.0:
                             accepted = (trial, ev_t, lam)
                             break
@@ -817,6 +892,8 @@ def newton(
             else:
                 window.clear()
 
+        if mode != "none":
+            be = backward_error(ev[1], ev[2])     # ev is at x after a damped step
         if gate_failed:
             return finish(7, False, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
         if clipped:
@@ -836,6 +913,14 @@ def _mass_matrix(mass, shape):
         return sparse.csc_array(mass)
     diag = np.array(np.broadcast_to(np.asarray(mass, dtype=float), shape)).ravel()
     return sparse.diags_array(diag).tocsc()
+
+
+def _attempt(function, x, args, options):
+    """newton, with a breakdown returned as an unsuccessful result."""
+    try:
+        return newton(function, x, args, **options)
+    except NewtonBreakdown as exc:
+        return exc.result
 
 
 def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_max=np.inf,
@@ -929,7 +1014,7 @@ def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_
         if (g_attempt is None or g_norm <= steady_ratio * g_attempt or step == max_steps
                 or (steady_every and step % steady_every == 0)):
             g_attempt = g_norm
-            steady_result = newton(function, x, args, **steady)
+            steady_result = _attempt(function, x, args, steady)
             if steady_result.success:
                 return result(True, f"Converged by the steady Newton solve after {step} "
                               "pseudo-time steps", step)
@@ -944,7 +1029,7 @@ def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_
                 g, jac = function(xv, *a)
                 g = np.asarray(g, dtype=float).ravel() + mass_matrix @ (xv.ravel() - x_old) / _dt
                 return g, jac + mass_matrix / _dt
-            step_result = newton(transient, x, args, **inner)
+            step_result = _attempt(transient, x, args, inner)
             if step_result.success:
                 break
             dt *= 0.25
@@ -1001,8 +1086,8 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
     """
     params = [float(p) for p in params]
     options = dict(newton_kwargs or {})
-    first = newton(lambda xv: function(xv, params[0]), np.array(initial_guess, dtype=float),
-                   **options)
+    first = _attempt(lambda xv: function(xv, params[0]), np.array(initial_guess, dtype=float),
+                     (), options)
     if not first.success:
         return OptimizeResult(x=first.x, success=False, params=[], xs=[], results=[first],
                               last_param=None,
@@ -1011,6 +1096,11 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
     done, xs, results = [params[0]], [first.x.copy()], [first]
     path_p, path_x = [params[0]], [first.x.copy()]
     for target in params[1:]:
+        if target == path_p[-1]:            # a repeated value: nothing to solve
+            done.append(target)
+            xs.append(path_x[-1].copy())
+            results.append(results[-1])
+            continue
         halvings = 0
         p = target
         while True:
@@ -1019,10 +1109,12 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                 guess = path_x[-1] + ratio * (path_x[-1] - path_x[-2])
             else:
                 guess = path_x[-1].copy()
-            res = newton(lambda xv, _p=p: function(xv, _p), guess, **options)
+            res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
             jumped = False
-            if res.success and max_change is not None:
-                size = max(float(np.max(np.abs(path_x[-1]))), np.finfo(float).tiny)
+            if res.success and max_change is not None and len(path_p) >= 2:
+                # no prediction to compare with before the second point
+                size = max(float(np.max(np.abs(path_x[-1]))), float(np.max(np.abs(res.x))),
+                           np.finfo(float).tiny)
                 jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
             if res.success and not jumped:
                 path_p.append(p)
