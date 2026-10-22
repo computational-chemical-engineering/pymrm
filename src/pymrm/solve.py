@@ -278,17 +278,22 @@ class _Bounds:
     def project(self, trial, x, dx):
         """Hold genuinely crossing components ``1 - tau`` of their distance from the bound.
 
-        A round-off crossing is mirrored back into the bound and not counted.
-        Returns the number of components held.
+        A round-off crossing, or a landing exactly on the bound, is mirrored
+        back inside, at least ``eps`` times the distance from the bound, and
+        not counted. A component that already sits on its bound may stay
+        there. Returns the number of components held.
         """
         held = 0
+        eps = np.finfo(float).eps
         for sign, mask, bound, dist, over in self._sides(x, dx):
             genuine = mask & (over > _CROSS_RTOL * dist)
             hold = genuine & (sign * (trial - bound) < (1.0 - self.tau) * dist)
             trial[hold] = bound[hold] + sign * (1.0 - self.tau) * dist[hold]
             held += int(hold.sum())
-            shallow = mask & ~genuine & (sign * (trial - bound) < 0.0)
-            trial[shallow] = 2.0 * bound[shallow] - trial[shallow]
+            shallow = mask & ~genuine & (dist > 0.0) & (sign * (trial - bound) <= 0.0)
+            # reflect through the offset (no 2 * bound, which can overflow)
+            offset = np.maximum(sign * (bound[shallow] - trial[shallow]), eps * dist[shallow])
+            trial[shallow] = bound[shallow] + sign * offset
         return held
 
 
