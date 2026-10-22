@@ -200,8 +200,36 @@ def test_input_errors():
     tvd = ConvFluxTVD((4, 2), np.linspace(0, 1, 5), bc=BCS["robin-robin"], shapes_d=((1, 2), None))
     with pytest.raises(ValueError, match="pass d"):
         tvd(np.zeros((4, 2)), 1.0)
-    with pytest.raises(ValueError, match="does not broadcast"):
+    with pytest.raises(ValueError, match="does not fit"):
         tvd(np.zeros((4, 2)), np.ones(3), d=(np.ones(2), None))
+
+
+def test_velocity_accepted_as_by_upwind_constructor():
+    rng = np.random.default_rng(8)
+    shape = (6, 3)
+    x_f = np.cumsum(np.r_[0.0, rng.random(6) + 0.4])
+    bc = ({"a": 0, "b": 1, "d": 1.0}, {"outflow": True})
+    c = _state(rng, shape, 0)
+    tvd = ConvFluxTVD(shape, x_f, bc=bc, tvd_limiter=pymrm.vanleer)
+    v_face = rng.random(7) + 0.2                     # 1-D, one value per face along axis 0
+    flux, jac, jac_v = tvd(c, v_face, jac_v=True)
+    flux_2d, jac_2d = tvd(c, np.broadcast_to(v_face[:, None], (7, 3)))
+    np.testing.assert_allclose(flux, flux_2d, rtol=0, atol=0)
+    np.testing.assert_allclose(jac.toarray(), jac_2d.toarray(), rtol=0, atol=0)
+    assert jac_v.shape == (7 * 3, 7)
+    dv = rng.standard_normal(7)
+    np.testing.assert_allclose(jac_v @ dv, _directional(lambda w: tvd(c, w)[0], v_face, dv), atol=1e-6)
+    v_cell = rng.random(6) + 0.2                     # cell-centred: interpolated, as in the upwind constructor
+    matrix, _ = construct_convflux_upwind(shape, x_f, bc=bc, v=v_cell)
+    _, jac = ConvFluxTVD(shape, x_f, bc=bc, tvd_limiter=pymrm.upwind)(c, v_cell)
+    np.testing.assert_allclose(jac.toarray(), matrix.toarray(), atol=1e-14)
+    with pytest.raises(ValueError, match="on the faces"):
+        tvd(c, v_cell, jac_v=True)
+    one = ConvFluxTVD((1, 3), np.array([0.0, 1.0]), bc=bc, tvd_limiter=pymrm.vanleer)
+    c1, v1 = rng.random((1, 3)), rng.random(3) + 0.2  # one cell: the cell value is the face value
+    _, _, jac_v = one(c1, v1, jac_v=True)
+    dv = rng.standard_normal(3)
+    np.testing.assert_allclose(jac_v @ dv, _directional(lambda w: one(c1, w)[0], v1, dv), atol=1e-6)
 
 
 def test_csr_format_and_negative_axis():

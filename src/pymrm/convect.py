@@ -4,7 +4,7 @@ import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
-from .interpolate import create_staggered_array
+from .interpolate import create_staggered_array, _align_to_axes
 from .helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 
 
@@ -744,6 +744,7 @@ class ConvFluxTVD:
         self.shape = shape
         self.axis = axis
         self.shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+        self._x_f, self._x_c = x_f, x_c
         self.tvd_limiter = upwind if tvd_limiter is None else tvd_limiter
         self.format = format
         n0, n1, n2 = math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:])
@@ -832,8 +833,11 @@ class ConvFluxTVD:
             Cell-centered values, any array with ``prod(shape)`` elements.
         v : float or array_like
             Face velocity (or any face weight, such as ``rho * cp * v``),
-            broadcastable to the face shape. Its sign selects the stencil of
-            each interior face.
+            accepted as by :func:`construct_convflux_upwind` (through
+            :func:`create_staggered_array`): a scalar, a face-shaped or
+            broadcastable array, or a 1-D array along the convection axis.
+            Cell-centred values are interpolated to the faces, but not with
+            ``jac_v=True``. Its sign selects the stencil of each interior face.
         d : tuple, optional
             With ``shapes_d``: the external vectors ``(ext_left, ext_right)``
             (``None`` for a side without a shape). Required then, ignored
@@ -860,11 +864,17 @@ class ConvFluxTVD:
         c = np.asarray(c, dtype=float).reshape(self._shape_t)
         v_in = np.asarray(v, dtype=float)
         try:
-            v_t = np.broadcast_to(v_in, self.shape_f).reshape(self._shape_f_t)
+            v_aligned = _align_to_axes(v_in, self.shape, self.axis)
+            v_t = create_staggered_array(v_in, self.shape, self.axis, x_f=self._x_f, x_c=self._x_c)
         except ValueError:
             raise ValueError(
-                f"v with shape {v_in.shape} does not broadcast to the face shape {self.shape_f}"
+                f"v with shape {v_in.shape} does not fit the face shape {self.shape_f}"
             ) from None
+        centred = (v_in.size > 1 and self.shape[self.axis] > 1 and v_aligned.ndim == len(self.shape)
+                   and v_aligned.shape[self.axis] == self.shape[self.axis])
+        if jac_v and centred:
+            raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
+        v_t = v_t.reshape(self._shape_f_t)
         ext = [np.ones(1), np.ones(1)]
         if self._with_d:
             if d is None:
@@ -949,8 +959,8 @@ class ConvFluxTVD:
 
         if jac_v:
             n_f = math.prod(self._shape_f_t)
-            v_shape = v_in.shape
-            v_cols = np.broadcast_to(np.arange(v_in.size).reshape(v_shape), self.shape_f).ravel()
+            v_cols = create_staggered_array(np.arange(v_in.size).reshape(v_in.shape), self.shape,
+                                            self.axis, x_f=self._x_f, x_c=self._x_c).ravel()
             out.append(_sparse_array((face.ravel(), (np.arange(n_f), v_cols)),
                                      shape=(n_f, v_in.size), format=self.format))
         return tuple(out)

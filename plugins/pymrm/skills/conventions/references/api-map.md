@@ -113,9 +113,9 @@ Every limiter converges in about 5 to 25 steps. With `shapes_d` the call takes
 (derivatives only: `flux` already holds the boundary data). With `jac_v=True` it
 appends `jac_v`, whose entries are the face values, for a velocity that depends
 on the state: for Darcy flow `v = -(K/mu) (grad @ p + grad_bc)` the block is
-`div @ jac_v @ (-(K/mu) * grad)`. Unlike `construct_convflux_upwind`, `v` must
-broadcast to the face shape as it is (a 1-D face velocity along axis 0 of a
-2-D field: `v.reshape(-1, 1)`); it is not interpolated from cell centres. An
+`div @ jac_v @ (-(K/mu) * grad)`. `v` is a face velocity, accepted in the same
+forms as by `construct_convflux_upwind`; the columns of `jac_v` follow the
+shape of `v` as passed, and `jac_v=True` refuses a cell-centred `v`. An
 initial guess with `v = 0` everywhere gives a zero convective Jacobian.
 
 **Deferred correction for TVD convection** (structure S5), inside a time step:
