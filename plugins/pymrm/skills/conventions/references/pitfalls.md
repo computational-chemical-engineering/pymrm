@@ -158,3 +158,33 @@ steps. A hard lower bound at zero helps, but less than a smooth rate.
   exact profile (the discretisation error). Check that reducing `eps` tenfold
   leaves the result unchanged. Keep `bounds` for unknowns the residual cannot
   accept beyond a limit (`T > 0`, arguments of `log`).
+
+## P10. Steady TVD by deferred correction stalls
+
+Deferred correction (the limiter correction in the residual, the upwind
+Jacobian) is a fixed-point iteration, not Newton. For a steady problem it
+converges only slowly with minmod and not at all with van Leer, MUSCL or SMART:
+the upwind Jacobian underestimates how a limited face value responds to an
+odd-even error, so that error grows in the cells where the gradient ratio is far
+from 1 (a profile that is flat and then bends, behind an inlet).
+
+- Symptom: the residual drops a few decades, then stops at 1e-3 to 1e-1 and
+  stays there, or a steady `newton` call with the deferred-correction model
+  reports `success=False`; with minmod, hundreds of iterations.
+- Measured: 2-D Graetz problem (parabolic flow along x, diffusion across, wall
+  value 0), 40 x 10 cells. After 300 deferred-correction iterations the residual
+  is 8e-8 for minmod, 4e-3 for van Leer and 3e-2 to 6e-2 for MUSCL. With the
+  exact Jacobian from `ConvFluxTVD` and `newton(..., damping="monotone")`, every
+  limiter converges to 1e-12 in 5 to 12 steps. Passing the upwind Jacobian to
+  `newton` instead: undamped it fails for every limiter; with
+  `damping="monotone"` it needs about 31 iterations for van Leer and 130 for
+  minmod (the damping acts as an under-relaxation, which cures the overshoot of
+  van Leer and MUSCL but not the slow mode of minmod).
+- Do (from 3.1.0): for steady problems use `ConvFluxTVD`
+  (`flux, jac = tvd(c, v)`, residual `div @ flux.ravel()`, Jacobian
+  `div @ jac`) with `damping="monotone"`. Undamped Newton can cycle with the
+  piecewise-linear limiters (MUSCL, SMART, STOIC). Do not build the TVD
+  Jacobian with `NumJac` or finite differences: the limited face value reaches
+  two cells upwind, and differencing across the limiter kinks stalls near 1e-7.
+  Deferred correction remains fine inside an implicit time step with one or two
+  inner iterations and a small Courant number.
