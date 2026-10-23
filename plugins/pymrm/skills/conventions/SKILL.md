@@ -12,7 +12,7 @@ a model that will be kept, shared or extended.
 
 | File | Read when |
 |---|---|
-| `references/pitfalls.md` | ALWAYS, before writing any pymrm code. Eight API behaviours that have produced wrong answers, each with the fix. |
+| `references/pitfalls.md` | ALWAYS, before writing any pymrm code. Ten API behaviours that have produced wrong answers, each with the fix. |
 | `references/style-guide.md` | writing a model: output format, section order, naming, array layout, class structure, residual pattern, validation |
 | `references/api-map.md` | choosing a function; patterns beyond the core recipe (TVD, nested scales, 2-D, boundary unknowns, continuation) |
 | `references/assembly-styles.md` | deciding how to build the Jacobian: operator sum (default), block assembly, full-residual `NumJac` |
@@ -23,6 +23,7 @@ a model that will be kept, shared or extended.
 | `exemplars/pellet_teaching.ipynb` | a flat didactic notebook: no class, named operators built step by step, checks at the end |
 | `exemplars/steady_pellet.py` | a steady 1-D nonlinear boundary-value problem (sphere, `NumJac`, `newton`) |
 | `exemplars/dispersion_reactor.py` | a transient 1-D convection-dispersion-reaction model (Danckwerts bc, backward Euler, constant Jacobian factorised once) |
+| `exemplars/steady_tvd_channel.py` | a steady 2-D channel with TVD convection solved by Newton (`ConvFluxTVD`, exact Jacobian, observed orders, break row) |
 | `exemplars/assembly_styles.py` | one two-field model in all three assembly styles, with a Jacobian cross-check |
 | `exemplars/cstr_steady_states.py` | a pointwise algebraic model in compact script format (scaled unknowns, multiple steady states, two routes) |
 

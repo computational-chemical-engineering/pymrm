@@ -508,10 +508,11 @@ def newton(
     stagnation : bool, optional
         Stop at the stagnation floor: when the step test cannot be met because
         round-off, or switching terms such as ``max(c, 0)`` and upwinding, keep
-        the steps from shrinking, a full step within 100 tolerances that is no
-        smaller than the smallest of the five before it ends the iteration with
-        success, provided ``backward_tol`` passes; otherwise the iteration
-        continues. A converging iteration, however slowly, makes a new smallest
+        the steps from shrinking, a Newton step within 100 tolerances that is
+        no smaller than the smallest of the five before it ends the iteration
+        with success, provided ``backward_tol`` passes; otherwise the iteration
+        continues. Steps the damping shortened count too: at the floor the
+        damping test fails on round-off. A converging iteration, however slowly, makes a new smallest
         step every time and is never stopped. Off by default: code written for
         the old iteration may rely on a ``tol`` below the floor failing.
     row_scaling : bool, optional
@@ -911,7 +912,9 @@ def newton(
                       f"theta={theta:.3g} clipped={clipped} nfev={nfev}")
             if stagnant:
                 window.clear()      # the backward error did not pass: keep iterating
-            elif use_stagnation and at_floor and lam == 1.0:
+            elif use_stagnation and at_floor:
+                # The Newton step norm, damped or not: near the floor the damping
+                # test fails on round-off, and a damped step must not reset the window.
                 window.append(step_inf)
             else:
                 window.clear()

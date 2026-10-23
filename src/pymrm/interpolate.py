@@ -219,7 +219,7 @@ def interp_cntr_to_stagg_tvd(
         fctr_m = fctr_m + np.zeros(shape_bc)
         fctr_m = np.reshape(fctr_m, shape_bc_d)
         staggered_values[:, 1, :] += fctr_m
-        staggered_values.reshape(shape_f)
+        staggered_values = staggered_values.reshape(shape_f)
         delta_staggered_values = np.zeros(shape_f)
     else:
         # bc 0
@@ -362,16 +362,7 @@ def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
         array = np.full(shape_f, array)
         return array
 
-    if len(shape) != 1 and array.ndim == 1:
-        shape_new = [1] * len(shape)
-        if array.size in (shape[axis], shape_f[axis]):
-            shape_new[axis] = -1
-        else:
-            for i in range(len(shape) - 1, -1, -1):
-                if array.size == shape[i]:
-                    shape_new[i] = shape[i]
-                    break
-        array = array.reshape(shape_new)
+    array = _align_to_axes(array, shape, axis)
     if array.ndim != len(shape):
         raise ValueError("The array has the wrong number of dimensions.")
     if array.shape[axis] == shape[axis]:
@@ -381,6 +372,22 @@ def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
         array_f = array
     array_f = np.broadcast_to(array_f, shape_f)
     return array_f
+
+
+def _align_to_axes(array, shape, axis):
+    """Give a 1-D array the axes of ``shape``: along ``axis`` if its length is
+    the cell or face count there, else along the last axis of that length."""
+    if len(shape) == 1 or array.ndim != 1:
+        return array
+    shape_new = [1] * len(shape)
+    if array.size in (shape[axis], shape[axis] + 1):
+        shape_new[axis] = -1
+    else:
+        for i in range(len(shape) - 1, -1, -1):
+            if array.size == shape[i]:
+                shape_new[i] = shape[i]
+                break
+    return array.reshape(shape_new)
 
 
 def compute_boundary_values(
@@ -647,6 +654,14 @@ def construct_boundary_value_matrices(
     tuple
         ``(matrix, mat_bc)`` where ``matrix`` maps cell-centered values to
         boundary values and ``mat_bc`` maps inhomogeneous boundary terms.
+
+    Raises
+    ------
+    ValueError
+        If the axis has a single cell: the boundary value then depends on the
+        conditions at both ends, which this function does not receive.
+    NotImplementedError
+        For an outflow boundary.
     """
     if is_outflow_bc(bc):
         raise NotImplementedError(
@@ -662,7 +677,11 @@ def construct_boundary_value_matrices(
     shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
     shape_bc_d = (shape_t[0], shape_t[2])
 
-    # Handle special case with one cell in the dimension axis
+    if shape_t[1] < 2:
+        raise ValueError(
+            "construct_boundary_value_matrices needs at least two cells along axis; "
+            "with one cell the boundary value depends on both boundary conditions"
+        )
 
     if bound_id == 0:
         idx_c_0 = 0

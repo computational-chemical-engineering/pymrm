@@ -10,7 +10,7 @@ The modelling conventions and the known API pitfalls live in
 `plugins/pymrm/skills/conventions/`:
 
 - `references/pitfalls.md`: API behaviour that has produced wrong answers, ids
-  P1 to P8.
+  P1 to P10.
 - `references/style-guide.md`: the house style for models, tutorials and examples.
 - `references/api-map.md`: which function does which job.
 

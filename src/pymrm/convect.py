@@ -4,7 +4,7 @@ import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
-from .interpolate import create_staggered_array
+from .interpolate import create_staggered_array, _align_to_axes
 from .helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 
 
@@ -232,22 +232,26 @@ def construct_convflux_bc(
         i_f_bc = np.ravel_multi_index(
             (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
         )
-        values_bc = np.empty((n0, 2, n2))
-        values_bc[:, 0, :] = np.broadcast_to(
-            ((a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]) * fctr,
-            shape_bc,
-        ).reshape(shape_bc_d)
-        values_bc[:, 1, :] = np.broadcast_to(
-            ((a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]) * fctr,
-            shape_bc,
-        ).reshape(shape_bc_d)
+
+        def on_bc(value):
+            return np.broadcast_to(value, shape_bc).reshape(shape_bc_d)
+
+        # values_bc_src[:, face, source]: with one cell, each face value depends
+        # on the data of both boundaries
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = on_bc((a[1] * alpha_0_right + b[1]) * d[0] * fctr)
+        values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * a[0] * d[1] * fctr)
+        values_bc_src[:, 1, 1, :] = on_bc((a[0] * alpha_0_left + b[0]) * d[1] * fctr)
+        values_bc_src[:, 1, 0, :] = on_bc(-alpha_2_right * a[1] * d[0] * fctr)
         for side in (0, 1):
             if outflow[side]:
-                values[:, side, :], values_bc[:, side, :] = 1.0, 0.0
+                values[:, side, :], values_bc_src[:, side, :, :] = 1.0, 0.0
+        values_bc = values_bc_src.sum(axis=2)
 
         if isinstance(v, (float, int)):
             values *= v
             values_bc *= v
+            values_bc_src *= v
         else:
             slicer = [slice(None)] * len(shape)
             slicer[axis] = [0, -1]
@@ -257,6 +261,7 @@ def construct_convflux_bc(
             values *= v[tuple(slicer)]
             values_bc = values_bc.reshape(shape_f_b)
             values_bc *= v[tuple(slicer)]
+            values_bc_src *= v[tuple(slicer)].reshape((n0, 2, 1, n2))
         conv_matrix = _sparse_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
             shape=(math.prod(shape_f_t), math.prod(shape_t)),
@@ -341,6 +346,10 @@ def construct_convflux_bc(
             slicer[axis] = [0, -1]
             values_bc = values_bc.reshape(shape_f_b)
             values_bc *= v[tuple(slicer)]
+        values_bc = values_bc.reshape((n0, 2, n2))
+        values_bc_src = np.zeros((n0, 2, 2, n2))
+        values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
+        values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
 
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         conv_bc = csc_array(
@@ -355,8 +364,7 @@ def construct_convflux_bc(
         conv_matrix.sort_indices()
         return conv_matrix, conv_bc
     else:
-        values = values.reshape((shape_t[0], 4, shape_t[2]))
-        values_bc = values_bc.reshape((shape_t[0], 2, shape_t[2]))
+        values = values.reshape((shape_t[0], -1, shape_t[2]))
         conv_bc = [None] * 2
         shapes_d = list(shapes_d)
         for i in range(2):
@@ -364,11 +372,15 @@ def construct_convflux_bc(
                 shapes_d[i] = (1,) * len(shape_bc)
             num_cols = math.prod(shapes_d[i])
             i_cols_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[i])
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc)
+            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
+            faces = [0, 1] if n1 == 1 else [i]
             conv_bc[i] = csc_array(
                 (
-                    values_bc[:, i, :].ravel(),
-                    (i_f_bc[:, i, :].ravel(), i_cols_bc.ravel()),
+                    values_bc_src[:, faces, i, :].ravel(),
+                    (
+                        i_f_bc[:, faces, :].ravel(),
+                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                    ),
                 ),
                 shape=(math.prod(shape_f_t), num_cols),
             )
@@ -563,3 +575,392 @@ def vanleer(normalized_c_c, normalized_x_c, normalized_x_d):
         ),
     )
     return normalized_concentration_diff
+
+
+# Derivatives of the limiters with respect to the normalized cell value, at
+# fixed normalized positions. Each follows the branch its limiter selects, so a
+# value and its derivative always come from the same piece; where the limiter
+# is clipped to zero the derivative is zero.
+
+
+def _upwind_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    return np.zeros_like(normalized_c_c)
+
+
+def _minmod_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    lower = c_c / x_c <= (1 - c_c) / (1 - x_c)
+    slope = (x_d - x_c) * np.where(lower, 1 / x_c, -1 / (1 - x_c))
+    return np.where(minmod(c_c, x_c, x_d) > 0, slope, 0.0)
+
+
+def _osher_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    slope = np.where(c_c < x_c / x_d, x_d / x_c - 1, -1.0)
+    return np.where(osher(c_c, x_c, x_d) > 0, slope, 0.0)
+
+
+def _muscl_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    slope = np.where(
+        c_c < x_c / 2,
+        (2 * x_d - x_c) / x_c - 1,
+        np.where(c_c < 1 + x_c - x_d, 0.0, -1.0),
+    )
+    return np.where(muscl(c_c, x_c, x_d) > 0, slope, 0.0)
+
+
+def _smart_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    slope = np.where(
+        c_c < x_c / 3,
+        x_d * (1 - 3 * x_c + 2 * x_d) / (x_c * (1 - x_c)) - 1,
+        np.where(
+            c_c < x_c / x_d * (1 + x_d - x_c),
+            x_d * (1 - x_d) / (x_c * (1 - x_c)) - 1,
+            -1.0,
+        ),
+    )
+    return np.where(smart(c_c, x_c, x_d) > 0, slope, 0.0)
+
+
+def _stoic_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    slope = np.where(
+        c_c < x_c / (1 + 2 * x_d),
+        x_d * (1 - 3 * x_c + 2 * x_d) / (x_c * (1 - x_c)),
+        np.where(
+            c_c < x_c,
+            (1 - x_d) / (1 - x_c),
+            np.where(
+                c_c < x_c / x_d * (1 + x_d - x_c),
+                x_d * (1 - x_d) / (x_c * (1 - x_c)),
+                0.0,
+            ),
+        ),
+    )
+    return np.where(stoic(c_c, x_c, x_d) > 0, slope - 1, 0.0)
+
+
+def _vanleer_derivative(normalized_c_c, normalized_x_c, normalized_x_d):
+    c_c, x_c, x_d = normalized_c_c, normalized_x_c, normalized_x_d
+    scale = (x_d - x_c) / (x_c * (1 - x_c))
+    parabola = c_c * (1 - c_c) * scale <= 1 - c_c
+    slope = np.where(parabola, (1 - 2 * c_c) * scale, -1.0)
+    return np.where(vanleer(c_c, x_c, x_d) > 0, slope, 0.0)
+
+
+upwind.derivative = _upwind_derivative
+minmod.derivative = _minmod_derivative
+osher.derivative = _osher_derivative
+clam.derivative = _vanleer_derivative
+muscl.derivative = _muscl_derivative
+smart.derivative = _smart_derivative
+stoic.derivative = _stoic_derivative
+vanleer.derivative = _vanleer_derivative
+
+
+def _limiter_derivative(tvd_limiter, normalized_c_c, normalized_x_c, normalized_x_d, step=1e-6):
+    """Derivative of a limiter: its ``derivative`` attribute, else a central difference."""
+    derivative = getattr(tvd_limiter, "derivative", None)
+    if derivative is not None:
+        return derivative(normalized_c_c, normalized_x_c, normalized_x_d)
+    return (
+        tvd_limiter(normalized_c_c + step, normalized_x_c, normalized_x_d)
+        - tvd_limiter(normalized_c_c - step, normalized_x_c, normalized_x_d)
+    ) / (2 * step)
+
+
+class ConvFluxTVD:
+    """TVD convective face flux with its exact Jacobians, for Newton solves.
+
+    Build the object once per axis, then call it with the current state in
+    every residual evaluation. It returns the face fluxes ``v * c_f``, with
+    ``c_f`` the TVD face values of :func:`interp_cntr_to_stagg_tvd`, and the
+    derivative of those fluxes with respect to the state: the upwind part, the
+    limiter part and the boundary faces together. A steady problem solved with
+    this Jacobian converges in a few Newton steps for every limiter; deferred
+    correction (the TVD correction in the residual, the upwind Jacobian)
+    converges only slowly with minmod and stalls with van Leer, MUSCL and
+    SMART (pitfalls P10).
+
+    Parameters
+    ----------
+    shape : tuple[int, ...] or int
+        Cell-centered field shape.
+    x_f : array_like
+        Face coordinates along ``axis``.
+    x_c : array_like, optional
+        Cell-center coordinates. If omitted, arithmetic midpoints are used.
+    bc : tuple[dict | None, dict | None], optional
+        Left and right boundary conditions ``a * dc/dn + b * c = d`` with
+        ``n`` the outward normal, or ``{"outflow": True}``, as for
+        :func:`construct_convflux_upwind`. Boundary faces carry the boundary
+        value without a TVD correction.
+    tvd_limiter : callable, optional
+        Limiter ``phi(c_norm, x_norm_c, x_norm_d)`` (default :func:`minmod`).
+        The built-in limiters carry an analytic ``derivative`` attribute; for
+        any other limiter the derivative is a central difference in
+        ``c_norm``.
+    axis : int, optional
+        Convection axis.
+    shapes_d : tuple[tuple | None, tuple | None], optional
+        Shapes of external vectors for the boundary data, as for
+        :func:`construct_convflux_upwind`: ``d`` is then a coefficient on that
+        vector, and the call takes the vectors and also returns the Jacobians
+        with respect to them.
+    format : {'csc', 'csr'}, optional
+        Sparse format of the returned Jacobians.
+
+    Notes
+    -----
+    Call ``flux, jac = tvd(c, v)``; with ``shapes_d``,
+    ``flux, jac, jac_bc_left, jac_bc_right = tvd(c, v, d=(ext_left, ext_right))``;
+    ``jac_v=True`` appends the Jacobian with respect to ``v``. See
+    :meth:`__call__`.
+
+    The face upwind of the first interior face is the boundary value, so the
+    Jacobian there reaches the cells that boundary value depends on, and the
+    boundary data. The flow direction of each interior face follows
+    ``v > 0``; an initial guess with ``v = 0`` everywhere gives a zero
+    convective Jacobian. Where ``c_D == c_U`` the face is upwind and its
+    derivative is the upwind one (the built-in limiters are also zero outside
+    ``0 < c_norm < 1``). Use ``newton(..., damping="monotone")``: undamped Newton can cycle
+    between the pieces of MUSCL, SMART and STOIC. The
+    sparsity pattern covers both flow directions, so it does not change when
+    ``v`` changes sign; it contains explicit zeros, which sparse products drop.
+    """
+
+    def __init__(
+        self, shape, x_f, x_c=None, bc=(None, None), tvd_limiter=minmod, axis=0,
+        shapes_d=(None, None), format="csc"
+    ):
+        shape = (shape,) if isinstance(shape, int) else tuple(shape)
+        if axis < 0:
+            axis += len(shape)
+        x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
+        if bc is None:
+            bc = (None, None)
+        self.shape = shape
+        self.axis = axis
+        self.shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+        self._x_f, self._x_c = x_f, x_c
+        self.tvd_limiter = upwind if tvd_limiter is None else tvd_limiter
+        self.format = format
+        n0, n1, n2 = math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:])
+        self._shape_t = (n0, n1, n2)
+        self._shape_f_t = (n0, n1 + 1, n2)
+
+        if shapes_d is None:
+            shapes_d = (None, None)
+        self.shapes_d = tuple(shapes_d)
+        self._with_d = any(s is not None for s in self.shapes_d)
+        ones = (1,) * len(shape)
+        shapes_ext = tuple(ones if s is None else tuple(s) for s in self.shapes_d)
+        self._n_ext = tuple(math.prod(s) for s in shapes_ext)
+
+        # Boundary faces: value maps with the outflow face set to its cell. As
+        # the upwind point of the neighbouring face, an outflow boundary takes
+        # the zero-gradient value, as in interp_cntr_to_stagg_tvd.
+        bc_upwind, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
+        m_0, e_0, m_1, e_1 = construct_convflux_bc(
+            shape, x_f, x_c, bc, 1.0, axis, shapes_d=shapes_ext, format="csr")
+        self._m_face, self._e_face = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
+        m_0, e_0, m_1, e_1 = construct_convflux_bc(
+            shape, x_f, x_c, bc_upwind, 1.0, axis, shapes_d=shapes_ext, format="csr")
+        self._m_up, self._e_up = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
+
+        def coefficient(matrix, cell):
+            """Coefficient of cell ``cell`` (along the axis) in each face row."""
+            indicator = np.zeros(self._shape_t)
+            indicator[:, cell, :] = 1.0
+            return (matrix @ indicator.ravel()).reshape(self._shape_f_t)
+
+        # band[:, face, o + 2, :]: dependence of a boundary face on cell face + o
+        self._offsets = np.arange(-2, 2)
+        self._band_bnd = np.zeros((n0, 2, 4, n2))
+        for side, face in enumerate((0, n1)):
+            for o in self._offsets:
+                if 0 <= face + o < n1:
+                    self._band_bnd[:, side, o + 2, :] = coefficient(self._m_face, face + o)[:, face, :]
+        if n1 > 1:
+            self._up_left = [coefficient(self._m_up, j)[:, 0, :] for j in (0, 1)]
+            self._up_right = [coefficient(self._m_up, j)[:, n1, :] for j in (n1 - 1, n1 - 2)]
+
+            # normalized positions of the interior faces 1 .. n1-1, per direction
+            x_d = x_f[1:-1]
+            x_U = np.concatenate((x_f[:1], x_c[:-2]))
+            x_norm = {}
+            for positive, x_up, x_C, x_D in (
+                (True, x_U, x_c[:-1], x_c[1:]),
+                (False, np.concatenate((x_c[2:], x_f[-1:])), x_c[1:], x_c[:-1]),
+            ):
+                x_norm[positive] = (
+                    ((x_C - x_up) / (x_D - x_up)).reshape(1, -1, 1),
+                    ((x_d - x_up) / (x_D - x_up)).reshape(1, -1, 1),
+                )
+            self._x_norm = x_norm
+
+        # fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1
+        k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
+        cells = k + self._offsets.reshape(1, 1, -1, 1)
+        valid = (cells >= 0) & (cells < n1)
+        self._valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
+        i0 = np.arange(n0).reshape(-1, 1, 1, 1)
+        i2 = np.arange(n2).reshape(1, 1, 1, -1)
+        rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
+        cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
+        rows, cols = rows[self._valid], cols[self._valid]
+        shape_jac = (math.prod(self._shape_f_t), math.prod(self._shape_t))
+        tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
+                            shape=shape_jac, format=format)
+        tag.sort_indices()
+        self._perm = tag.data.astype(np.intp) - 1
+        self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
+
+        # boundary faces and the interior faces next to them, as flat face indices
+        f_t = np.arange(math.prod(self._shape_f_t)).reshape(self._shape_f_t)
+        self._faces_left, self._faces_right = f_t[:, 0, :], f_t[:, n1, :]
+        if n1 > 1:
+            self._faces_second, self._faces_penult = f_t[:, 1, :], f_t[:, n1 - 1, :]
+
+    def __call__(self, c, v, d=None, jac_v=False):
+        """Evaluate the face fluxes and their Jacobians.
+
+        Parameters
+        ----------
+        c : array_like
+            Cell-centered values, any array with ``prod(shape)`` elements.
+        v : float or array_like
+            Face velocity (or any face weight, such as ``rho * cp * v``),
+            accepted as by :func:`construct_convflux_upwind` (through
+            :func:`create_staggered_array`): a scalar, a face-shaped or
+            broadcastable array, or a 1-D array along the convection axis.
+            Cell-centred values are interpolated to the faces, but not with
+            ``jac_v=True``. Its sign selects the stencil of each interior face.
+        d : tuple, optional
+            With ``shapes_d``: the external vectors ``(ext_left, ext_right)``
+            (``None`` for a side without a shape). Required then, ignored
+            otherwise.
+        jac_v : bool, optional
+            Also return the Jacobian with respect to ``v``.
+
+        Returns
+        -------
+        tuple
+            ``(flux, jac)``; with ``shapes_d``
+            ``(flux, jac, jac_bc_left, jac_bc_right)``; with ``jac_v=True``
+            the Jacobian with respect to ``v`` is appended. ``flux`` has the
+            face shape; apply :func:`construct_div` to ``flux.reshape(-1)``.
+            ``jac`` is ``(n_faces, n_cells)``: use ``div @ jac``.
+            ``jac_bc_*`` are ``(n_faces, prod(shapes_d[i]))`` derivatives only:
+            ``flux`` already contains the boundary data. The Jacobian with
+            respect to ``v`` is ``(n_faces, v.size)`` with its columns in the
+            order of ``v``; its entries are the face values ``c_f``. For a
+            velocity from a pressure gradient, chain it with that gradient
+            matrix.
+        """
+        n0, n1, n2 = self._shape_t
+        c = np.asarray(c, dtype=float).reshape(self._shape_t)
+        v_in = np.asarray(v, dtype=float)
+        try:
+            v_aligned = _align_to_axes(v_in, self.shape, self.axis)
+            v_t = create_staggered_array(v_in, self.shape, self.axis, x_f=self._x_f, x_c=self._x_c)
+        except ValueError:
+            raise ValueError(
+                f"v with shape {v_in.shape} does not fit the face shape {self.shape_f}"
+            ) from None
+        centred = (v_in.size > 1 and self.shape[self.axis] > 1 and v_aligned.ndim == len(self.shape)
+                   and v_aligned.shape[self.axis] == self.shape[self.axis])
+        if jac_v and centred:
+            raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
+        v_t = v_t.reshape(self._shape_f_t)
+        ext = [np.ones(1), np.ones(1)]
+        if self._with_d:
+            if d is None:
+                raise ValueError("built with shapes_d: pass d=(ext_left, ext_right)")
+            for i in range(2):
+                if self.shapes_d[i] is not None:
+                    ext[i] = np.asarray(d[i], dtype=float).reshape(-1)
+                    if ext[i].size != self._n_ext[i]:
+                        raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
+
+        c_flat = c.ravel()
+        face_bnd = (self._m_face @ c_flat + self._e_face[0] @ ext[0]
+                    + self._e_face[1] @ ext[1]).reshape(self._shape_f_t)
+        face = np.zeros(self._shape_f_t)
+        face[:, 0, :], face[:, n1, :] = face_bnd[:, 0, :], face_bnd[:, n1, :]
+        band = np.zeros((n0, n1 + 1, 4, n2))       # d c_f / d c, before the velocity
+        band[:, 0], band[:, n1] = self._band_bnd[:, 0], self._band_bnd[:, 1]
+        g_left = g_right = None
+
+        if n1 > 1:
+            up = (self._m_up @ c_flat + self._e_up[0] @ ext[0]
+                  + self._e_up[1] @ ext[1]).reshape(self._shape_f_t)
+            pos = v_t[:, 1:-1, :] > 0
+            c_U = np.where(pos, np.concatenate((up[:, :1], c[:, :-2]), axis=1),
+                           np.concatenate((c[:, 2:], up[:, n1:]), axis=1))
+            c_C = np.where(pos, c[:, :-1], c[:, 1:])
+            c_D = np.where(pos, c[:, 1:], c[:, :-1])
+            x_norm_c = np.where(pos, self._x_norm[True][0], self._x_norm[False][0])
+            x_norm_d = np.where(pos, self._x_norm[True][1], self._x_norm[False][1])
+            dc_DU = c_D - c_U
+            c_norm = np.zeros_like(c_C)
+            np.divide(c_C - c_U, dc_DU, out=c_norm, where=(dc_DU != 0))
+            phi = self.tvd_limiter(c_norm, x_norm_c, x_norm_d)
+            face[:, 1:-1, :] = c_C + phi * dc_DU
+            active = dc_DU != 0
+            dphi = np.zeros_like(c_norm)
+            if np.any(active):
+                dphi[active] = _limiter_derivative(
+                    self.tvd_limiter, c_norm[active], x_norm_c[active], x_norm_d[active])
+            w_C = 1 + dphi
+            w_D = phi - c_norm * dphi
+            w_U = -phi + (c_norm - 1) * dphi
+
+            inner = band[:, 1:-1]                    # faces 1 .. n1-1, offsets -2 .. 1
+            neg = ~pos
+            # v > 0: U = k-2, C = k-1, D = k; v <= 0: U = k+1, C = k, D = k-1
+            inner[:, :, 1] += np.where(pos, w_C, w_D)
+            inner[:, :, 2] += np.where(pos, w_D, w_C)
+            inner[:, 1:, 0] += np.where(pos[:, 1:], w_U[:, 1:], 0.0)
+            inner[:, :-1, 3] += np.where(neg[:, :-1], w_U[:, :-1], 0.0)
+            # the upwind point of face 1 (v > 0) and face n1-1 (v <= 0) is a boundary value
+            g_left = np.where(pos[:, 0], w_U[:, 0], 0.0)
+            inner[:, 0, 1] += g_left * self._up_left[0]
+            inner[:, 0, 2] += g_left * self._up_left[1]
+            g_right = np.where(neg[:, -1], w_U[:, -1], 0.0)
+            inner[:, -1, 2] += g_right * self._up_right[0]
+            inner[:, -1, 1] += g_right * self._up_right[1]
+
+        flux = (v_t * face).reshape(self.shape_f)
+        data = (band * v_t[:, :, None, :])[self._valid][self._perm]
+        jac = _sparse_array((data, self._indices.copy(), self._indptr.copy()),
+                            shape=self._shape_jac, format=self.format)
+        out = [flux, jac]
+
+        if self._with_d:
+            n_f = math.prod(self._shape_f_t)
+            v_flat = v_t.ravel()
+            on_bnd = np.zeros(n_f)
+            on_bnd[self._faces_left.ravel()] = 1.0
+            on_bnd[self._faces_right.ravel()] = 1.0
+            scale_bnd = csr_array((v_flat * on_bnd, (np.arange(n_f), np.arange(n_f))), shape=(n_f, n_f))
+            for i, g, rows, cols in (
+                (0, g_left, "_faces_second", "_faces_left"),
+                (1, g_right, "_faces_penult", "_faces_right"),
+            ):
+                jac_bc = scale_bnd @ self._e_face[i]
+                if g is not None:
+                    r, k = getattr(self, rows).ravel(), getattr(self, cols).ravel()
+                    chain = csr_array(((v_flat[r] * g.ravel()), (r, k)), shape=(n_f, n_f))
+                    jac_bc = jac_bc + chain @ self._e_up[i]
+                out.append(jac_bc.asformat(self.format))
+
+        if jac_v:
+            n_f = math.prod(self._shape_f_t)
+            v_cols = create_staggered_array(np.arange(v_in.size).reshape(v_in.shape), self.shape,
+                                            self.axis, x_f=self._x_f, x_c=self._x_c).ravel()
+            out.append(_sparse_array((face.ravel(), (np.arange(n_f), v_cols)),
+                                     shape=(n_f, v_in.size), format=self.format))
+        return tuple(out)

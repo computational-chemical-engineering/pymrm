@@ -92,8 +92,9 @@ diffusivity, electrochemical fluxes. Also acceptable for a quick prototype.
 
 Not for TVD flux limiters: a limited face value reads two cells upwind, wider
 than the stencil `axes_diagonals` can declare; a van Leer residual gave a 38 %
-Jacobian error with no warning. Use deferred correction instead (`api-map.md`,
-structure S5).
+Jacobian error with no warning. Use `ConvFluxTVD`, which returns the exact
+Jacobian (`api-map.md`, pitfalls P10); deferred correction only inside a time
+step.
 
 Costs and risks:
 - An incomplete stencil gives a WRONG Jacobian without warning. In the exemplar,
