@@ -67,6 +67,16 @@ Keep it fast:
 - avoid calling `update_array_indices` and summing sparse blocks on every
   Jacobian evaluation: that is the 6.4 ms row above.
 
+No index is computed by hand. A coupling block is built on the shapes of the
+two domains it connects and placed with offsets; a block between two fields of
+the same cells is a diagonal on a one-field sub-shape `(n, 1)` placed at the
+(row field, column field) offsets (the membrane exemplar). A block that needs a
+domain's boundary uses `construct_boundary_value_matrices`, or an identity
+placed with `update_array_indices` to select boundary-face rows (api-map,
+"Reaching a boundary"). A sparse matrix built from `(data, (rows, cols))` index
+arrays, or `ravel_multi_index`, in model code is the sign that a block was built
+by hand (`check_model.py` reports it as IDX).
+
 `update_csc_array_indices` is deprecated; use `update_array_indices`.
 
 ## C, full-residual NumJac

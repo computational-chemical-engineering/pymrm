@@ -14,7 +14,7 @@ physics.
 |---|---|---|
 | Several domains in one Newton system, each with its own operators and fields | `exemplars/membrane_reactor.py` (countercurrent retentate and permeate) | sub-shapes per domain, `update_array_indices` with rectangular coupling blocks, constant blocks placed once |
 | Pressure and flow solved together; velocity depends on the state | `exemplars/darcy_gas_reactor.py` (Darcy flow, ideal gas, reaction) | face velocity from `construct_grad` of pressure; flux as a product, Jacobian by the product rule |
-| Nested scales: a particle (or film, washcoat) at every reactor cell | `exemplars/nested_particle_bed.py` (plug-flow bed, resolved spheres, film) | `construct_grad(..., shapes_d=...)` for the bulk-dependent surface condition; Schur complement as a custom `newton` solver |
+| Nested scales: a particle (or film, washcoat) at every reactor cell | `exemplars/nested_particle_bed.py` (plug-flow bed, resolved spheres, film) | `construct_grad(..., shapes_d=...)` for the bulk-dependent surface condition, an identity placed with `update_array_indices` to select the surface face; Schur complement as a custom `newton` solver |
 
 ## Monolithic first
 
@@ -38,13 +38,22 @@ residual on it with `residual_check`) and say why monolithic was not used.
    the same grid can share one state with the domains as field slices (the
    membrane exemplar: `(n, 3)` = retentate A, retentate B, permeate B). Domains
    on different grids get their own sub-shapes placed in one flat vector (the
-   nested exemplar: bulk `(n_z, 1)` then particles `(n_z, n_r, 1)`).
+   nested exemplar: bulk `(n_z, 1)` then particles `(n_z, n_r, 1)`), or, when
+   one domain hangs off every cell of the other and has the same fields, one
+   more position along an axis: a bulk value at `j = n_r` after the particle
+   cells, `(n_z, n_r + 1, m)`; a wall value at `j = 0` before the fluid cells.
+   That layout suits a monolithic sparse solve; the exemplar's Schur solver
+   needs the bulk-first flat vector.
 2. **Operators per domain,** on the domain's own sub-shape, grid and boundary
    conditions. Write each bc's physical equation beside it (pitfalls P1).
 3. **Coupling blocks.** Interphase transfer, membrane fluxes and source terms
    that connect domains are blocks with rows of one domain and columns of the
    other; place them with `update_array_indices(block, (rows_shape,
-   cols_shape), full_shape, offset=(row_offset, col_offset))`.
+   cols_shape), full_shape, offset=(row_offset, col_offset))`. Never compute a
+   flat index by hand: a coupling through a boundary uses
+   `construct_boundary_value_matrices` (rows on the boundary shape) or an
+   identity placed with `update_array_indices` to select boundary rows
+   (conventions `api-map.md`, "Reaching a boundary").
 4. **Place constant blocks once.** State-dependent local blocks: `NumJac` on the
    stacked state, or a precomputed placed pattern (`assembly-styles.md`).
 5. **Check the Jacobian** once with `check_jacobian` at a state away from the
@@ -82,6 +91,10 @@ returns boundary terms.
   `shapes_d` the dictionary's `d` is the COEFFICIENT on that vector (`d = Bi`,
   not `Bi * c_b`; pitfalls P5), and `shape_d` must broadcast to the boundary
   shape.
+- The outer domain sees the surface flux: take the gradient rows at the outer
+  face with an identity placed by `update_array_indices` (conventions
+  `api-map.md`, "Reaching a boundary"; the exemplar). Going through the surface
+  value `Bi (c_b - c_s)` loses digits for a large Bi.
 - The inner Jacobian is block diagonal (one particle per outer cell). Eliminate
   it with a Schur complement inside the linear solve: pass a function as
   `newton(..., solver=...)` that receives the blocks and returns the update.

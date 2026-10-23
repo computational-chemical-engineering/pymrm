@@ -101,3 +101,29 @@ def test_math_checker_flags_only_the_risky_part():
 def test_exemplar_notebook_maths_is_portable(notebook):
     findings, _ = _math_checker().check(notebook)
     assert not findings, findings
+
+
+def _checker_module():
+    spec = importlib.util.spec_from_file_location("check_model_script", CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_checker_flags_hand_indices():
+    scan = _checker_module().scan_source
+    bad = "\n".join([
+        "outer = np.arange(n_z) * (n_r + 1) + n_r",                       # 1: plain arithmetic, not flagged alone
+        "sel = csc_array((np.ones(n), (np.arange(n), outer)), shape=(n, m))",
+        "idx = np.ravel_multi_index((i, j), shape)",
+        "t = np.arange(ns + 1) * dt",                                     # a time grid is fine
+        "lam = (np.arange(n_terms) + 0.5) * np.pi",                       # a series is fine
+        "blk = coo_array(",
+        "    (vals, (rows, cols)), shape=(n, n))",
+    ])
+    assert [number for number, _ in scan(bad)] == [2, 3, 6]
+
+
+@pytest.mark.parametrize("path", EXEMPLARS, ids=lambda p: p.stem)
+def test_exemplars_compute_no_index_by_hand(path):
+    assert _checker_module().scan_source(path.read_text()) == []
