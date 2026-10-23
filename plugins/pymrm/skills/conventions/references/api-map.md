@@ -59,10 +59,10 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 - The linear solve is a direct sparse LU at every size (from 3.0.0; before,
   `solver=None` switched to ILU-BiCGSTAB above 50 000 unknowns). Iterative
   solvers only on request: `solver="bicgstab"`. Keep LU in 1-D and 2-D; for a
-  large 3-D model pass an object with `factorize(jac)` returning an object with
+  3-D model pass an object with `factorize(jac)` returning an object with
   `.solve(rhs)`, for example AMG-preconditioned CG (example
-  `newton_linear_solvers.ipynb`: at 50^3 cells AMG 15 s, LU 449 s; at 200^2
-  LU 0.7 s, AMG 9.7 s).
+  `newton_linear_solvers.ipynb`: at 50^3 cells AMG 2.1 s, ILU-GMRES 48 s,
+  LU 432 s; at 200^2 LU 0.65 s, AMG 0.58 s).
 - `result.fun` is the residual of the last evaluated iterate: for a converged
   solve the one before the final step (as before). `result.status` says why it
   stopped; `result.history` holds the step norm and damping per iteration
