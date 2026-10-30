@@ -10,7 +10,7 @@ import warnings
 
 import numpy as np
 import pytest
-from scipy.sparse import csc_array, diags_array
+from scipy.sparse import csc_array, csr_array, diags_array, eye_array
 from scipy.sparse.linalg import splu
 
 from pymrm import NewtonBreakdown, NumJac, construct_div, construct_grad, newton
@@ -75,6 +75,18 @@ def test_backward_error_judges_a_dead_zone_against_its_field():
     fun, shape, _ = _pellet(lambda c: 900.0 * c, n=100)       # phi = 30, first order
     res = newton(fun, np.ones(shape), backward_tol=1e-8)
     assert res.status == 0 and res.nit <= 3
+
+
+def test_row_scale_and_backward_error_independent_of_sparse_format():
+    from scipy.sparse import random_array
+    from pymrm.solve import _backward_error, _row_scale
+    rng = np.random.default_rng(0)
+    jac = random_array((20, 20), density=0.3, random_state=rng, format="csc") + 3 * eye_array(20)
+    jac = csc_array(jac)
+    g, x, ref = rng.standard_normal(20), rng.standard_normal(20), np.abs(rng.standard_normal(20))
+    np.testing.assert_array_equal(_row_scale(jac), _row_scale(csr_array(jac)))
+    assert _backward_error(g, jac, x, ref) == _backward_error(g, csr_array(jac), x, ref)
+    assert _backward_error(g, jac, x, ref) == _backward_error(g, jac.toarray(), x, ref)
 
 
 # ---------------------------------------------------------------------------

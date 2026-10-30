@@ -543,23 +543,27 @@ class BlockLayout:
             )
         return values.reshape(part.shape)
 
-    def pick(self, name):
+    def pick(self, name, format="csc"):
         """Selection matrix of domain ``name``.
 
         Parameters
         ----------
         name : str
             Domain name.
+        format : {'csc', 'csr'}, optional
+            Sparse storage format. Default is ``'csc'``, like the operators.
 
         Returns
         -------
-        scipy.sparse.csr_array
+        scipy.sparse.csc_array or scipy.sparse.csr_array
             Shape ``(n_name, size)``: ``pick @ u`` extracts the domain in its C
             order, ``pick.T @ v`` scatters a domain vector into the state.
         """
         cols = self.index(name).ravel()
-        return csr_array(
-            (np.ones(cols.size), cols, np.arange(cols.size + 1)), shape=(cols.size, self.size)
+        return _sparse_array(
+            (np.ones(cols.size), (np.arange(cols.size), cols)),
+            shape=(cols.size, self.size),
+            format=format,
         )
 
     def place(self, block, rows, cols):

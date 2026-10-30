@@ -100,13 +100,37 @@ def test_pick_extracts_and_scatters():
         u = RNG.standard_normal(layout.size)
         for name, shape in layout.shapes.items():
             pick = layout.pick(name)
-            assert isinstance(pick, csr_array)
+            assert isinstance(pick, csc_array)
             assert pick.shape == (int(np.prod(shape)), layout.size)
             np.testing.assert_array_equal(pick @ u, layout.view(u, name).ravel())
             v = RNG.standard_normal(pick.shape[0])
             scattered = np.zeros(layout.size)
             layout.put(scattered, name, v)
             np.testing.assert_array_equal(pick.T @ v, scattered)
+
+
+@pytest.mark.parametrize("fmt, cls", [("csc", csc_array), ("csr", csr_array)])
+def test_pick_format(fmt, cls):
+    layout = _layouts()[0]
+    u = RNG.standard_normal(layout.size)
+    for name in layout.shapes:
+        pick = layout.pick(name, format=fmt)
+        assert isinstance(pick, cls) and pick.format == fmt
+        np.testing.assert_array_equal(pick @ u, layout.view(u, name).ravel())
+
+
+def test_pick_default_is_csc_and_bad_format_raises():
+    layout = _layouts()[0]
+    assert layout.pick("d0").format == "csc"
+    with pytest.raises(ValueError):
+        layout.pick("d0", format="coo")
+
+
+def test_pick_times_csc_stays_csc():
+    layout = _layouts()[0]
+    n = layout.pick("d0").shape[1]
+    m = csc_array(RNG.standard_normal((n, n)))
+    assert (layout.pick("d0") @ m).format == "csc"
 
 
 # -- 2. place against pick -------------------------------------------------------
