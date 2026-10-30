@@ -467,3 +467,103 @@ def test_continuation_from_a_zero_solution_with_a_repeated_value():
         res = continuation(fun, np.zeros(n), [0.0, 1.0, 1.0, 2.0, 3.0, 3.6])
     assert res.params == [0.0, 1.0, 1.0, 2.0, 3.0]
     assert not res.success and 3.4 < res.last_param < 3.514
+
+
+def _bratu(n=50):
+    h = 1.0 / (n + 1)
+    lap = diags_array([np.ones(n - 1), -2.0 * np.ones(n), np.ones(n - 1)],
+                      offsets=[-1, 0, 1]) / h**2
+
+    def fun(u, lam):
+        return lap @ u + lam * np.exp(u), (lap + diags_array(lam * np.exp(u))).tocsc()
+    return fun, n
+
+
+def _plain_secant_predictions(path_p, path_x, p):
+    """The predictor of pymrm 3.1.0: always the secant through the last two solutions."""
+    if len(path_p) < 2:
+        yield path_x[-1].copy(), False
+        return
+    ratio = (p - path_p[-1]) / (path_p[-1] - path_p[-2])
+    yield path_x[-1] + ratio * (path_x[-1] - path_x[-2]), True
+
+
+def test_continuation_through_nearly_equal_values():
+    """0.2 and 0.2 + 1e-16: the secant ratio between them is about 5e14."""
+    from pymrm import continuation
+
+    def fun(c, phi):
+        return _weisz_hicks(phi=phi, gamma=20.0, beta=0.6)[0](c)
+    _, shape = _weisz_hicks(phi=0.1, gamma=20.0, beta=0.6)
+    plain = list(np.linspace(0.1, 0.5, 9))
+    near = plain[:3] + [plain[2] + 1e-16] + plain[3:]
+    options = {"tol": 1e-6}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ref = continuation(fun, np.ones(shape), plain, newton_kwargs=options)
+        res = continuation(fun, np.ones(shape), near, newton_kwargs=options)
+    assert ref.success
+    assert res.success, res.message
+    assert res.params == near
+    xs = res.xs[:3] + res.xs[4:]
+    for x, x_ref in zip(xs, ref.xs):
+        np.testing.assert_allclose(x, x_ref, atol=1e-6)
+
+
+def test_continuation_recovers_from_halved_steps(monkeypatch):
+    """Bratu with a 3-evaluation corrector: 0.5 to 3 takes several halvings."""
+    import pymrm.solve
+    from pymrm import continuation
+    fun, n = _bratu()
+    params = [0.0, 0.5, 3.0]
+    options = {"maxfev": 3}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), params, newton_kwargs=options)
+    assert res.success, res.message
+    assert res.last_param == 3.0
+    for lam, x in zip(res.params, res.xs):
+        assert np.max(np.abs(fun(x, lam)[0])) < 1e-6
+    # every prediction tried first is the plain secant, so the march is unchanged
+    monkeypatch.setattr(pymrm.solve, "_continuation_predictions", _plain_secant_predictions)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        old = continuation(fun, np.zeros(n), params, newton_kwargs=options)
+    assert old.params == res.params
+    for x, x_old in zip(res.xs, old.xs):
+        np.testing.assert_array_equal(x, x_old)
+
+
+def test_continuation_unchanged_for_well_spaced_values(monkeypatch):
+    """The fold march of the test above is bit-identical to the plain secant."""
+    import pymrm.solve
+    from pymrm import continuation
+
+    def fun(c, phi):
+        return _weisz_hicks(phi=phi, gamma=20.0, beta=0.6)[0](c)
+    _, shape = _weisz_hicks(phi=0.1, gamma=20.0, beta=0.6)
+
+    def march():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return (continuation(fun, np.ones(shape), np.linspace(0.1, 0.6, 11)),
+                    continuation(fun, np.zeros(shape), np.linspace(0.6, 0.1, 11)))
+    new = march()
+    monkeypatch.setattr(pymrm.solve, "_continuation_predictions", _plain_secant_predictions)
+    old = march()
+    for a, b in zip(new, old):
+        assert a.params == b.params and a.last_param == b.last_param
+        assert a.message == b.message and "fold" in a.message
+        for x, x_old in zip(a.xs, b.xs):
+            np.testing.assert_array_equal(x, x_old)
+
+
+def test_continuation_names_no_fold_after_a_constant_prediction():
+    """A corrector budget too small for any step: no secant was ever available."""
+    from pymrm import continuation
+    fun, n = _bratu()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [0.0, 3.0], newton_kwargs={"maxfev": 1})
+    assert not res.success
+    assert "fold" not in res.message and "constant predictor" in res.message

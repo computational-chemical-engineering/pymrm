@@ -32,7 +32,7 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | hard nonlinear solve | `newton(..., damping="guarded"/"monotone", scale=..., bounds=..., backward_tol=1e-8, stagnation=True, refresh=...)` (from 3.0.0) | see "Hard nonlinear problems" below |
 | keep iterates where the residual is defined | `newton(..., bounds=(lower, upper))` (from 3.0.0); older: `clip_approach(values, dummy, lower_bounds=0)` as the `newton` callback | bounds for `T > 0`, `log`, `sqrt`; prefer kinetics smooth through zero over a bound at zero |
 | steady state by pseudo-time stepping | `pseudo_transient(fun, x0, mass, dt)` (from 3.0.0) | when Newton from the guess fails; `mass` in the units of the time term |
-| solutions along a parameter | `continuation(fun_p, x0, params)` (from 3.0.0) | warm starts with a secant predictor; stops at a fold instead of jumping branches |
+| solutions along a parameter | `continuation(fun_p, x0, params)` (from 3.0.0) | warm starts with a secant predictor; stops at a fold instead of jumping branches. Up to 3.1.0 two nearly equal values in `params` (`0.1` and `1 - 0.9`) can stop the march with a false fold report: drop such repeats there; later versions retry with a bounded predictor |
 | see what a bc dictionary means | `describe_bc(bc, x_f)` (after 2.3.1) | prints each end as an equation in x (pitfalls P1) |
 | stirred-volume or tank outlet | `{"outflow": True}` as the bc dictionary (after 2.3.1) | face value = adjacent cell (pitfalls P6) |
 | Jacobian, refinement, threshold and residual checks | `pymrm.checks` (after 2.3.1; copy in `scripts/pymrm_checks.py`) | see `numerics.md` |
