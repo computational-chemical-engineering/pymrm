@@ -16,8 +16,9 @@ what the instrumentation saw. It catches, at run time:
 - deprecated update_csc_array_indices calls;
 - IDX (read from the source, not at run time): flat indices computed by hand,
       a ravel_multi_index call or a sparse matrix built from (data, (rows, cols))
-      index arrays, where update_array_indices (an identity placed at a boundary
-      selects its rows) or construct_boundary_value_matrices should do it.
+      index arrays, where BlockLayout (place blocks by domain name; pick
+      selects a domain or boundary-face rows), update_array_indices or
+      construct_boundary_value_matrices should do it.
 
 A clean report is not proof of correctness; it only means these symptoms were
 not seen on the code paths the run executed.
@@ -126,7 +127,7 @@ def main():
     script = sys.argv[1]
     sys.argv = sys.argv[1:]
     for number, message in scan_source(open(script, encoding="utf-8").read()):
-        _note("IDX", f"line {number}: {message}; place blocks with update_array_indices and reach "
+        _note("IDX", f"line {number}: {message}; place blocks with pymrm.BlockLayout and reach "
                      "boundaries as in api-map.md, 'Reaching a boundary'")
     status = 0
     try:

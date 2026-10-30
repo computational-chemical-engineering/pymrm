@@ -35,7 +35,7 @@ Checks, each able to fail:
 import numpy as np
 from scipy.sparse import diags_array
 
-from pymrm import construct_convflux_upwind, construct_div, construct_grad, newton, update_array_indices
+from pymrm import BlockLayout, construct_convflux_upwind, construct_div, construct_grad, newton
 
 try:
     from pymrm.checks import check_jacobian
@@ -68,12 +68,9 @@ class DarcyGasReactor:
         self.interp = [(conv_p.tocsr(), conv_p_bc.toarray().ravel()),
                        (conv_c.tocsr(), conv_c_bc.toarray().ravel())]
         self.reaction = K_RXN * diags_array(np.ones(n_z))
-        self.field = field
+        # the (n, 2) state is np.concatenate([p, c_A], axis=-1) of two (n, 1) fields
+        self.layout = BlockLayout({"p": field, "c_A": field}, axis=-1)
         self.u_inlet = (P_IN**2 - P_OUT**2) / 2.0 / P_IN   # exact inlet velocity
-
-    def place(self, block, i, j):
-        """Put a field-by-field block into rows of field i and columns of field j."""
-        return update_array_indices(block, (self.field, self.field), self.shape, offset=((0, i), (0, j)))
 
     def velocity(self, p):
         return -(self.grad @ p + self.grad_bc)
@@ -87,19 +84,19 @@ class DarcyGasReactor:
         p = state[:, 0]
         u = self.velocity(p)
         g = np.empty(self.shape)
-        blocks = []
+        blocks = []                    # (block, row field, column field)
+        names = ("p", "c_A")
         for i, x in enumerate((p, state[:, 1])):
             conv, conv_bc = self.interp[i]
             face = conv @ x + conv_bc
             u_i = u if i == 0 else self.species_velocity(p)
             g[:, i] = self.div @ (u_i * face)
-            blocks.append((i, i, self.div @ diags_array(u_i) @ conv))
+            blocks.append((self.div @ diags_array(u_i) @ conv, names[i], names[i]))
             if i == 0 or not self.frozen:
-                blocks.append((i, 0, self.div @ diags_array(face) @ (-self.grad)))
+                blocks.append((self.div @ diags_array(face) @ (-self.grad), names[i], "p"))
         g[:, 1] += K_RXN * state[:, 1]
-        blocks.append((1, 1, self.reaction))
-        jac = sum(self.place(block, i, j) for i, j, block in blocks)
-        return g.reshape(-1, 1), jac.tocsc()
+        blocks.append((self.reaction, "c_A", "c_A"))
+        return g.reshape(-1, 1), self.layout.assemble(blocks)
 
     def solve(self):
         guess = np.empty(self.shape)

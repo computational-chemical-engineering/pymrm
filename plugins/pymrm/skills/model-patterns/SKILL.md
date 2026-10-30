@@ -12,9 +12,9 @@ physics.
 
 | Pattern | Exemplar | Key pymrm pieces |
 |---|---|---|
-| Several domains in one Newton system, each with its own operators and fields | `exemplars/membrane_reactor.py` (countercurrent retentate and permeate) | sub-shapes per domain, `update_array_indices` with rectangular coupling blocks, constant blocks placed once |
+| Several domains in one Newton system, each with its own operators and fields | `exemplars/membrane_reactor.py` (countercurrent retentate and permeate) | sub-shapes per domain, `BlockLayout` (channels concatenated along the field axis) with rectangular coupling blocks, per-cell coupling by `construct_coefficient_matrix`, constant blocks placed once |
 | Pressure and flow solved together; velocity depends on the state | `exemplars/darcy_gas_reactor.py` (Darcy flow, ideal gas, reaction) | face velocity from `construct_grad` of pressure; flux as a product, Jacobian by the product rule |
-| Nested scales: a particle (or film, washcoat) at every reactor cell | `exemplars/nested_particle_bed.py` (plug-flow bed, resolved spheres, film) | `construct_grad(..., shapes_d=...)` for the bulk-dependent surface condition, an identity placed with `update_array_indices` to select the surface face; Schur complement as a custom `newton` solver |
+| Nested scales: a particle (or film, washcoat) at every reactor cell | `exemplars/nested_particle_bed.py` (plug-flow bed, resolved spheres, film) | `construct_grad(..., shapes_d=...)` for the bulk-dependent surface condition, `BlockLayout(...).pick` over the face space to select the surface face; Schur complement as a custom `newton` solver |
 
 ## Monolithic first
 
@@ -48,12 +48,17 @@ residual on it with `residual_check`) and say why monolithic was not used.
    conditions. Write each bc's physical equation beside it (pitfalls P1).
 3. **Coupling blocks.** Interphase transfer, membrane fluxes and source terms
    that connect domains are blocks with rows of one domain and columns of the
-   other; place them with `update_array_indices(block, (rows_shape,
-   cols_shape), full_shape, offset=(row_offset, col_offset))`. Never compute a
-   flat index by hand: a coupling through a boundary uses
-   `construct_boundary_value_matrices` (rows on the boundary shape) or an
-   identity placed with `update_array_indices` to select boundary rows
-   (conventions `api-map.md`, "Reaching a boundary").
+   other. Declare the layout once, `layout = BlockLayout({"particle":
+   shape_p, "bulk": shape_b}, axis=1)` (the state is `np.concatenate` of the
+   domains along `axis`; `axis=None` for region-major domains with different
+   field counts), and place blocks by domain name with
+   `layout.assemble([(block, rows, cols), ...])`; `layout.put`/`layout.view`
+   reach a domain's part of a vector. `update_array_indices` stays the
+   low-level tool underneath. Never compute a flat index by hand: a coupling
+   through a boundary uses `construct_boundary_value_matrices` (rows on the
+   boundary shape) or a selection of the boundary-face rows (`pick` of a
+   layout over the face space, or an identity placed with
+   `update_array_indices`; conventions `api-map.md`, "Reaching a boundary").
 4. **Place constant blocks once.** State-dependent local blocks: `NumJac` on the
    stacked state, or a precomputed placed pattern (`assembly-styles.md`).
 5. **Check the Jacobian** once with `check_jacobian` at a state away from the
@@ -92,7 +97,7 @@ returns boundary terms.
   not `Bi * c_b`; pitfalls P5), and `shape_d` must broadcast to the boundary
   shape.
 - The outer domain sees the surface flux: take the gradient rows at the outer
-  face with an identity placed by `update_array_indices` (conventions
+  face with `pick` of a `BlockLayout` over the faces (conventions
   `api-map.md`, "Reaching a boundary"; the exemplar). Going through the surface
   value `Bi (c_b - c_s)` loses digits for a large Bi.
 - The inner Jacobian is block diagonal (one particle per outer cell). Eliminate

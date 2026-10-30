@@ -15,7 +15,7 @@ same system, at n = 20 000 cells (40 000 unknowns):
 | Variant | ms |
 |---|---|
 | A, operator sum (NumJac on the local source) | 2.4 |
-| B, block assembly, blocks re-placed with `update_array_indices` every call | 6.4 |
+| B, block assembly, blocks re-placed every call (`update_array_indices`; `BlockLayout.assemble` measured the same within 10 %) | 6.4 |
 | B, block assembly, placed pattern precomputed, values scattered per call | 1.1 |
 | C, full-residual NumJac | 4.1 |
 | one `spsolve` of the Jacobian | 18 |
@@ -51,8 +51,17 @@ visible and nameable, and the `NumJac` stencil is the default one.
 
 Each field and each coupling is its own block, built on its own sub-shape with
 its own operators and boundary conditions, and placed into the monolithic state
-with `update_array_indices(block, (rows_shape, cols_shape), full_shape,
-offset=(row_offset, col_offset))`. Off-diagonal (coupling) blocks are
+by domain name with a `BlockLayout` (api-map, "Domains in one state"):
+
+```python
+layout = BlockLayout({"c": (n, 1), "T": (n, 1)}, axis=-1)   # state (n, 2) = [c, T]
+jac_const = layout.assemble([(jac_cc, "c", "c"), (jac_tt, "T", "T")])   # once
+jac = jac_const + layout.assemble([(diags_array(dr_dt), "c", "T"), ...])
+```
+
+The state is `np.concatenate` of the domains along `axis` (`axis=None` for
+region-major domains); `place` checks each block's size against its domains and
+calls `update_array_indices` underneath. Off-diagonal (coupling) blocks are
 rectangular. This is how models with different fields, grids or domains are
 built: species, pressure and temperature with their own operators; retentate,
 membrane and permeate; a particle coupled to a reactor. It is the natural style
@@ -64,16 +73,18 @@ Keep it fast:
   state (A inside the block structure; as fast as A), or precompute the placed
   sparsity pattern once and scatter new values into it each call (the
   `BlockPattern` class in the exemplar; the fastest variant measured);
-- avoid calling `update_array_indices` and summing sparse blocks on every
-  Jacobian evaluation: that is the 6.4 ms row above.
+- avoid placing and summing sparse blocks on every Jacobian evaluation
+  (`layout.assemble` of state-dependent blocks, or `update_array_indices`):
+  that is the 6.4 ms row above.
 
 No index is computed by hand. A coupling block is built on the shapes of the
-two domains it connects and placed with offsets; a block between two fields of
-the same cells is a diagonal on a one-field sub-shape `(n, 1)` placed at the
-(row field, column field) offsets (the membrane exemplar). A block that needs a
-domain's boundary uses `construct_boundary_value_matrices`, or an identity
-placed with `update_array_indices` to select boundary-face rows (api-map,
-"Reaching a boundary"). A sparse matrix built from `(data, (rows, cols))` index
+two domains it connects and placed by their names; a block between fields of
+the same cells is either a diagonal on one-field domains `(n, 1)` (this
+exemplar, the Darcy exemplar) or one small matrix per cell from
+`construct_coefficient_matrix(M, shape=((n, k, 1), (n, 1, l)))` (the membrane
+exemplar). A block that needs a domain's boundary uses
+`construct_boundary_value_matrices`, or `pick` of a layout over the faces to
+select boundary-face rows (api-map, "Reaching a boundary"). A sparse matrix built from `(data, (rows, cols))` index
 arrays, or `ravel_multi_index`, in model code is the sign that a block was built
 by hand (`check_model.py` reports it as IDX).
 
