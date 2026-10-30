@@ -1070,6 +1070,39 @@ def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_
     return result(False, "max_steps reached without a converged steady solve", int(max_steps))
 
 
+_MAX_SECANT_RATIO = 4.0
+
+
+def _continuation_predictions(path_p, path_x, p):
+    """Predictions of the solution at ``p``, in the order to try them.
+
+    Yields ``(guess, bounded)`` pairs; ``bounded`` is true for a secant that
+    extrapolates at most ``_MAX_SECANT_RATIO`` times the parameter distance
+    it is based on. First the secant through the last two solutions. When
+    its ratio exceeds the bound it amplifies the Newton tolerance error of
+    those two solutions: nearly equal parameter values (``0.1`` and
+    ``1 - 0.9``) give a ratio near 1e14 and a prediction no halving repairs.
+    It is then followed by the secant from the most recent earlier solution
+    within the bound, or by the last solution when there is none.
+    """
+    if len(path_p) < 2:
+        yield path_x[-1].copy(), False
+        return
+    step = p - path_p[-1]
+    base = path_p[-1] - path_p[-2]
+    if base != 0:
+        ratio = step / base
+        yield path_x[-1] + ratio * (path_x[-1] - path_x[-2]), abs(ratio) <= _MAX_SECANT_RATIO
+        if abs(ratio) <= _MAX_SECANT_RATIO:
+            return
+    for k in range(len(path_p) - 3, -1, -1):
+        base = path_p[-1] - path_p[k]
+        if base != 0 and abs(step) <= _MAX_SECANT_RATIO * abs(base):
+            yield path_x[-1] + (step / base) * (path_x[-1] - path_x[k]), True
+            return
+    yield path_x[-1].copy(), False
+
+
 def continuation(function, initial_guess, params, *, max_halvings=6, max_change=0.2,
                  newton_kwargs=None, verbose=0):
     """Solve ``function(x, p) = 0`` along a sequence of parameter values.
@@ -1084,6 +1117,16 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
     reports where; the fold lies between the last parameter reached and the
     next one. Following a branch around a fold needs arclength continuation,
     which this function does not do.
+
+    A secant over more than 4 times the step it is based on also multiplies
+    the Newton tolerance error of the two solutions, without bound for nearly
+    equal parameter values (``0.1`` and ``1 - 0.9``). When such a prediction
+    fails, the step is retried before any halving from the secant through an
+    earlier solution at least a quarter of the step back, or else from the
+    last solution. Nearly equal values in ``params`` are therefore harmless;
+    exactly equal ones are not solved again. The fold diagnosis in the
+    message is given only when the last prediction tried was a secant within
+    that bound.
 
     Parameters
     ----------
@@ -1131,18 +1174,16 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
         halvings = 0
         p = target
         while True:
-            if len(path_p) >= 2:
-                ratio = (p - path_p[-1]) / (path_p[-1] - path_p[-2])
-                guess = path_x[-1] + ratio * (path_x[-1] - path_x[-2])
-            else:
-                guess = path_x[-1].copy()
-            res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
-            jumped = False
-            if res.success and max_change is not None and len(path_p) >= 2:
-                # no prediction to compare with before the second point
-                size = max(float(np.max(np.abs(path_x[-1]))), float(np.max(np.abs(res.x))),
-                           np.finfo(float).tiny)
-                jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
+            for guess, bounded in _continuation_predictions(path_p, path_x, p):
+                res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
+                jumped = False
+                if res.success and max_change is not None and len(path_p) >= 2:
+                    # no prediction to compare with before the second point
+                    size = max(float(np.max(np.abs(path_x[-1]))),
+                               float(np.max(np.abs(res.x))), np.finfo(float).tiny)
+                    jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
+                if res.success and not jumped:
+                    break
             if res.success and not jumped:
                 path_p.append(p)
                 path_x.append(res.x.copy())
@@ -1159,11 +1200,15 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
             if halvings > max_halvings:
                 why = ("the corrector jumps to another solution branch" if jumped
                        else f"the corrector fails ({res.message})")
+                if bounded:
+                    why += "; probably a turning point (fold) of the solution branch"
+                else:
+                    why += (" from the constant predictor (no earlier solution far enough "
+                            "back for a secant)")
                 return OptimizeResult(
                     x=path_x[-1], success=False, params=done, xs=xs, results=results,
                     last_param=path_p[-1],
-                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}; "
-                            "probably a turning point (fold) of the solution branch")
+                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
             p = path_p[-1] + 0.5 * (p - path_p[-1])
     return OptimizeResult(x=path_x[-1], success=True, params=done, xs=xs, results=results,
                           last_param=path_p[-1], message="Reached every parameter value")
