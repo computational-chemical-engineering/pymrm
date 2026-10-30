@@ -84,19 +84,19 @@ class DarcyGasReactor:
         p = state[:, 0]
         u = self.velocity(p)
         g = np.empty(self.shape)
-        blocks = []                    # (block, row field, column field)
+        place = self.layout.place
         names = ("p", "c_A")
+        jac = place(self.reaction, "c_A", "c_A")
         for i, x in enumerate((p, state[:, 1])):
             conv, conv_bc = self.interp[i]
             face = conv @ x + conv_bc
             u_i = u if i == 0 else self.species_velocity(p)
             g[:, i] = self.div @ (u_i * face)
-            blocks.append((self.div @ diags_array(u_i) @ conv, names[i], names[i]))
+            jac = jac + place(self.div @ diags_array(u_i) @ conv, names[i], names[i])
             if i == 0 or not self.frozen:
-                blocks.append((self.div @ diags_array(face) @ (-self.grad), names[i], "p"))
+                jac = jac + place(self.div @ diags_array(face) @ (-self.grad), names[i], "p")
         g[:, 1] += K_RXN * state[:, 1]
-        blocks.append((self.reaction, "c_A", "c_A"))
-        return g.reshape(-1, 1), self.layout.assemble(blocks)
+        return g.reshape(-1, 1), jac.tocsc()
 
     def solve(self):
         guess = np.empty(self.shape)

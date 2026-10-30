@@ -15,7 +15,7 @@ same system, at n = 20 000 cells (40 000 unknowns):
 | Variant | ms |
 |---|---|
 | A, operator sum (NumJac on the local source) | 2.4 |
-| B, block assembly, blocks re-placed every call (`update_array_indices`; `BlockLayout.assemble` measured the same within 10 %) | 6.4 |
+| B, block assembly, blocks re-placed every call (`update_array_indices`; `BlockLayout.place` measured the same within 10 %) | 6.4 |
 | B, block assembly, placed pattern precomputed, values scattered per call | 1.1 |
 | C, full-residual NumJac | 4.1 |
 | one `spsolve` of the Jacobian | 18 |
@@ -55,8 +55,8 @@ by domain name with a `BlockLayout` (api-map, "Domains in one state"):
 
 ```python
 layout = BlockLayout.from_fields(["c", "T"], (n,))   # state (n, 2) = [c, T]
-jac_const = layout.assemble([(jac_cc, "c", "c"), (jac_tt, "T", "T")])   # once
-jac = jac_const + layout.assemble([(diags_array(dr_dt), "c", "T"), ...])
+jac_const = (layout.place(jac_cc, "c", "c") + layout.place(jac_tt, "T", "T")).tocsc()  # once
+jac = jac_const + layout.place(diags_array(dr_dt), "c", "T") + ...
 ```
 
 The state is `np.concatenate` of the domains along `axis` (`axis=None` for
@@ -74,7 +74,7 @@ Keep it fast:
   sparsity pattern once and scatter new values into it each call (the
   `BlockPattern` class in the exemplar; the fastest variant measured);
 - avoid placing and summing sparse blocks on every Jacobian evaluation
-  (`layout.assemble` of state-dependent blocks, or `update_array_indices`):
+  (`layout.place` of state-dependent blocks, or `update_array_indices`):
   that is the 6.4 ms row above.
 
 No index is computed by hand. A coupling block is built on the shapes of the

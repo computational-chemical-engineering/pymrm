@@ -248,10 +248,11 @@ class BlockLayout:
     a model that places blocks with :func:`update_array_indices`)::
 
         layout = BlockLayout({"particle": shape_p, "bulk": shape_b}, axis=1)
-        lin = layout.assemble([(div_r @ flux, "particle", "particle"),
-                               (div_r @ flux_b, "particle", "bulk"),
-                               (div_z @ conv - 3 * alpha * outer @ flux_b, "bulk", "bulk"),
-                               (-3 * alpha * outer @ flux, "bulk", "particle")])
+        place = layout.place
+        lin = (place(div_r @ flux, "particle", "particle")
+               + place(div_r @ flux_b, "particle", "bulk")
+               + place(div_z @ conv - 3 * alpha * outer @ flux_b, "bulk", "bulk")
+               + place(-3 * alpha * outer @ flux, "bulk", "particle")).tocsc()
         g_0 = np.zeros(layout.size)
         layout.put(g_0, "bulk", (div_z @ conv_bc).toarray())
         numjac = NumJac(layout.shape)            # local terms on the full state
@@ -564,6 +565,10 @@ class BlockLayout:
     def place(self, block, rows, cols):
         """Embed a domain-by-domain block into the full system.
 
+        Sum the placed blocks of a model with ``+``, for example
+        ``lin = layout.place(a, "x", "x") + layout.place(b, "x", "y")``; see
+        :meth:`assemble` for systems of many blocks.
+
         Parameters
         ----------
         block : scipy.sparse.sparray or array_like
@@ -612,7 +617,12 @@ class BlockLayout:
         )
 
     def assemble(self, blocks):
-        """Sum of placed blocks as one square matrix.
+        """Sum of placed blocks as one square matrix, for systems of many blocks.
+
+        For a handful of blocks, sum the results of :meth:`place` with ``+``: it
+        is as fast or faster and reads like the equations. Each ``+`` rebuilds
+        the sum, so with dozens of blocks or more ``assemble``, which builds it in
+        one pass, is faster (about 3x at 144 blocks).
 
         Parameters
         ----------

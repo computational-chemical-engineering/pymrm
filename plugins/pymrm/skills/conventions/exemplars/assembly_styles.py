@@ -100,8 +100,9 @@ class BlockAssembly:
         # the (n, 2) state interleaves the fields c and T: fields as domains
         self.layout = BlockLayout.from_fields(["c", "T"], (self.n_r,))
         # constant blocks are placed into the monolithic state ONCE
-        self.jac_const = self.layout.assemble([(self.jac_cc_transport, "c", "c"),
-                                               (self.jac_tt_transport, "T", "T")])
+        place = self.layout.place
+        self.jac_const = (place(self.jac_cc_transport, "c", "c")
+                          + place(self.jac_tt_transport, "T", "T")).tocsc()
 
     def residual(self, u):
         u = u.reshape(self.shape)
@@ -113,10 +114,12 @@ class BlockAssembly:
         g[:, 0] = self.jac_cc_transport @ c + self.g_c_bc + r
         g[:, 1] = self.jac_tt_transport @ temp + self.g_t_bc - BETA * r
         # state-dependent blocks: re-placed every call
-        jac = self.jac_const + self.layout.assemble([(diags_array(dr_dc), "c", "c"),
-                                                     (diags_array(dr_dt), "c", "T"),
-                                                     (diags_array(-BETA * dr_dc), "T", "c"),
-                                                     (diags_array(-BETA * dr_dt), "T", "T")])
+        place = self.layout.place
+        jac = (self.jac_const
+               + place(diags_array(dr_dc), "c", "c")
+               + place(diags_array(dr_dt), "c", "T")
+               + place(diags_array(-BETA * dr_dc), "T", "c")
+               + place(diags_array(-BETA * dr_dt), "T", "T"))
         return g.reshape((-1, 1)), jac.tocsc()
 
 

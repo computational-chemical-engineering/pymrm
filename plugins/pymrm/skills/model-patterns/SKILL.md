@@ -52,7 +52,8 @@ residual on it with `residual_check`) and say why monolithic was not used.
    shape_p, "bulk": shape_b}, axis=1)` (the state is `np.concatenate` of the
    domains along `axis`; `axis=None` for region-major domains with different
    field counts), and place blocks by domain name with
-   `layout.assemble([(block, rows, cols), ...])`; `layout.put`/`layout.view`
+   `layout.place(block, rows, cols)`, summing the placed blocks with `+`
+   (`layout.assemble` only for systems of many blocks, dozens or more); `layout.put`/`layout.view`
    reach a domain's part of a vector. `update_array_indices` stays the
    low-level tool underneath. Never compute a flat index by hand: a coupling
    through a boundary uses `construct_boundary_value_matrices` (rows on the

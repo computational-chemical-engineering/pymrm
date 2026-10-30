@@ -17,7 +17,7 @@ Assembly (style B in assembly-styles.md): each channel has its own operators on
 its own sub-shape ((n, 2) retentate, (n, 1) permeate); the monolithic state is
 (n, 3) with fields [A_ret, B_ret, B_perm], the two channels concatenated along
 the field axis (BlockLayout(..., axis=-1)). Constant blocks (transport, reaction,
-membrane) are placed ONCE with layout.assemble. The model is linear, so
+membrane) are placed ONCE with layout.place. The model is linear, so
 the steady Jacobian is constant and one sparse solve gives the answer.
 
 Checks, each able to fail:
@@ -104,12 +104,11 @@ class MembraneReactor:
         ret_perm = per_cell([[0.0], [-st]])    # B_ret row: -St p_B
         perm_ret = per_cell([[0.0, -st / sg]])  # B_perm row: -(St/sigma) c_B
         local_perm = per_cell([[st / sg]])     # B_perm row: +(St/sigma) p_B
-        self.jac = self.layout.assemble([
-            (t_ret + local_ret, "retentate", "retentate"),
-            (t_perm + local_perm, "permeate", "permeate"),
-            (ret_perm, "retentate", "permeate"),
-            (perm_ret, "permeate", "retentate"),
-        ])
+        place = self.layout.place
+        self.jac = (place(t_ret + local_ret, "retentate", "retentate")
+                    + place(t_perm + local_perm, "permeate", "permeate")
+                    + place(ret_perm, "retentate", "permeate")
+                    + place(perm_ret, "permeate", "retentate")).tocsc()
         self.g_const = np.zeros(self.shape)
         self.layout.put(self.g_const, "retentate", g_ret)
         self.layout.put(self.g_const, "permeate", g_perm)
