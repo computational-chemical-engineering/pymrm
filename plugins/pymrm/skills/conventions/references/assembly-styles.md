@@ -54,7 +54,7 @@ its own operators and boundary conditions, and placed into the monolithic state
 by domain name with a `BlockLayout` (api-map, "Domains in one state"):
 
 ```python
-layout = BlockLayout({"c": (n, 1), "T": (n, 1)}, axis=-1)   # state (n, 2) = [c, T]
+layout = BlockLayout.from_fields(["c", "T"], (n,))   # state (n, 2) = [c, T]
 jac_const = layout.assemble([(jac_cc, "c", "c"), (jac_tt, "T", "T")])   # once
 jac = jac_const + layout.assemble([(diags_array(dr_dt), "c", "T"), ...])
 ```

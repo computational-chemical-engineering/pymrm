@@ -371,3 +371,82 @@ def test_per_cell_exchange_idiom():
     hand = coo_array((vals, (rows, cols)), shape=(2 * n, 2 * n))
     assert exchange.shape == (2 * n, 2 * n)
     np.testing.assert_array_equal(exchange.toarray(), hand.toarray())
+
+
+# -- 9. subdomains, add, from_fields, zeros ------------------------------------------------
+
+
+@pytest.mark.parametrize("index", [np.s_[:, 0], np.s_[:, 1:3], np.s_[1:3, -1], np.s_[:, :, 0]])
+def test_subdomain_is_a_box_of_its_parent(index):
+    layout = BlockLayout({"wall": (4, 1, 2), "fluid": (4, 3, 2)}, axis=1)
+    layout.subdomain("part", "fluid", index)
+    u = RNG.standard_normal(layout.shape)
+    fluid = layout.view(u, "fluid")
+    expected = fluid[tuple(slice(i, i + 1 or None) if isinstance(i, int) else i for i in index)]
+    np.testing.assert_array_equal(layout.view(u, "part"), expected)
+    assert np.shares_memory(layout.view(u, "part"), u)
+    np.testing.assert_array_equal(np.ravel(u)[layout.index("part")], expected)
+    # placing on the subdomain equals placing on the parent through its selection
+    sub = layout.pick("part") @ layout.pick("fluid").T          # parent -> part selection
+    block = _random_block(24, expected.size, "csc")
+    np.testing.assert_allclose(layout.place(block, "fluid", "part").toarray(),
+                               layout.place(block @ sub, "fluid", "fluid").toarray(), atol=1e-15)
+    assert layout.size == 4 * 4 * 2                              # no unknowns added
+
+
+def test_subdomain_region_major_contiguous_only():
+    layout = BlockLayout({"a": (3, 2), "b": (4, 2, 3)}, axis=None)
+    layout.subdomain("b_first", "b", np.s_[0])                   # first row of b: contiguous
+    np.testing.assert_array_equal(layout.index("b_first").ravel(), np.arange(6, 12))
+    u = np.arange(layout.size, dtype=float)
+    np.testing.assert_array_equal(layout.view(u, "b_first"), u[6:12].reshape(1, 2, 3))
+    with pytest.raises(ValueError, match="contiguous"):
+        layout.subdomain("b_col", "b", np.s_[:, 0])
+    with pytest.raises(ValueError, match="already used"):
+        layout.subdomain("a", "b", np.s_[0])
+    with pytest.raises(ValueError):
+        layout.subdomain("bad", "b", np.s_[::2])
+
+
+def test_channel_wall_rate_at_first_fluid_row():
+    """The first-order channel variant: r evaluated in the first fluid row, no wall unknowns."""
+    n_x, n_y, D = 4, 3, 0.1
+    shape_f, shape_w = (n_x, n_y, 1), (n_x, 1, 1)
+    y_f, y_c = generate_grid(n_y, [0, 1.0], generate_x_c=True)
+    bc_wall = {"a": 1, "b": 0, "d": -1 / D}
+    _, grad_r, _ = construct_grad(shape_f, y_f, y_c, bc=(bc_wall, {"a": 1, "b": 0, "d": 0}),
+                                  axis=1, shapes_d=(shape_w, None))
+    div_y = construct_div(shape_f, y_f, nu=0, axis=1)
+    block = -D * (div_y @ grad_r)
+    ref = update_array_indices(block, (shape_f, shape_w), (shape_f, shape_f),
+                               offset=((0, 0, 0), (0, 0, 0)))   # the listing's overlapping offsets
+    layout = BlockLayout({"fluid": shape_f}, axis=1)
+    layout.subdomain("wall", "fluid", np.s_[:, 0])
+    np.testing.assert_array_equal(layout.assemble([(block, "fluid", "wall")]).toarray(), ref.toarray())
+
+
+def test_add_accumulates():
+    layout = BlockLayout({"a": (3, 1), "b": (2, 1)}, axis=0)
+    g = np.ones(layout.size)
+    layout.add(g, "b", [1.0, 2.0])
+    layout.add(g, "b", np.array([[1.0], [1.0]]))
+    np.testing.assert_array_equal(g, [1, 1, 1, 3, 4])
+    with pytest.raises(ValueError, match="entries"):
+        layout.add(g, "a", [1.0])
+
+
+def test_from_fields_interleaves():
+    layout = BlockLayout.from_fields(["psi", "xi"], (5,))
+    assert layout.shape == (5, 2) and layout.shapes["psi"] == (5, 1)
+    np.testing.assert_array_equal(layout.index("psi").ravel(), np.arange(0, 10, 2))
+    # the trap it avoids: 1-D domains with axis=-1 stack instead of interleave
+    assert BlockLayout({"psi": (5,), "xi": (5,)}, axis=-1).shape == (10,)
+
+
+def test_assemble_drops_explicit_zeros():
+    layout = BlockLayout({"a": (3, 1), "b": (3, 1)}, axis=-1)
+    eye = eye_array(3, format="csc")
+    jac = layout.assemble([(eye, "a", "a"), (-eye, "a", "a"), (eye, "b", "b")])  # a-a cancels
+    assert jac.nnz == 3 and np.all(jac.data != 0)
+    coef = construct_coefficient_matrix(np.array([[1.0, 0.0], [0.0, 2.0]]), shape=((3, 2, 1), (3, 1, 2)))
+    assert layout.assemble([(coef, None, None)]).nnz == 6         # stored zeros of the block dropped

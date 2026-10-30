@@ -68,8 +68,8 @@ class DarcyGasReactor:
         self.interp = [(conv_p.tocsr(), conv_p_bc.toarray().ravel()),
                        (conv_c.tocsr(), conv_c_bc.toarray().ravel())]
         self.reaction = K_RXN * diags_array(np.ones(n_z))
-        # the (n, 2) state is np.concatenate([p, c_A], axis=-1) of two (n, 1) fields
-        self.layout = BlockLayout({"p": field, "c_A": field}, axis=-1)
+        # the (n, 2) state interleaves the fields p and c_A: fields as domains
+        self.layout = BlockLayout.from_fields(["p", "c_A"], (n_z,))
         self.u_inlet = (P_IN**2 - P_OUT**2) / 2.0 / P_IN   # exact inlet velocity
 
     def velocity(self, p):

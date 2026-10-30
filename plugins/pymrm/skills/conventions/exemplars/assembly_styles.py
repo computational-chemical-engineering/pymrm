@@ -97,8 +97,8 @@ class BlockAssembly:
         self.jac_tt_transport = (div @ -grad_t).tocsc()
         self.g_c_bc = (div @ -grad_c_bc).toarray().ravel()
         self.g_t_bc = (div @ -grad_t_bc).toarray().ravel()
-        # the (n, 2) state is np.concatenate([c, T], axis=-1) of two (n, 1) fields
-        self.layout = BlockLayout({"c": self.field_shape, "T": self.field_shape}, axis=-1)
+        # the (n, 2) state interleaves the fields c and T: fields as domains
+        self.layout = BlockLayout.from_fields(["c", "T"], (self.n_r,))
         # constant blocks are placed into the monolithic state ONCE
         self.jac_const = self.layout.assemble([(self.jac_cc_transport, "c", "c"),
                                                (self.jac_tt_transport, "T", "T")])

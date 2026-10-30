@@ -61,8 +61,18 @@ c_b = layout.view(c, "bulk")                       # a view, never a copy
   (`update_array_indices` itself silently accepts a wrong size); `None` for a
   side leaves it as is. `assemble` sums placed blocks into one CSC matrix;
   repeated (rows, cols) pairs are summed.
-- Fields as domains: `BlockLayout({"psi": (n, 1), "xi": (n, 1)}, axis=-1)` for
-  an `(n, 2)` state; a one-field operator placed at `("psi", "psi")`.
+- Fields as domains: `BlockLayout.from_fields(["psi", "xi"], (n,))` for an
+  `(n, 2)` state (short for `{"psi": (n, 1), "xi": (n, 1)}, axis=-1`; the
+  trailing 1 is what interleaves: `(n,)` domains with `axis=-1` would stack to a
+  `(2n,)` state); a one-field operator placed at `("psi", "psi")`.
+- Part of a domain: `layout.subdomain("near_wall", "fluid", np.s_[:, 0])` names
+  a box of a domain (the first fluid row) without adding unknowns; use the name
+  in `place`, `view`, `put`, `add`, `pick` like a domain. For example a wall
+  rate evaluated in the first fluid cell: `place(-D * (div_y @ grad_r),
+  "fluid", "near_wall")`.
+- Residual parts: `put(g, name, values)` writes, `add(g, name, values)`
+  accumulates (a term that acts on one domain only, e.g. TVD fluxes in the
+  fluid rows). `assemble` drops explicit zeros, as a sum of sparse arrays does.
 - `NumJac`: with an integer axis, `NumJac(layout.shape)` on the full state as
   usual. With `axis=None`, `NumJac` per domain on `layout.shapes[name]` applied
   to `layout.view(u, name)`, placed with `place(jac, name, name)`; never
