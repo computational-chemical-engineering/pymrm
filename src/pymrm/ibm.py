@@ -434,7 +434,6 @@ def _build_side(theta_fn, spatial_shape, x_c, strides, region, other, rescale):
             ia = multi[a]
 
             # Ghost neighbour is in-domain for every cut cell (gmask ⊆ valid).
-            step = direction * strides[a]
             theta = theta_fn(cells, a, direction)
 
             xc = x_c[a][ia]
@@ -974,24 +973,24 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     fo_in_mask = has_opp_in_2d.ravel()
 
     cr_out = np.concatenate([cr_out_flat,
-                              cr_out_flat[fo_out_mask],
-                              cr_out_flat])
+                             cr_out_flat[fo_out_mask],
+                             cr_out_flat])
     cc_out = np.concatenate([cr_out_flat,                          # diagonal
-                              f_opp_out.ravel()[fo_out_mask],      # opposite
-                              fg_out_flat])                         # ghost removal
+                             f_opp_out.ravel()[fo_out_mask],      # opposite
+                             fg_out_flat])                         # ghost removal
     cd_out = np.concatenate([(v_out * bc_coef(ibm.coef_c_out)).ravel(),
-                              (v_out * bc_coef(ibm.coef_o_out)).ravel()[fo_out_mask],
-                              -v_out.ravel()])
+                             (v_out * bc_coef(ibm.coef_o_out)).ravel()[fo_out_mask],
+                             -v_out.ravel()])
 
     cr_in = np.concatenate([cr_in_flat,
-                             cr_in_flat[fo_in_mask],
-                             cr_in_flat])
+                            cr_in_flat[fo_in_mask],
+                            cr_in_flat])
     cc_in = np.concatenate([cr_in_flat,
-                             f_opp_in.ravel()[fo_in_mask],
-                             fg_in_flat])
+                            f_opp_in.ravel()[fo_in_mask],
+                            fg_in_flat])
     cd_in = np.concatenate([(v_in * bc_coef(ibm.coef_c_in)).ravel(),
-                              (v_in * bc_coef(ibm.coef_o_in)).ravel()[fo_in_mask],
-                              -v_in.ravel()])
+                            (v_in * bc_coef(ibm.coef_o_in)).ravel()[fo_in_mask],
+                            -v_in.ravel()])
 
     correction = coo_array(
         (np.concatenate([cd_out, cd_in]),
@@ -1019,21 +1018,21 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
 
     G_out = coo_array(
         (np.concatenate([(v_out * bc_coef(ibm.coef_w_out)).ravel(),
-                          (v_out * bc_coef(ibm.coef_w_sib_out)).ravel()[has_sib_out_flat]]),
+                         (v_out * bc_coef(ibm.coef_w_sib_out)).ravel()[has_sib_out_flat]]),
          (np.concatenate([f_row_out.ravel(),
-                           f_row_out.ravel()[has_sib_out_flat]]),
+                          f_row_out.ravel()[has_sib_out_flat]]),
           np.concatenate([own_col,
-                           sib_out_col[has_sib_out_flat]]))),
+                          sib_out_col[has_sib_out_flat]]))),
         shape=(n_full, n_cols),
     ).tocsr()
 
     G_in = coo_array(
         (np.concatenate([(v_in * bc_coef(ibm.coef_w_in)).ravel(),
-                          (v_in * bc_coef(ibm.coef_w_sib_in)).ravel()[has_sib_in_flat]]),
+                         (v_in * bc_coef(ibm.coef_w_sib_in)).ravel()[has_sib_in_flat]]),
          (np.concatenate([f_row_in.ravel(),
-                           f_row_in.ravel()[has_sib_in_flat]]),
+                          f_row_in.ravel()[has_sib_in_flat]]),
           np.concatenate([own_col,
-                           sib_in_col[has_sib_in_flat]]))),
+                          sib_in_col[has_sib_in_flat]]))),
         shape=(n_full, n_cols),
     ).tocsr()
 
@@ -1215,8 +1214,6 @@ def fill_ghost_values(ibm, x_c, field, wall_values=0.0, side="out",
         ibm, x_c, field, wall_values=wall_values, side=side,
         theta_min=theta_min)
     field = np.asarray(field, dtype=float)
-    nd = len(ibm.spatial_shape)
-    trailing = field.shape[nd:]
     out = field.reshape(ibm.n_spatial_cells, -1).copy()
     vals2 = vals.reshape(vals.shape[0], -1)
     sums = np.zeros_like(out)
