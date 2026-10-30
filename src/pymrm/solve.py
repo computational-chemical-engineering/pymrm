@@ -76,7 +76,7 @@ class _LastEvaluationFailed(Exception):
 def _row_scale(jac):
     """Reciprocal of the largest absolute entry of each row (1 for empty rows)."""
     if sparse.issparse(jac):
-        s = abs(sparse.csr_array(jac)).max(axis=1)
+        s = abs(jac).max(axis=1)
         s = s.toarray() if sparse.issparse(s) else s
     else:
         s = np.max(np.abs(jac), axis=1)
@@ -332,7 +332,6 @@ def _backward_error(g, jac, x, x_ref):
     against that scale instead of against their own size.
     """
     if sparse.issparse(jac):
-        jac = sparse.csr_array(jac)
         abs_jac = abs(jac)
     else:
         jac = np.asarray(jac, dtype=float)
