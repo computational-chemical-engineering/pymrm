@@ -12,7 +12,8 @@ Style A, operator sum: both fields in one (n, 2) state; the transport Jacobian
     pointwise source (2 x 2 blocks per cell). Jacobian = constant + local.
 Style B, block assembly: each field and each coupling is its own block on its
     own sub-shape (here (n, 1)), with analytic local derivatives, placed into the
-    monolithic state with update_array_indices. This is how multi-field and
+    monolithic state with BlockLayout (fields as domains along the last axis).
+    This is how multi-field and
     multi-domain models with different operators per field are built.
 Style B, fixed pattern: the same blocks, but the placed sparsity pattern is
     computed once and each call only scatters values into it: the fastest
@@ -38,7 +39,7 @@ import warnings
 import numpy as np
 from scipy.sparse import csc_array, diags_array
 
-from pymrm import NumJac, construct_div, construct_grad, newton, update_array_indices
+from pymrm import BlockLayout, NumJac, construct_div, construct_grad, newton
 
 PHI2, BETA, GAMMA = 0.25, 0.3, 20.0
 
@@ -79,7 +80,7 @@ class OperatorSum:
 
 
 class BlockAssembly:
-    """Style B: one block per field and per coupling, placed with update_array_indices."""
+    """Style B: one block per field and per coupling, placed with BlockLayout."""
 
     def __init__(self, n_r=200):
         self.n_r = n_r
@@ -96,16 +97,12 @@ class BlockAssembly:
         self.jac_tt_transport = (div @ -grad_t).tocsc()
         self.g_c_bc = (div @ -grad_c_bc).toarray().ravel()
         self.g_t_bc = (div @ -grad_t_bc).toarray().ravel()
-        self.offset_c = (0, 0)
-        self.offset_t = (0, 1)
+        # the (n, 2) state interleaves the fields c and T: fields as domains
+        self.layout = BlockLayout.from_fields(["c", "T"], (self.n_r,))
         # constant blocks are placed into the monolithic state ONCE
-        self.jac_const = (self.place(self.jac_cc_transport, self.offset_c, self.offset_c)
-                          + self.place(self.jac_tt_transport, self.offset_t, self.offset_t)).tocsc()
-
-    def place(self, block, rows, cols):
-        """Put an (n, 1) x (n, 1) block into the rows of field `rows` and columns of field `cols`."""
-        return update_array_indices(block, (self.field_shape, self.field_shape), self.shape,
-                                    offset=(rows, cols))
+        place = self.layout.place
+        self.jac_const = (place(self.jac_cc_transport, "c", "c")
+                          + place(self.jac_tt_transport, "T", "T")).tocsc()
 
     def residual(self, u):
         u = u.reshape(self.shape)
@@ -117,11 +114,12 @@ class BlockAssembly:
         g[:, 0] = self.jac_cc_transport @ c + self.g_c_bc + r
         g[:, 1] = self.jac_tt_transport @ temp + self.g_t_bc - BETA * r
         # state-dependent blocks: re-placed every call
+        place = self.layout.place
         jac = (self.jac_const
-               + self.place(diags_array(dr_dc), self.offset_c, self.offset_c)
-               + self.place(diags_array(dr_dt), self.offset_c, self.offset_t)
-               + self.place(diags_array(-BETA * dr_dc), self.offset_t, self.offset_c)
-               + self.place(diags_array(-BETA * dr_dt), self.offset_t, self.offset_t))
+               + place(diags_array(dr_dc), "c", "c")
+               + place(diags_array(dr_dt), "c", "T")
+               + place(diags_array(-BETA * dr_dc), "T", "c")
+               + place(diags_array(-BETA * dr_dt), "T", "T"))
         return g.reshape((-1, 1)), jac.tocsc()
 
 

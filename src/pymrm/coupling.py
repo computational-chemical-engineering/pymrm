@@ -4,7 +4,7 @@ import math
 import numbers
 import warnings
 import numpy as np
-from scipy.sparse import csc_array, csr_array
+from scipy.sparse import coo_array, csc_array, csr_array
 from pymrm.helpers import unwrap_bc_coeff, _sparse_array
 
 
@@ -185,6 +185,480 @@ def update_array_indices(sparse_mat, shape, new_shape, offset=None):
     # Default: convert to CSC if needed, then update
     sparse_mat = csc_array(sparse_mat)
     return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
+
+
+class BlockLayout:
+    """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
+
+    A monolithic model often stacks several domains (a particle and its bulk, a
+    wall and a fluid, the fields of one grid, the regions of a membrane stack)
+    into one state vector. ``BlockLayout`` derives where each domain sits from
+    the concatenation, so no offset or flat index is typed by hand, and places
+    domain-by-domain blocks of the Jacobian into the full system.
+
+    "Block" here means a domain-by-domain sub-matrix of any size, not a
+    block-sparse storage format such as SciPy's ``bsr_array``.
+
+    Parameters
+    ----------
+    domains : dict[str, tuple[int, ...]]
+        Domain name to domain shape, in storage order.
+    axis : int or None
+        Keyword-only and required. With an integer ``k`` the state has the
+        shape of ``np.concatenate(parts, axis=k)``: all domains have the same
+        number of dimensions and equal sizes on every other axis. ``axis=1``
+        stacks particle cells and a bulk cell, ``axis=-1`` stacks fields on one
+        grid, an ``(n, 2)`` state from two ``(n, 1)`` domains. With ``None`` the
+        layout is region-major: the state is the concatenation of the
+        flattened domains, shape ``(size,)``, and the domains may differ in
+        every dimension (for example in their number of fields).
+
+    Attributes
+    ----------
+    shape : tuple[int, ...]
+        Shape of the state, ``(size,)`` for ``axis=None``.
+    size : int
+        Total number of unknowns.
+    shapes : dict[str, tuple[int, ...]]
+        Domain (and subdomain, see :meth:`subdomain`) name to shape.
+
+    Raises
+    ------
+    ValueError
+        If a size is not a positive integer, the axis is out of range, or the
+        domains differ on a non-concatenation axis.
+
+    Notes
+    -----
+    Arbitrary offset boxes are not supported: a gap would leave unknowns
+    without equations and an overlap is ambiguous; the concatenation rules
+    out both.
+
+    Jacobians of local terms: with an integer axis use ``NumJac(layout.shape)``
+    on the full state, as usual. With ``axis=None`` apply ``NumJac`` per domain
+    on ``layout.shapes[name]`` to ``layout.view(u, name)`` and place the result
+    with ``layout.place(jac, name, name)``. Never use ``NumJac`` on the flat
+    ``(size,)`` shape: it couples its last axis in full and builds a dense
+    Jacobian.
+
+    Examples
+    --------
+    The packed bed of resolved particles, ``(n_z, n_r, m)`` particle cells and
+    an ``(n_z, 1, m)`` bulk in one ``(n_z, n_r + 1, m)`` state (operators as in
+    a model that places blocks with :func:`update_array_indices`)::
+
+        layout = BlockLayout({"particle": shape_p, "bulk": shape_b}, axis=1)
+        place = layout.place
+        lin = (place(div_r @ flux, "particle", "particle")
+               + place(div_r @ flux_b, "particle", "bulk")
+               + place(div_z @ conv - 3 * alpha * outer @ flux_b, "bulk", "bulk")
+               + place(-3 * alpha * outer @ flux, "bulk", "particle")).tocsc()
+        g_0 = np.zeros(layout.size)
+        layout.put(g_0, "bulk", (div_z @ conv_bc).toarray())
+        numjac = NumJac(layout.shape)            # local terms on the full state
+
+    Fields as domains on one grid, a state ``(n, 2) = [psi, xi]``
+    (:meth:`from_fields` is short for ``{"psi": (n, 1), "xi": (n, 1)}, axis=-1``)::
+
+        layout = BlockLayout.from_fields(["psi", "xi"], (n,))
+        jac = layout.place(lap, "psi", "psi")    # lap built on the (n, 1) shape
+
+    A wall reaction evaluated in the first fluid row of a channel, a part of a
+    domain named with :meth:`subdomain`::
+
+        layout = BlockLayout({"fluid": (n_x, n_y, 1)}, axis=1)
+        layout.subdomain("near_wall", "fluid", np.s_[:, 0])
+        rate_to_c = layout.place(-D * (div_y @ grad_r), "fluid", "near_wall")
+        layout.add(g, "fluid", div_x @ flux)     # a term on the fluid rows only
+    """
+
+    def __init__(self, domains, *, axis):
+        if not isinstance(domains, dict) or len(domains) == 0:
+            raise ValueError("domains must be a non-empty dict of name -> shape")
+        shapes = {}
+        for name, shape in domains.items():
+            shape = tuple(shape)
+            if len(shape) == 0 or not all(
+                isinstance(dim, numbers.Integral) and dim > 0 for dim in shape
+            ):
+                raise ValueError(
+                    f"domain {name!r}: shape {shape} must be a non-empty tuple of positive ints"
+                )
+            shapes[name] = tuple(int(dim) for dim in shape)
+        self.shapes = shapes
+        self._domains = list(shapes)          # storage domains; subdomains are only added to shapes
+        self._sizes = {name: math.prod(shape) for name, shape in shapes.items()}
+        self.size = sum(self._sizes.values())
+
+        if axis is None:
+            # region-major: domain `name` is a contiguous stretch of the flat state
+            self.axis = None
+            self.shape = (self.size,)
+            self._local, self._offset, self._box = {}, {}, {}
+            start = 0
+            for name, n in self._sizes.items():
+                self._local[name] = (n,)
+                self._offset[name] = (start,)
+                self._box[name] = slice(start, start + n)
+                start += n
+            return
+
+        ndims = {len(shape) for shape in shapes.values()}
+        if len(ndims) != 1:
+            raise ValueError(
+                f"with axis={axis} all domains need the same number of dimensions, got {shapes}; "
+                "use axis=None for a region-major layout"
+            )
+        ndim = ndims.pop()
+        if not isinstance(axis, numbers.Integral) or not -ndim <= axis < ndim:
+            raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
+        axis = int(axis) % ndim
+        first = next(iter(shapes.values()))
+        for name, shape in shapes.items():
+            if any(s != f for i, (s, f) in enumerate(zip(shape, first)) if i != axis):
+                raise ValueError(
+                    f"domain {name!r} has shape {shape}; with axis={axis} all domains must "
+                    f"match {first} on every other axis (the np.concatenate rule). For "
+                    "different trailing sizes use axis=None (region-major), or stack fields "
+                    "along axis=-1"
+                )
+        self.axis = axis
+        self._local = dict(shapes)
+        self._offset, self._box = {}, {}
+        start = 0
+        for name, shape in shapes.items():
+            self._offset[name] = tuple(start if i == axis else 0 for i in range(ndim))
+            self._box[name] = tuple(slice(o, o + s) for o, s in zip(self._offset[name], shape))
+            start += shape[axis]
+        self.shape = tuple(start if i == axis else s for i, s in enumerate(first))
+
+    @classmethod
+    def from_fields(cls, names, shape):
+        """Layout of scalar fields on one grid, interleaved in a state ``shape + (len(names),)``.
+
+        Shorthand for ``BlockLayout({name: shape + (1,) for name in names}, axis=-1)``.
+        The trailing axis of length 1 is what makes the fields interleave: domains of
+        shape ``(n,)`` with ``axis=-1`` would be stacked one after another, a ``(2n,)``
+        state on which ``NumJac`` builds a dense Jacobian.
+
+        Parameters
+        ----------
+        names : sequence of str
+            Field names, in the order of the last axis of the state.
+        shape : tuple[int, ...]
+            Grid shape shared by the fields, for example ``(n,)`` or ``(n_x, n_y)``.
+
+        Returns
+        -------
+        BlockLayout
+        """
+        shape = tuple(shape)
+        return cls({name: shape + (1,) for name in names}, axis=-1)
+
+    def __repr__(self):
+        domains = {name: self.shapes[name] for name in self._domains}
+        return f"BlockLayout({domains!r}, axis={self.axis!r})"
+
+    def subdomain(self, name, parent, index):
+        """Name a box of an existing domain, for example the cells next to a wall.
+
+        The subdomain adds no unknowns: it is another name for part of ``parent``,
+        and can be used in :meth:`place`, :meth:`assemble`, :meth:`view`,
+        :meth:`put`, :meth:`add`, :meth:`pick` and :meth:`index`, so a block whose
+        rows or columns are only some cells of a domain needs no offsets either.
+
+        Parameters
+        ----------
+        name : str
+            New name.
+        parent : str
+            Domain (or subdomain) the box lies in.
+        index : int, slice or tuple of them
+            Basic index into the parent's shape, with unit steps. An integer keeps
+            its axis with length 1, so ``np.s_[:, 0]`` of an ``(n_x, n_y, 1)``
+            domain is an ``(n_x, 1, 1)`` subdomain. With ``axis=None`` the box must
+            be contiguous in C order (a range along the parent's first axis).
+
+        Raises
+        ------
+        ValueError
+            If the name exists, the index is not a non-empty unit-step box, or
+            (``axis=None``) the box is not contiguous.
+        """
+        self._check_name(parent)
+        if name in self.shapes:
+            raise ValueError(f"name {name!r} is already used")
+        parent_shape = self.shapes[parent]
+        index = index if isinstance(index, tuple) else (index,)
+        if len(index) > len(parent_shape):
+            raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
+        index = index + (slice(None),) * (len(parent_shape) - len(index))
+        starts, shape = [], []
+        for ix, dim in zip(index, parent_shape):
+            if isinstance(ix, numbers.Integral):
+                ix = int(ix) + (dim if ix < 0 else 0)
+                if not 0 <= ix < dim:
+                    raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
+                ix = slice(ix, ix + 1)
+            if not isinstance(ix, slice):
+                raise ValueError("a subdomain index holds integers and slices only")
+            start, stop, step = ix.indices(dim)
+            if step != 1 or stop <= start:
+                raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
+            starts.append(start)
+            shape.append(stop - start)
+        shape = tuple(shape)
+        if self.axis is None:
+            box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
+            flat = self.index(parent)[box].ravel()
+            if np.any(np.diff(flat) != 1):
+                raise ValueError(
+                    f"subdomain {name!r} is not contiguous in the region-major state; "
+                    "with axis=None take a range along the first axis of the domain"
+                )
+            start = int(flat[0])
+            self._local[name], self._offset[name] = (flat.size,), (start,)
+            self._box[name] = slice(start, start + flat.size)
+        else:
+            offset = tuple(o + s for o, s in zip(self._offset[parent], starts))
+            self._local[name], self._offset[name] = shape, offset
+            self._box[name] = tuple(slice(o, o + n) for o, n in zip(offset, shape))
+        self.shapes[name] = shape
+        self._sizes[name] = math.prod(shape)
+
+    def _check_name(self, name):
+        if name not in self.shapes:
+            raise KeyError(f"unknown domain {name!r}; domains are {list(self.shapes)}")
+
+    def _domain_slice(self, name):
+        """Index into the state reshaped to ``self.shape`` that selects ``name``."""
+        return self._box[name]
+
+    def index(self, name):
+        """Flat state indices of domain ``name``.
+
+        Parameters
+        ----------
+        name : str
+            Domain name.
+
+        Returns
+        -------
+        numpy.ndarray
+            Integer array of the domain's shape; entry ``[i, j, ...]`` is the
+            position of that unknown in the flat state.
+        """
+        self._check_name(name)
+        idx = np.arange(self.size).reshape(self.shape)[self._domain_slice(name)]
+        return np.ascontiguousarray(idx).reshape(self.shapes[name])
+
+    def view(self, u, name):
+        """Writable view of domain ``name`` in the state ``u``, in the domain's shape.
+
+        Parameters
+        ----------
+        u : numpy.ndarray
+            State with ``size`` entries, of any shape, C-contiguous.
+        name : str
+            Domain name.
+
+        Returns
+        -------
+        numpy.ndarray
+            A view: writing to it writes into ``u``.
+
+        Raises
+        ------
+        TypeError
+            If ``u`` is not a NumPy array.
+        ValueError
+            If ``u`` has the wrong size, or is not C-contiguous (Fortran order,
+            a strided slice): a view is then impossible and a copy would
+            silently lose writes.
+        """
+        self._check_name(name)
+        if not isinstance(u, np.ndarray):
+            raise TypeError(f"u must be a numpy array, got {type(u).__name__}")
+        if u.size != self.size:
+            raise ValueError(f"u has {u.size} entries, the layout has {self.size}")
+        if not u.flags.c_contiguous:
+            raise ValueError("u is not C-contiguous; a view is impossible (use np.ascontiguousarray)")
+        part = u.reshape(self.shape)[self._domain_slice(name)]
+        if self.axis is None:
+            part = part.reshape(self.shapes[name])  # contiguous slice: still a view
+        return part
+
+    def put(self, out, name, values):
+        """Write ``values`` into the part ``name`` of the state ``out``.
+
+        Parameters
+        ----------
+        out : numpy.ndarray
+            State with ``size`` entries, C-contiguous; modified in place.
+        name : str
+            Domain name.
+        values : array_like
+            Any shape with the domain's number of entries, in the domain's
+            C order (for example a column from ``(op @ c).toarray()``).
+
+        Raises
+        ------
+        ValueError
+            If ``values`` has the wrong number of entries, or ``out`` is not a
+            valid state (see :meth:`view`).
+        """
+        part = self.view(out, name)
+        part[...] = self._as_part(values, part, name)
+
+    def add(self, out, name, values):
+        """Add ``values`` to the part ``name`` of the state ``out``.
+
+        As :meth:`put`, but accumulating: for a residual term that acts on one
+        domain only, for example ``layout.add(g, "fluid", div_x @ flux)``.
+
+        Parameters
+        ----------
+        out : numpy.ndarray
+            State with ``size`` entries, C-contiguous; modified in place.
+        name : str
+            Domain name.
+        values : array_like
+            Any shape with the domain's number of entries, in the domain's
+            C order.
+
+        Raises
+        ------
+        ValueError
+            As for :meth:`put`.
+        """
+        part = self.view(out, name)
+        part += self._as_part(values, part, name)
+
+    @staticmethod
+    def _as_part(values, part, name):
+        values = np.asarray(values)
+        if values.size != part.size:
+            raise ValueError(
+                f"values has {values.size} entries, domain {name!r} has {part.size}"
+            )
+        return values.reshape(part.shape)
+
+    def pick(self, name):
+        """Selection matrix of domain ``name``.
+
+        Parameters
+        ----------
+        name : str
+            Domain name.
+
+        Returns
+        -------
+        scipy.sparse.csr_array
+            Shape ``(n_name, size)``: ``pick @ u`` extracts the domain in its C
+            order, ``pick.T @ v`` scatters a domain vector into the state.
+        """
+        cols = self.index(name).ravel()
+        return csr_array(
+            (np.ones(cols.size), cols, np.arange(cols.size + 1)), shape=(cols.size, self.size)
+        )
+
+    def place(self, block, rows, cols):
+        """Embed a domain-by-domain block into the full system.
+
+        Sum the placed blocks of a model with ``+``, for example
+        ``lin = layout.place(a, "x", "x") + layout.place(b, "x", "y")``; see
+        :meth:`assemble` for systems of many blocks.
+
+        Parameters
+        ----------
+        block : scipy.sparse.sparray or array_like
+            Matrix with ``n_rows`` rows and ``n_cols`` columns, the numbers of
+            unknowns of domains ``rows`` and ``cols``.
+        rows, cols : str or None
+            Domain names. ``None`` leaves that side as it is: a block whose
+            rows (columns) already span the full state, or a selection whose
+            columns (rows) stay local, for example
+            ``place(eye_array(n), None, name)`` equals ``pick(name)``.
+
+        Returns
+        -------
+        scipy.sparse.csr_array or scipy.sparse.csc_array
+            CSR for CSR input, CSC otherwise; ``size`` rows unless ``rows`` is
+            None, ``size`` columns unless ``cols`` is None.
+
+        Raises
+        ------
+        ValueError
+            If the block size does not match the named domain.
+        KeyError
+            If a name is unknown.
+        """
+        sides = []
+        for side, name in ((0, rows), (1, cols)):
+            if name is None:
+                sides.append((None, None))
+                continue
+            self._check_name(name)
+            n = self._sizes[name]
+            if block.shape[side] != n:
+                kind = "rows" if side == 0 else "columns"
+                raise ValueError(
+                    f"block has {block.shape[side]} {kind}, domain {name!r} has {n} unknowns"
+                )
+            sides.append((self._local[name], self._offset[name]))
+        (shape_r, offset_r), (shape_c, offset_c) = sides
+        # Always pass explicit (rows, cols) pairs: an all-integer tuple would be
+        # read as "same for rows and columns". The CSR/CSC pointer rebuild in
+        # update_array_indices needs a strictly increasing map from local to
+        # state indices; concatenation guarantees it, so a permuting layout
+        # must not be added through this path.
+        return update_array_indices(
+            block, (shape_r, shape_c), (self.shape, self.shape), offset=(offset_r, offset_c)
+        )
+
+    def assemble(self, blocks):
+        """Sum of placed blocks as one square matrix, for systems of many blocks.
+
+        For a handful of blocks, sum the results of :meth:`place` with ``+``: it
+        is as fast or faster and reads like the equations. Each ``+`` rebuilds
+        the sum, so with dozens of blocks or more ``assemble``, which builds it in
+        one pass, is faster (about 3x at 144 blocks).
+
+        Parameters
+        ----------
+        blocks : iterable of (block, rows, cols)
+            Each tuple as for :meth:`place`; with ``None`` the block must
+            already span the full state on that side.
+
+        Returns
+        -------
+        scipy.sparse.csc_array
+            ``size x size``; entries placed more than once are summed, and
+            explicit zeros (stored zeros of the blocks, and sums that cancel) are
+            removed, as in a sum of sparse arrays. An empty list gives a zero
+            matrix.
+        """
+        data, row, col = [], [], []
+        for block, rows, cols in blocks:
+            placed = self.place(block, rows, cols)
+            if placed.shape != (self.size, self.size):
+                raise ValueError(
+                    f"placed block ({rows!r}, {cols!r}) has shape {placed.shape}, "
+                    f"expected {(self.size, self.size)}"
+                )
+            placed = placed.tocoo()
+            data.append(placed.data)
+            row.append(placed.row)
+            col.append(placed.col)
+        if not data:
+            return csc_array((self.size, self.size))
+        # COO -> CSC sums duplicate entries; the zeros left are not needed by any solver
+        jac = coo_array(
+            (np.concatenate(data), (np.concatenate(row), np.concatenate(col))),
+            shape=(self.size, self.size),
+        ).tocsc()
+        jac.eliminate_zeros()
+        return jac
 
 
 def construct_interface_matrices(

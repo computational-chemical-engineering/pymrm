@@ -15,8 +15,9 @@ Boundary conditions (Danckwerts at each inlet, zero gradient at each outlet):
 
 Assembly (style B in assembly-styles.md): each channel has its own operators on
 its own sub-shape ((n, 2) retentate, (n, 1) permeate); the monolithic state is
-(n, 3) with fields [A_ret, B_ret, B_perm]. Constant blocks (transport, reaction,
-membrane) are placed ONCE with update_array_indices. The model is linear, so
+(n, 3) with fields [A_ret, B_ret, B_perm], the two channels concatenated along
+the field axis (BlockLayout(..., axis=-1)). Constant blocks (transport, reaction,
+membrane) are placed ONCE with layout.place. The model is linear, so
 the steady Jacobian is constant and one sparse solve gives the answer.
 
 Checks, each able to fail:
@@ -39,7 +40,7 @@ from scipy.integrate import solve_bvp
 from scipy.sparse.linalg import spsolve
 
 from pymrm import (compute_boundary_values, construct_coefficient_matrix, construct_convflux_upwind,
-                   construct_div, construct_grad, update_array_indices)
+                   construct_div, construct_grad, BlockLayout)
 
 
 class MembraneReactor:
@@ -56,6 +57,8 @@ class MembraneReactor:
         self.shape = (n_z, 3)            # fields: A_ret, B_ret, B_perm
         self.shape_ret = (n_z, 2)
         self.shape_perm = (n_z, 1)
+        # the state is np.concatenate([retentate, permeate], axis=-1)
+        self.layout = BlockLayout({"retentate": self.shape_ret, "permeate": self.shape_perm}, axis=-1)
         self._build()
 
     def _channel(self, shape, bc, velocity):
@@ -66,10 +69,6 @@ class MembraneReactor:
         mat = div @ (conv - grad / self.peclet)
         vec = (div @ (conv_bc - grad_bc / self.peclet)).toarray().ravel()
         return mat, vec, div, conv, conv_bc, grad, grad_bc
-
-    def _place(self, block, rows_shape, cols_shape, row_offset, col_offset):
-        return update_array_indices(block, (rows_shape, cols_shape), self.shape,
-                                    offset=(row_offset, col_offset))
 
     def _build(self):
         pe = self.peclet
@@ -88,32 +87,31 @@ class MembraneReactor:
         t_perm, g_perm, *_ = self._channel(self.shape_perm, bc_perm, self.v_perm)
 
         n = self.n_z
-        # local (per-cell) coupling blocks, as diagonal coefficient matrices. A block that
-        # couples two fields is a diagonal on a one-field sub-shape (n, 1), placed at the
-        # (row field, column field) offsets: no flat index is computed by hand.
+        # local (per-cell) coupling blocks: one small matrix per cell, rows the fields of
+        # the row channel, columns those of the column channel, spread over all cells by
+        # construct_coefficient_matrix with shapes ((n, rows, 1), (n, 1, cols)). Rows of the
+        # residual: transport + consumption - production + J (retentate), transport - J/sigma
+        # (permeate), with J = St (c_B - p_B). No flat index is computed by hand.
         da, st, sg = self.damkohler, self.stanton, self.sigma
-        field = (n, 1)
 
-        def cell(value):
-            return construct_coefficient_matrix(np.full(field, value), shape=field)
+        def per_cell(matrix):
+            matrix = np.asarray(matrix, dtype=float)
+            n_rows, n_cols = matrix.shape
+            return construct_coefficient_matrix(matrix, shape=((n, n_rows, 1), (n, 1, n_cols)))
 
-        k_ret = np.zeros(self.shape_ret)
-        k_ret[:, 0] = da                          # A consumed
-        rxn_ret = construct_coefficient_matrix(k_ret, shape=self.shape_ret)
-        memb_ret_ret = construct_coefficient_matrix(np.tile([0.0, st], (n, 1)), shape=self.shape_ret)
-        memb_perm_perm = construct_coefficient_matrix(np.full(self.shape_perm, st / sg),
-                                                      shape=self.shape_perm)
-        # residual rows: transport + consumption - production + J (retentate B), transport - J/sigma (permeate)
-        self.jac = (
-            self._place(t_ret + rxn_ret + memb_ret_ret, self.shape_ret, self.shape_ret, (0, 0), (0, 0))
-            + self._place(t_perm + memb_perm_perm, self.shape_perm, self.shape_perm, (0, 2), (0, 2))
-            + self._place(cell(-da), field, field, (0, 1), (0, 0))        # B_ret row: B produced from A
-            + self._place(cell(-st), field, field, (0, 1), (0, 2))        # B_ret row: -St p_B (J = St (c_B - p_B))
-            + self._place(cell(-st / sg), field, field, (0, 2), (0, 1))   # B_perm row: -(St/sigma) c_B
-        ).tocsc()
+        local_ret = per_cell([[da, 0.0],       # A_ret row: A consumed
+                              [-da, st]])      # B_ret row: B produced from A, +St c_B
+        ret_perm = per_cell([[0.0], [-st]])    # B_ret row: -St p_B
+        perm_ret = per_cell([[0.0, -st / sg]])  # B_perm row: -(St/sigma) c_B
+        local_perm = per_cell([[st / sg]])     # B_perm row: +(St/sigma) p_B
+        place = self.layout.place
+        self.jac = (place(t_ret + local_ret, "retentate", "retentate")
+                    + place(t_perm + local_perm, "permeate", "permeate")
+                    + place(ret_perm, "retentate", "permeate")
+                    + place(perm_ret, "permeate", "retentate")).tocsc()
         self.g_const = np.zeros(self.shape)
-        self.g_const[:, :2] = g_ret.reshape(self.shape_ret)
-        self.g_const[:, 2:] = g_perm.reshape(self.shape_perm)
+        self.layout.put(self.g_const, "retentate", g_ret)
+        self.layout.put(self.g_const, "permeate", g_perm)
 
     def solve(self):
         self.u = spsolve(self.jac, -self.g_const.ravel()).reshape(self.shape)
@@ -121,7 +119,7 @@ class MembraneReactor:
 
     def outlets(self):
         """Face values at each channel's outlet: retentate at z = 1, permeate at its exit."""
-        ret, perm = self.u[:, :2], self.u[:, 2:]
+        ret, perm = self.layout.view(self.u, "retentate"), self.layout.view(self.u, "permeate")
         _, _, ret_out, _ = compute_boundary_values(ret, self.z_f, self.z_c, self.bc_ret)
         perm_lo, _, perm_hi, _ = compute_boundary_values(perm, self.z_f, self.z_c, self.bc_perm)
         perm_out = perm_lo if self.v_perm < 0 else perm_hi

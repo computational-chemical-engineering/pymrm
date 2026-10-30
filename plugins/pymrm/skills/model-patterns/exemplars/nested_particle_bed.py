@@ -31,11 +31,11 @@ Checks, each able to fail:
 """
 
 import numpy as np
-from scipy.sparse import bmat, diags_array, eye_array
+from scipy.sparse import bmat, diags_array
 from scipy.sparse.linalg import spsolve, splu
 
-from pymrm import (NumJac, compute_boundary_values, construct_convflux_upwind, construct_div, construct_grad,
-                   newton, update_array_indices)
+from pymrm import (BlockLayout, NumJac, compute_boundary_values, construct_convflux_upwind, construct_div,
+                   construct_grad, newton)
 
 
 class ParticleBed:
@@ -65,12 +65,12 @@ class ParticleBed:
         surface = nu + 1.0   # particle surface over volume, times the radius (3 for a sphere)
         self.jac_pp_transport = (div_r @ -grad).tocsc()
         self.jac_pb = (div_r @ -grad_bc_right).tocsc()          # particle rows, bulk columns
-        # bulk: surface * alpha * dc/dr at r = 1. The outer face of every particle is selected
-        # by an identity placed with update_array_indices (rows: bulk cells, columns: the faces
-        # (n_z, n_r + 1, 1) at j = n_r), so no face index is computed by hand. The gradient rows
-        # stay exact for a large Bi; going through the surface value Bi (c_b - c_s) cancels there.
-        outer = update_array_indices(eye_array(n_z), ((n_z, 1, 1), (n_z, 1, 1)),
-                                     ((n_z, 1, 1), (n_z, n_r + 1, 1)), offset=(None, (0, n_r, 0)))
+        # bulk: surface * alpha * dc/dr at r = 1. The radial faces (n_z, n_r + 1, 1) are the
+        # inner faces followed by the outer face along axis 1; pick selects the outer face of
+        # every particle, so no face index is computed by hand. The gradient rows stay exact
+        # for a large Bi; going through the surface value Bi (c_b - c_s) cancels there.
+        faces = BlockLayout({"inner": (n_z, n_r, 1), "outer": (n_z, 1, 1)}, axis=1)
+        outer = faces.pick("outer")
         self.jac_bp = (surface * alpha * outer @ grad).tocsc()      # bulk rows, particle columns
         self.jac_bb = (self.jac_bb_transport + surface * alpha * outer @ grad_bc_right).tocsc()
         self.numjac = NumJac(self.shape_p)

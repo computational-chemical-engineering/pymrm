@@ -36,8 +36,56 @@ model). See `style-guide.md` sections 7 to 11 and the exemplars.
 | see what a bc dictionary means | `describe_bc(bc, x_f)` (after 2.3.1) | prints each end as an equation in x (pitfalls P1) |
 | stirred-volume or tank outlet | `{"outflow": True}` as the bc dictionary (after 2.3.1) | face value = adjacent cell (pitfalls P6) |
 | Jacobian, refinement, threshold and residual checks | `pymrm.checks` (after 2.3.1; copy in `scripts/pymrm_checks.py`) | see `numerics.md` |
-| couple sub-domains in one system | `update_array_indices` (place a block into a larger state), `construct_interface_matrices` | structure S7; `update_csc_array_indices` is deprecated; see `assembly-styles.md` |
-| boundary value or boundary rows as an operator (film, wall reaction, bulk source) | `construct_boundary_value_matrices`; an identity placed with `update_array_indices` selects boundary-face rows | never compute flat indices by hand; see "Reaching a boundary" below |
+| couple sub-domains in one system | `BlockLayout(domains, axis=...)`: name the domains once, place blocks by name (`place`, summed with `+`), reach a domain's part of a vector (`view`, `put`, `pick`); `construct_interface_matrices` | structure S7; see "Domains in one state" below and `assembly-styles.md`; `update_array_indices` is the low-level tool underneath; `update_csc_array_indices` is deprecated |
+| couple the fields of one cell (exchange, equilibrium, reaction between fields) | `construct_coefficient_matrix(M, shape=((n, k, 1), (n, 1, k)))` with `M` a `(k, k)` (or per-cell `(n, k, k)`) matrix | one small matrix per cell on an `(n, k)` state; see "Domains in one state" below |
+| boundary value or boundary rows as an operator (film, wall reaction, bulk source) | `construct_boundary_value_matrices`; `pick` of a `BlockLayout` over the face space (or an identity placed with `update_array_indices`) selects boundary-face rows | never compute flat indices by hand; see "Reaching a boundary" below |
+
+## Domains in one state: `BlockLayout`
+
+A monolithic model stacks domains (particle and bulk, wall and fluid, channels,
+fields on one grid) into one state. `BlockLayout` names them once; the state is
+`np.concatenate(parts, axis)` of the domain arrays (`axis=None`: region-major,
+the concatenation of the flattened domains, for domains with different field
+counts). Offsets follow from the concatenation; no flat index is typed.
+
+```python
+layout = BlockLayout({"particle": (n_z, n_r, m), "bulk": (n_z, 1, m)}, axis=1)
+lin = (layout.place(div_r @ flux, "particle", "particle")      # blocks on the
+       + layout.place(div_r @ flux_b, "particle", "bulk")      # domains' own shapes,
+       + layout.place(bulk_op, "bulk", "bulk")
+       + layout.place(to_bulk, "bulk", "particle")).tocsc()
+g_0 = np.zeros(layout.size); layout.put(g_0, "bulk", (div_z @ conv_bc).toarray())
+c_b = layout.view(c, "bulk")                       # a view, never a copy
+```
+
+- `place(block, rows, cols)` checks the block size against the named domains
+  (`update_array_indices` itself silently accepts a wrong size); `None` for a
+  side leaves it as is. Sum placed blocks with `+`; for a system of many blocks
+  (dozens or more) `assemble([(block, rows, cols), ...])` builds the sum in one
+  pass (3x faster at 144 blocks; slower than `+` for a handful).
+- Fields as domains: `BlockLayout.from_fields(["psi", "xi"], (n,))` for an
+  `(n, 2)` state (short for `{"psi": (n, 1), "xi": (n, 1)}, axis=-1`; the
+  trailing 1 is what interleaves: `(n,)` domains with `axis=-1` would stack to a
+  `(2n,)` state); a one-field operator placed at `("psi", "psi")`.
+- Part of a domain: `layout.subdomain("near_wall", "fluid", np.s_[:, 0])` names
+  a box of a domain (the first fluid row) without adding unknowns; use the name
+  in `place`, `view`, `put`, `add`, `pick` like a domain. For example a wall
+  rate evaluated in the first fluid cell: `place(-D * (div_y @ grad_r),
+  "fluid", "near_wall")`.
+- Residual parts: `put(g, name, values)` writes, `add(g, name, values)`
+  accumulates (a term that acts on one domain only, e.g. TVD fluxes in the
+  fluid rows). `assemble` drops explicit zeros, as `+` of sparse arrays does.
+- `NumJac`: with an integer axis, `NumJac(layout.shape)` on the full state as
+  usual. With `axis=None`, `NumJac` per domain on `layout.shapes[name]` applied
+  to `layout.view(u, name)`, placed with `place(jac, name, name)`; never
+  `NumJac` on the flat `(size,)` shape (dense Jacobian, pitfalls P3).
+- Coupling between the fields of each cell (interphase exchange
+  `kappa (x_0 - x_1)`, an equilibrium, a reaction A -> B) is one small matrix
+  per cell: `construct_coefficient_matrix(kappa * np.array([[1, -1], [-1, 1]]),
+  shape=((n, 2, 1), (n, 1, 2)))` gives the `(2n, 2n)` block with rows and
+  columns `2i, 2i + 1` for an `(n, 2)` state; `kappa` may be per cell, shape
+  `(n, 1, 1)`. For a rectangular coupling between a `k`-field and an
+  `l`-field domain use `((n, k, 1), (n, 1, l))` and a `(k, l)` matrix.
 
 ## `NumJac` stencils
 
@@ -148,7 +196,10 @@ paragraph.
 matrix or a flat offset by hand (`np.arange(n) * (n_r + 1) + n_r`,
 `ravel_multi_index`): pymrm gives both pieces.
 - The boundary ROWS of any face operator (a face gradient, a flux): select
-  them with an identity placed by `update_array_indices`. For a field
+  them with `pick` of a `BlockLayout` over the faces, `outer =
+  BlockLayout({"inner": (n_z, n_r, n_c), "outer": (n_z, 1, n_c)},
+  axis=1).pick("outer")`, or with an identity placed by
+  `update_array_indices`. For a field
   `(n_z, n_r, n_c)` and its outer face along axis 1:
   `outer = update_array_indices(eye_array(n_z * n_c), (shape_bnd, shape_bnd),
   (shape_bnd, shape_faces), offset=(None, (0, n_r, 0)))` with `shape_bnd =
@@ -169,8 +220,8 @@ matrix or a flat offset by hand (`np.arange(n) * (n_r + 1) + n_r`,
 **Extra unknowns at a boundary** (surface reaction, film, a wall
 concentration). Keep them in the state as one more position along the
 boundary-normal axis (a wall value at `j = 0` before the fluid cells, a bulk
-value at `j = n_r` after the particle cells), and place every block with
-`update_array_indices`. A wall reaction `r(c_w)`: give the fluid the flux
+value at `j = n_r` after the particle cells), declare the layout with
+`BlockLayout` and place every block by domain name. A wall reaction `r(c_w)`: give the fluid the flux
 condition with `shapes_d` (`d` is the coefficient on the external field `r`),
 and make the wall row `c_w - (mat @ c + mat_bc @ r(c_w)) = 0` with
 `construct_boundary_value_matrices` for the same condition; this is second
