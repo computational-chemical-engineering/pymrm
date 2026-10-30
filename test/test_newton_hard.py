@@ -176,7 +176,6 @@ def test_monotone_damping_is_invariant_to_row_and_column_scaling():
     np.testing.assert_allclose(scaled_rows.x, base.x, atol=1e-10)
 
 
-
 def test_scale_equals_an_explicit_change_of_variables():
     """Two fields of very different size: scale=S is the same as solving for x/S."""
     fun1, shape1 = _weisz_hicks(phi=0.5, gamma=30.0, beta=0.5, n=30)

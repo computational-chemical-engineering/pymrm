@@ -180,8 +180,10 @@ class Particle(ABC):
         eps = 1e-5 * max(hi - lo for lo, hi in self.bounding_box_body())
         g = np.empty(coords.shape)
         for a in range(self.ndim):
-            dp = coords.copy(); dp[..., a] += eps
-            dm = coords.copy(); dm[..., a] -= eps
+            dp = coords.copy()
+            dp[..., a] += eps
+            dm = coords.copy()
+            dm[..., a] -= eps
             g[..., a] = (self.level_body(dp) - self.level_body(dm)) / (2 * eps)
         return g
 
@@ -394,8 +396,10 @@ class GridParticle(Particle):
         eps = self._eps
         g = np.empty(coords.shape)
         for a in range(self.ndim):
-            dp = coords.copy(); dp[..., a] += eps
-            dm = coords.copy(); dm[..., a] -= eps
+            dp = coords.copy()
+            dp[..., a] += eps
+            dm = coords.copy()
+            dm[..., a] -= eps
             g[..., a] = (self.level_body(dp) - self.level_body(dm)) / (2 * eps)
         return g
 
@@ -662,15 +666,11 @@ def construct_ibm_particles(particles, x_c, *, axes=None, shape=None,
         solid_grid, theta_map, x_c, axes, shape, rescale, pair=False)
 
     # --- contact crossings (no_flux policy) ---------------------------------
-    n_contact = 0
     if contact_cols["lo"]:
         lo = np.concatenate(contact_cols["lo"])
         hi = np.concatenate(contact_cols["hi"])
-        part_i = np.concatenate(contact_cols["i"])
-        part_j = np.concatenate(contact_cols["j"])
         s_i = np.concatenate(contact_cols["s_i"])
         s_j = np.concatenate(contact_cols["s_j"])
-        n_contact = lo.size
         ax_of = np.empty(lo.size, dtype=np.intp)
         for a in range(ndim):
             ax_of[(hi - lo) == strides[a]] = a
@@ -728,8 +728,11 @@ def _append_contact_side(side, cells, ghosts, ax_of, direction, theta_own,
     coef_w = np.zeros(n)
     opp = np.full(n, -1, dtype=np.intp)
 
-    xc = np.empty(n); xg = np.empty(n); xw = np.empty(n)
-    xo = np.empty(n); opp_ok = np.zeros(n, dtype=bool)
+    xc = np.empty(n)
+    xg = np.empty(n)
+    xw = np.empty(n)
+    xo = np.empty(n)
+    opp_ok = np.zeros(n, dtype=bool)
     for a in range(ndim):
         m = ax_of == a
         if not m.any():
