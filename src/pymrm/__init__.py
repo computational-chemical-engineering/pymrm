@@ -78,6 +78,7 @@ from .coupling import (
     update_csc_array_indices,
     update_csr_array_indices,
     update_array_indices,
+    BlockLayout,
     translate_indices_to_larger_array,
     construct_interface_matrices,
 )
@@ -161,6 +162,7 @@ __all__ = [
     "update_csc_array_indices",
     "update_csr_array_indices",
     "update_array_indices",
+    "BlockLayout",
     "translate_indices_to_larger_array",
     "construct_interface_matrices",
     "NumJac",
