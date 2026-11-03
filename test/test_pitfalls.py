@@ -256,7 +256,7 @@ def test_p9_clipped_kinetics_stall_newton():
     damped = newton(clipped, np.ones(shape), damping="monotone")
     assert damped.nit > 50                         # about 70 iterations
     bounded = newton(clipped, np.ones(shape), damping="monotone", bounds=0.0)
-    assert bounded.nit > 20                        # about 27 iterations
+    assert bounded.status == 0 and bounded.nit <= 12   # 27 up to 3.3.0, now 9
 
     smooth, _, _ = _half_order_slab(lambda c: 900.0 * c * (c**2 + 1e-12) ** -0.25)
     res = newton(smooth, np.ones(shape), damping="monotone")

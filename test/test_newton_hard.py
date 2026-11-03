@@ -131,14 +131,29 @@ def test_regularised_kinetics_with_monotone_damping_converge():
     assert np.max(np.abs(res_small.x - res.x)) < 1e-6
 
 
-def test_regularised_rate_beats_a_bound_at_zero_and_clipping():
+def test_regularised_rate_and_a_bound_at_zero_beat_clipping():
     fun, shape, _ = _pellet(_clipped)
     fun_reg, _, _ = _pellet(_regularised)
     clipped = newton(fun, np.ones(shape), damping="monotone")
     bounded = newton(fun, np.ones(shape), damping="monotone", bounds=0.0)
     free = newton(fun_reg, np.ones(shape), damping="monotone")
     assert free.status == 0 and free.nit <= 16
-    assert bounded.nit > 1.5 * free.nit and clipped.nit > 3 * free.nit
+    assert clipped.nit > 3 * free.nit
+    # up to 3.3.0 the held dead zone capped every step at 0.5: 27 iterations
+    assert bounded.status == 0 and bounded.nit <= 12
+
+
+@pytest.mark.parametrize("n", [1600, 12800])
+def test_a_held_dead_zone_does_not_halve_every_later_step(n):
+    """Every cell of the dead zone overshoots zero on every iteration.
+
+    Up to 3.3.0 each held cell limited the next step again, so every step was
+    capped at _LAM_FLOOR = 0.5 and the solve stopped on the bound (status 8
+    after 100 iterations on 1600 and 12800 cells).
+    """
+    fun, shape, _ = _pellet(_clipped, n=n)
+    res = newton(fun, np.ones(shape), damping="monotone", bounds=0.0)
+    assert res.status == 0 and res.nit <= 50
 
 
 # ---------------------------------------------------------------------------

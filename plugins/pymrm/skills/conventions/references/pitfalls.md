@@ -144,14 +144,23 @@ A rate written with `np.maximum(c, 0.0)` (or `c**n` with `n < 1`) has a zero
 or infinite derivative at `c = 0`. Near a dead zone Newton then overshoots
 below zero, the clipped rate loses the term that pulls `c` back, and the
 iteration cycles instead of converging, or converges only after many damped
-steps. A hard lower bound at zero helps, but less than a smooth rate.
+steps. A hard lower bound at zero helps; up to 3.3.0 much less than a smooth
+rate, because every held cell capped every later step at half its length.
 
 - Symptom: `success=False` after `maxfev` iterations with a profile that looks
   almost right (status 2, or 7 when the steps are small but the backward error
   stays above `backward_tol`), or success only after tens of iterations.
 - Measured: slab, `phi^2 sqrt(max(c, 0))` with `phi = 30`, 100 cells, from
   `c = 1`: plain Newton fails after 100 iterations; `damping="monotone"` needs
-  about 70, and about 27 with `bounds=0`.
+  about 70; with `bounds=0` about 27 up to 3.3.0, and 9 from 3.4.0. On
+  12800 cells (the pellet of `test_newton_hard.py`) `bounds=0` stops on the
+  bound up to 3.3.0 and needs 39 iterations from 3.4.0; the smooth rate 16.
+- A bounded unknown that follows a `w**n` sink with `n < 1` into a dead zone
+  (Sieverts permeation, `sqrt(p)`) converges faster in `s = sqrt(w)`: the
+  residual is then smooth in the unknown (gallery H1.1: 6 to 23 iterations
+  from 800 to 51200 cells, against failures near the critical value in `w`).
+  A differenced Jacobian (`NumJac`, absolute step `eps_jac` below 1) is a
+  secant there: for unknowns far below 1, scale them or lower `eps_jac`.
 - Do (from 3.0.0): make the rate smooth and first order through zero,
   `phi^2 c (c**2 + eps**2)**-0.25` with `eps = 1e-6`, and use
   `damping="monotone"`: status 0 after about 13 iterations, the same 6.8e-4 from the
