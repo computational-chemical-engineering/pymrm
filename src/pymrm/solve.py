@@ -25,6 +25,9 @@ _ARMIJO_C = 1.0e-4
 _BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
+# Exceptions that mark an evaluation point as unusable (``newton``'s default).
+_RECOVERABLE = (FloatingPointError, OverflowError, ZeroDivisionError)
+
 _MESSAGES = {
     0: "Converged",
     1: "Converged to the stagnation floor",
@@ -371,7 +374,7 @@ def newton(
     backward_tol=1e-8,
     stagnation=False,
     row_scaling=False,
-    recoverable=(FloatingPointError, OverflowError, ZeroDivisionError),
+    recoverable=_RECOVERABLE,
     verbose=0,
 ):
     """Solve ``function(x) = 0`` with a (damped) Newton iteration.
@@ -942,11 +945,22 @@ def _mass_matrix(mass, shape):
 
 
 def _attempt(function, x, args, options):
-    """newton, with a breakdown returned as an unsuccessful result."""
+    """newton, with a breakdown returned as an unsuccessful result.
+
+    newton evaluates its initial guess unguarded, so one of ``recoverable``
+    raised there propagates. Here the guess is a prediction (a secant, a
+    pseudo-time state), so it is an unusable point like a non-finite residual:
+    status 4, and the caller shortens its step.
+    """
     try:
         return newton(function, x, args, **options)
     except NewtonBreakdown as exc:
         return exc.result
+    except options.get("recoverable", _RECOVERABLE) as exc:
+        return OptimizeResult(
+            x=np.array(x, dtype=float), success=False, status=4, nit=0, nfev=1, nfact=0,
+            fun=None, step_norm=float("nan"), backward_error=float("nan"), history=[],
+            message=f"{_MESSAGES[4]}: {type(exc).__name__} at the initial guess ({exc})")
 
 
 def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_max=np.inf,
@@ -1108,8 +1122,12 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
 
     Natural-parameter continuation: each point starts from a secant
     extrapolation of the two previous solutions and is corrected with
-    :func:`newton`. A failed correction halves the parameter step (at most
-    ``max_halvings`` times per requested value). A correction that moves
+    :func:`newton`. A failed correction halves the parameter step; an
+    accepted sub-step doubles the next one again, up to the requested step.
+    The march stops when a sub-step would have to be shorter than the
+    requested step divided by ``2**max_halvings``. A prediction at which
+    ``function`` raises one of newton's ``recoverable`` exceptions counts as
+    a failed correction. A correction that moves
     ``x`` by more than ``max_change`` times ``max |x|`` from the prediction
     counts as failed: near a turning point (fold) the corrector otherwise
     jumps silently to another solution branch. The march then stops and
@@ -1123,9 +1141,11 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
     fails, the step is retried before any halving from the secant through an
     earlier solution at least a quarter of the step back, or else from the
     last solution. Nearly equal values in ``params`` are therefore harmless;
-    exactly equal ones are not solved again. The fold diagnosis in the
-    message is given only when the last prediction tried was a secant within
-    that bound.
+    exactly equal ones are not solved again. A fold is offered in the
+    message only when the last prediction tried was a secant within that
+    bound, and when the corrector failed (rather than jumped) it is named
+    beside the other cause: a corrector that cannot converge at that point,
+    for instance with an inexact Jacobian.
 
     Parameters
     ----------
@@ -1136,7 +1156,8 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
     params : sequence of float
         Parameter values, in the order to visit them.
     max_halvings : int, optional
-        Largest number of step halvings on the way to one parameter value.
+        Largest number of consecutive halvings of the requested step: the
+        shortest sub-step is the requested step divided by ``2**max_halvings``.
     max_change : float or None, optional
         Largest accepted relative distance between prediction and solution;
         ``None`` disables the branch-jump check.
@@ -1170,20 +1191,27 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
             xs.append(path_x[-1].copy())
             results.append(results[-1])
             continue
-        halvings = 0
+        # Sub-steps are the requested step divided by 2**level. A failure
+        # halves the sub-step; an accepted one doubles the next (at most to
+        # the requested step), so a stretch needing short sub-steps does not
+        # use up the halving budget while every sub-step succeeds.
+        step = target - path_p[-1]
+        level = 0
         p = target
         while True:
-            for guess, bounded in _continuation_predictions(path_p, path_x, p):
-                res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
-                jumped = False
-                if res.success and max_change is not None and len(path_p) >= 2:
-                    # no prediction to compare with before the second point
-                    size = max(float(np.max(np.abs(path_x[-1]))),
-                               float(np.max(np.abs(res.x))), np.finfo(float).tiny)
-                    jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
-                if res.success and not jumped:
-                    break
-            if res.success and not jumped:
+            res, jumped, bounded = None, False, False
+            if p != path_p[-1]:             # else the sub-step is below round-off
+                for guess, bounded in _continuation_predictions(path_p, path_x, p):
+                    res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
+                    jumped = False
+                    if res.success and max_change is not None and len(path_p) >= 2:
+                        # no prediction to compare with before the second point
+                        size = max(float(np.max(np.abs(path_x[-1]))),
+                                   float(np.max(np.abs(res.x))), np.finfo(float).tiny)
+                        jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
+                    if res.success and not jumped:
+                        break
+            if res is not None and res.success and not jumped:
                 path_p.append(p)
                 path_x.append(res.x.copy())
                 if verbose:
@@ -1193,22 +1221,34 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                     xs.append(res.x.copy())
                     results.append(res)
                     break
-                p = target
+                level = max(level - 1, 0)
+                h = step * 0.5**level
+                p = target if abs(target - p) <= abs(h) else p + h
                 continue
-            halvings += 1
-            if halvings > max_halvings:
-                why = ("the corrector jumps to another solution branch" if jumped
-                       else f"the corrector fails ({res.message})")
-                if bounded:
-                    why += "; probably a turning point (fold) of the solution branch"
+            level += 1
+            if level > max_halvings or res is None:
+                if res is None:
+                    why = "the sub-step fell below round-off"
+                elif jumped:
+                    why = "the corrector jumps to another solution branch"
+                    if bounded:
+                        why += "; probably a turning point (fold) of the solution branch"
                 else:
+                    why = f"the corrector fails ({res.message})"
+                    if bounded:
+                        why += ("; a turning point (fold) of the solution branch, or a "
+                                "corrector that cannot converge here (an inexact Jacobian, "
+                                "such as NumJac's eps_jac, or a tolerance below round-off)")
+                if res is not None and not bounded:
                     why += (" from the constant predictor (no earlier solution far enough "
                             "back for a secant)")
                 return OptimizeResult(
                     x=path_x[-1], success=False, params=done, xs=xs, results=results,
                     last_param=path_p[-1],
                     message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
-            p = path_p[-1] + 0.5 * (p - path_p[-1])
+            p = path_p[-1] + step * 0.5**level
+            if abs(p - path_p[-1]) >= abs(target - path_p[-1]):
+                p = target
     return OptimizeResult(x=path_x[-1], success=True, params=done, xs=xs, results=results,
                           last_param=path_p[-1], message="Reached every parameter value")
 

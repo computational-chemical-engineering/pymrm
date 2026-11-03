@@ -578,3 +578,55 @@ def test_continuation_names_no_fold_after_a_constant_prediction():
         res = continuation(fun, np.zeros(n), [0.0, 3.0], newton_kwargs={"maxfev": 1})
     assert not res.success
     assert "fold" not in res.message and "constant predictor" in res.message
+
+
+def test_continuation_keeps_its_halving_budget_over_many_sub_steps():
+    """Bratu 0 to 3 in one requested step with a 3-evaluation corrector.
+
+    Every sub-step succeeds after a few halvings; pymrm 3.3.0 counted the
+    halvings of all sub-steps together and stopped at p = 1.875 with a fold
+    message, although the fold lies at 3.514.
+    """
+    from pymrm import continuation
+    fun, n = _bratu()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [0.0, 3.0], max_halvings=4,
+                           newton_kwargs={"maxfev": 3})
+    assert res.success, res.message
+    assert res.params == [0.0, 3.0]
+    assert np.max(np.abs(fun(res.x, 3.0)[0])) < 1e-6
+
+
+def test_continuation_fold_message_names_the_corrector_as_well():
+    """The corrector can fail at a regular point: the message says so beside the fold."""
+    from pymrm import continuation
+    fun, n = _bratu()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [0.0, 1.0, 2.0, 3.0, 3.6])
+    assert not res.success and 3.4 < res.last_param < 3.514
+    assert "fold" in res.message and "cannot converge" in res.message
+
+
+def test_continuation_halves_when_the_prediction_raises():
+    """A residual that raises at an inadmissible prediction halves the step.
+
+    Bratu from lam = 3 down to 0.5, with a residual that raises
+    FloatingPointError where u < 0 (as a logarithm of a concentration would):
+    the secant from 3 and 2.5 to 0.5 predicts u < 0 near the walls. pymrm
+    3.3.0 evaluated the prediction unguarded and the exception ended the
+    march.
+    """
+    from pymrm import continuation
+    fun0, n = _bratu()
+
+    def fun(u, lam):
+        if np.min(u) < 0:
+            raise FloatingPointError("inadmissible state")
+        return fun0(u, lam)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [3.0, 2.5, 0.5])
+    assert res.success, res.message
+    assert np.max(np.abs(fun0(res.x, 0.5)[0])) < 1e-6
