@@ -630,3 +630,67 @@ def test_continuation_halves_when_the_prediction_raises():
         res = continuation(fun, np.zeros(n), [3.0, 2.5, 0.5])
     assert res.success, res.message
     assert np.max(np.abs(fun0(res.x, 0.5)[0])) < 1e-6
+
+
+def test_continuation_never_retries_the_same_prediction(monkeypatch):
+    """A failure at the capped last sub-step halves below it, not back onto it.
+
+    x - p**2 = 0 with a NaN residual where |x - p**2| > 0.1, from 0 to 0.5 with
+    max_halvings=1: the corrector at 0.5 (secant guess 0.125) was solved twice.
+    """
+    import pymrm.solve
+    from pymrm import continuation
+
+    def fun(x, p):
+        g = x - p * p
+        if np.max(np.abs(g)) > 0.1:
+            g = np.full_like(x, np.nan)
+        return g, np.eye(x.size)
+    starts = []
+    real = pymrm.solve.newton
+
+    def logged(function, x0, *args, **kwargs):
+        p = function.__defaults__[0] if function.__defaults__ else None
+        starts.append((p, float(np.ravel(x0)[0])))
+        return real(function, x0, *args, **kwargs)
+    monkeypatch.setattr(pymrm.solve, "newton", logged)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        continuation(fun, np.array([0.0]), [0.0, 0.5], max_halvings=1)
+    assert len(starts) == len(set(starts)), starts
+
+
+def test_continuation_names_an_unevaluable_prediction():
+    """A prediction where the residual raises is not reported as a fold."""
+    from pymrm import continuation
+    fun0, n = _bratu()
+
+    def fun(u, lam):
+        if np.min(u) < 0:
+            raise FloatingPointError("inadmissible state")
+        return fun0(u, lam)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = continuation(fun, np.zeros(n), [3.0, 2.5, 0.5], max_halvings=0)
+    assert not res.success
+    assert "cannot be evaluated at the prediction" in res.message
+    assert "fold" not in res.message
+
+
+def test_continuation_lets_exceptions_after_the_guess_propagate():
+    """Only the evaluation of the prediction is guarded; a raise at an iterate is not."""
+    from pymrm import continuation
+    calls = {"n": 0}
+
+    def fun(x, p):
+        calls["n"] += 1
+        if calls["n"] > 1 and p > 0:
+            # first evaluation of each solve passes, the first iterate raises
+            if calls.get("p") == p:
+                raise FloatingPointError("at an iterate")
+        calls["p"] = p
+        return x - p, np.eye(x.size)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(FloatingPointError):
+            continuation(fun, np.array([1.0]), [0.0, 1.0], newton_kwargs={"damping": "none"})

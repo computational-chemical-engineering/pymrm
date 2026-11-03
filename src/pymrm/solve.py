@@ -376,6 +376,7 @@ def newton(
     row_scaling=False,
     recoverable=_RECOVERABLE,
     verbose=0,
+    _guard_guess=False,
 ):
     """Solve ``function(x) = 0`` with a (damped) Newton iteration.
 
@@ -695,7 +696,17 @@ def newton(
             raise (KrylovBreakdown if krylov else NewtonBreakdown)(message, result)
         return result
 
-    ev = evaluate(x, guard=False)
+    if _guard_guess:
+        # The guess is a prediction (continuation, pseudo_transient): one of
+        # ``recoverable`` there marks it unusable, like a non-finite residual.
+        try:
+            ev = evaluate(x, guard=False)
+        except recoverable as exc:
+            state["bad"] = None
+            return finish(4, False, None, float("nan"), float("nan"),
+                          f"{type(exc).__name__} at the initial guess ({exc})")
+    else:
+        ev = evaluate(x, guard=False)
     if ev is None:
         return finish(4, False, None, float("nan"), float("nan"), "at the initial guess")
 
@@ -947,20 +958,15 @@ def _mass_matrix(mass, shape):
 def _attempt(function, x, args, options):
     """newton, with a breakdown returned as an unsuccessful result.
 
-    newton evaluates its initial guess unguarded, so one of ``recoverable``
-    raised there propagates. Here the guess is a prediction (a secant, a
-    pseudo-time state), so it is an unusable point like a non-finite residual:
-    status 4, and the caller shortens its step.
+    The guess is a prediction (a secant, a pseudo-time state), so one of
+    newton's ``recoverable`` exceptions raised by its evaluation marks an
+    unusable point, as a non-finite residual does: status 4, and the caller
+    shortens its step. Exceptions later in the solve propagate as in newton.
     """
     try:
-        return newton(function, x, args, **options)
+        return newton(function, x, args, **options, _guard_guess=True)
     except NewtonBreakdown as exc:
         return exc.result
-    except options.get("recoverable", _RECOVERABLE) as exc:
-        return OptimizeResult(
-            x=np.array(x, dtype=float), success=False, status=4, nit=0, nfev=1, nfact=0,
-            fun=None, step_norm=float("nan"), backward_error=float("nan"), history=[],
-            message=f"{_MESSAGES[4]}: {type(exc).__name__} at the initial guess ({exc})")
 
 
 def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_max=np.inf,
@@ -1225,7 +1231,13 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                 h = step * 0.5**level
                 p = target if abs(target - p) <= abs(h) else p + h
                 continue
+            # Halve until the sub-step is shorter than the one that failed: a
+            # failure at the capped last sub-step would otherwise be retried
+            # with the same prediction.
+            tried = abs(p - path_p[-1])
             level += 1
+            while level <= max_halvings and abs(step) * 0.5**level >= tried:
+                level += 1
             if level > max_halvings or res is None:
                 if res is None:
                     why = "the sub-step fell below round-off"
@@ -1233,6 +1245,9 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                     why = "the corrector jumps to another solution branch"
                     if bounded:
                         why += "; probably a turning point (fold) of the solution branch"
+                elif res.status == 4 and res.nit == 0:
+                    why = (f"the residual cannot be evaluated at the prediction ({res.message}); "
+                           "it lies outside the residual's domain")
                 else:
                     why = f"the corrector fails ({res.message})"
                     if bounded:
@@ -1247,8 +1262,6 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                     last_param=path_p[-1],
                     message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
             p = path_p[-1] + step * 0.5**level
-            if abs(p - path_p[-1]) >= abs(target - path_p[-1]):
-                p = target
     return OptimizeResult(x=path_x[-1], success=True, params=done, xs=xs, results=results,
                           last_param=path_p[-1], message="Reached every parameter value")
 
