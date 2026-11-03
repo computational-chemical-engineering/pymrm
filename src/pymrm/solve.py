@@ -231,6 +231,7 @@ class _Bounds:
         self.lower, self.upper, self.tau = lower, upper, tau
         self.lo_mask = None if lower is None else np.isfinite(lower)
         self.hi_mask = None if upper is None else np.isfinite(upper)
+        self.held = None     # components a bound held in the last accepted step
 
     @property
     def active(self):
@@ -269,14 +270,30 @@ class _Bounds:
         step; a full step that lands inside the bound, however close, is taken
         (a linear problem with a solution near the bound then converges in one
         step). A crossing shallower than ``_CROSS_RTOL`` times the distance is
-        round-off in ``x - dx`` and does not count.
+        round-off in ``x - dx`` and does not count. Nor does a component that a
+        bound held in the previous accepted step: where every cell of an
+        extinction tail overshoots its bound on every iteration, it would cap
+        every step at ``_LAM_FLOOR`` and only halve the error of all other
+        components. It is held again by :meth:`project` if it crosses again.
+        (Remembering every component ever held, not only the last step's, lost
+        two of 108 bounded Arrhenius pellets.)
         """
         lam = 1.0
         for sign, mask, _, dist, over in self._sides(x, dx):
             m = mask & (dist > 0.0) & (over > _CROSS_RTOL * dist)
+            if self.held is not None:
+                m &= ~self.held
             if np.any(m):
                 lam = min(lam, float(np.min(self.tau * dist[m] / (sign * dx[m]))))
         return lam
+
+    def commit(self, x, trial, dx):
+        """Record the components :meth:`project` held in the accepted ``trial``."""
+        held = np.zeros(x.shape, dtype=bool)
+        for sign, mask, bound, dist, over in self._sides(x, dx):
+            genuine = mask & (over > _CROSS_RTOL * dist)
+            held |= genuine & (trial == bound + sign * (1.0 - self.tau) * dist)
+        self.held = held
 
     def project(self, trial, x, dx):
         """Hold genuinely crossing components ``1 - tau`` of their distance from the bound.
@@ -723,6 +740,8 @@ def newton(
             """Take the converged step without evaluating there, as plain Newton did."""
             trial = x_flat - dx
             n_clip = bnd.project(trial, x_flat, dx) if bnd.active else 0
+            if bnd.active:
+                bnd.commit(x_flat, trial, dx)
             x_flat[:] = trial
             history.append({"step_norm": step_inf, "damping": 1.0, "theta": float("nan"),
                             "clipped": n_clip})
@@ -786,6 +805,8 @@ def newton(
                     lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
                 trial = x_flat - lam * dx
                 clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+                if bnd.active:
+                    bnd.commit(x_flat, trial, dx)
                 x_flat[:] = trial
                 history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
                                 "clipped": clipped})
@@ -903,6 +924,8 @@ def newton(
                     lam_next = 1.0 if (escaped or mode == "guarded") else min(1.0, 4.0 * accepted[2])
 
                 trial, ev, lam = accepted
+                if bnd.active:
+                    bnd.commit(x_flat, trial, dx)
                 x_flat[:] = trial
                 history.append({"step_norm": step_inf, "damping": lam, "theta": theta,
                                 "clipped": clipped})
