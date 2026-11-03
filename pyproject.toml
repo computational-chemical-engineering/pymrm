@@ -30,6 +30,14 @@ classifiers = [
     "Topic :: Scientific/Engineering"
 ]
 
+[project.optional-dependencies]
+# Development tools stay out of the runtime dependencies: `pip install pymrm`
+# in a running Jupyter or Colab kernel must not upgrade IPython or ipykernel.
+test = ["pytest>=8.3.4", "pytest-cov"]
+notebooks = ["ipython>=8.20", "ipykernel>=6.28", "nbclient", "nbformat"]
+docs = ["sphinx", "sphinx_rtd_theme", "myst-parser"]
+dev = ["pymrm[test,notebooks,docs]", "flake8"]
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"]}
 

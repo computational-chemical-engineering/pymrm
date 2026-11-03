@@ -3,8 +3,7 @@
 # The commands provided here will be executed for building the documentation in the ci
 # but may also be used locally
 
-pip install myst-parser # workaround. Should be included in Docker image?
-pip install -e .
+pip install -e ".[docs]"
 cd docs/sphinx
 mkdir -p _static
 make html 2>documentation_errors.txt

@@ -65,7 +65,7 @@ It is recommended to use a virtual environment to isolate your project dependenc
 
 ## Installing PyMRM
 
-PyMRM is available on PyPI and includes all necessary dependencies.
+PyMRM is available on PyPI.
 
 1. **Upgrade pip**:
    - Run the following command to ensure you have the latest version of pip:
@@ -78,6 +78,11 @@ PyMRM is available on PyPI and includes all necessary dependencies.
      ```sh
      pip install pymrm
      ```
+   - This installs what pymrm needs at run time (NumPy, SciPy, Numba,
+     Matplotlib). To run the example notebooks in VS Code without a Jupyter
+     installation, add the notebook kernel: `pip install "pymrm[notebooks]"`.
+     Contributors install the test, documentation and lint tools with
+     `pip install -e ".[dev]"` from a clone of the repository.
 
 ## Verifying the Installation
 

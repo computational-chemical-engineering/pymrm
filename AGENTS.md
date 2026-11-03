@@ -29,7 +29,7 @@ models the skills tell agents to copy are run by `test/test_plugin_exemplars.py`
 ## Development
 
 ```bash
-pip install -e . pytest flake8
+pip install -e ".[dev]"
 pytest test/                   # unit tests, pitfall tests, exemplar checks
 flake8 src/                    # CI lints src/ only; keep new test files clean too
 ```
