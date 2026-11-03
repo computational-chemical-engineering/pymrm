@@ -1,11 +1,37 @@
 """Convective-flux operators and TVD limiter functions."""
 
 import math
+import warnings
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array, _align_to_axes
 from .helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
+
+
+def _warn_unset_outflow(bc, v_t, caller):
+    """Warn when a boundary without a condition has outgoing velocity.
+
+    ``v_t`` is the face velocity reshaped to ``(n0, n_faces, n2)`` or a
+    scalar. A face with ``None`` carries no flux, as a Dirichlet value of
+    zero would; at an outlet that silently removes nothing, and with an
+    exchange or reaction sink the system stays regular and newton converges
+    to a wrong state.
+    """
+    if bc is None:
+        bc = (None, None)
+    v_t = np.asarray(v_t, dtype=float)
+    left = v_t if v_t.ndim == 0 else v_t[:, 0, :]
+    right = v_t if v_t.ndim == 0 else v_t[:, -1, :]
+    sides = [name for name, cond, out in (("left (first)", bc[0], np.any(left < 0)),
+                                          ("right (last)", bc[1], np.any(right > 0)))
+             if cond is None and out]
+    if sides:
+        warnings.warn(
+            f"{caller}: the {' and '.join(sides)} boundary face has no boundary condition "
+            "(None) while the velocity there points out of the domain. That face carries "
+            "no flux, as a Dirichlet value of zero would. Pass {'outflow': True} for an "
+            "outlet, or a boundary-condition dict.", UserWarning, stacklevel=3)
 
 
 def construct_convflux_upwind(
@@ -28,7 +54,10 @@ def construct_convflux_upwind(
         (at the left end ``dc/dn = -dc/dx``). ``{"outflow": True}`` marks a pure-outflow boundary: the
         face value is the adjacent cell value (a stirred volume's exit). It is
         meant for faces where material leaves; if flow enters there, the face
-        still carries the adjacent cell value.
+        still carries the adjacent cell value. ``None`` means no flux through
+        that face (a closed end, the same operator as a Dirichlet value of
+        zero); it warns when the velocity there points out of the domain,
+        where an outlet needs ``{"outflow": True}``.
     v : float or array_like, optional
         Face velocity field. Scalars and broadcastable arrays are accepted.
     axis : int, optional
@@ -53,6 +82,9 @@ def construct_convflux_upwind(
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
 
     v_f = create_staggered_array(v, shape, axis, x_f=x_f, x_c=x_c)
+    shape_f_t = (math.prod(shape[:axis]), shape[axis] + 1, math.prod(shape[axis + 1:]))
+    _warn_unset_outflow(bc, v_f if np.ndim(v_f) == 0 else np.reshape(v_f, shape_f_t),
+                        "construct_convflux_upwind")
     conv_matrix = construct_convflux_upwind_int(shape, v_f, axis, format=format)
     if bc is None or bc == (None, None):
         shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
@@ -741,6 +773,8 @@ class ConvFluxTVD:
         x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
         if bc is None:
             bc = (None, None)
+        self._bc_unset = (bc[0] is None, bc[1] is None)
+        self._warned_unset = False
         self.shape = shape
         self.axis = axis
         self.shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
@@ -875,6 +909,10 @@ class ConvFluxTVD:
         if jac_v and centred:
             raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
         v_t = v_t.reshape(self._shape_f_t)
+        if any(self._bc_unset) and not self._warned_unset:
+            self._warned_unset = True
+            _warn_unset_outflow(tuple(None if unset else {} for unset in self._bc_unset),
+                                v_t, "ConvFluxTVD")
         ext = [np.ones(1), np.ones(1)]
         if self._with_d:
             if d is None:
