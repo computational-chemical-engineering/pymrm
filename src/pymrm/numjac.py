@@ -628,7 +628,12 @@ class NumJac:
             Stencil specification or factory callable. When callable, it is
             invoked with ``ndims`` and ``**kwargs``.
         eps_jac : float, optional
-            Relative perturbation magnitude used in finite differences.
+            Finite-difference perturbation. Relative where ``|c| >= 1`` (the
+            step is ``-eps_jac * |c|``) and absolute below (the step is
+            ``+eps_jac``): unknowns much smaller than 1, such as mole
+            fractions or a coverage in an extinction tail, are perturbed by
+            far more than their own size. Scale such unknowns to order 1, or
+            pass a smaller ``eps_jac``.
         format : {'csc', 'csr'}, optional
             Sparse format for produced Jacobian matrices.
         **kwargs

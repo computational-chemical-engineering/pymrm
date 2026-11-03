@@ -190,8 +190,8 @@ class TestConvectCSR:
 
     def test_convflux_upwind_no_bc_csr(self):
         shape, x_f, _ = _make_1d(8)
-        m_csc, b_csc = construct_convflux_upwind(shape, x_f, format="csc")
-        m_csr, b_csr = construct_convflux_upwind(shape, x_f, format="csr")
+        m_csc, b_csc = construct_convflux_upwind(shape, x_f, v=0.0, format="csc")
+        m_csr, b_csr = construct_convflux_upwind(shape, x_f, v=0.0, format="csr")
         _assert_same_dense(m_csc, m_csr)
 
     def test_convflux_bc_csr(self):

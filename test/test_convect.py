@@ -30,7 +30,8 @@ def sparse_format(request):
 def test_construct_convflux_upwind(sparse_format):
     shape = (10,)
     x_f = np.linspace(0, 1, shape[0] + 1)
-    conv_matrix, conv_bc = construct_convflux_upwind(shape, x_f, format=sparse_format)
+    with pytest.warns(UserWarning, match="no boundary condition"):
+        conv_matrix, conv_bc = construct_convflux_upwind(shape, x_f, format=sparse_format)
     assert conv_matrix.shape[0] > 0
     assert conv_bc.shape[0] > 0
 
@@ -265,7 +266,8 @@ def test_construct_convflux_upwind_int_scalar(sparse_format):
 def test_construct_convflux_upwind_int_scalar_shape(sparse_format):
     """construct_convflux_upwind with integer shape."""
     x_f = np.linspace(0, 1, 9)
-    conv_matrix, conv_bc = construct_convflux_upwind(8, x_f, format=sparse_format)
+    conv_matrix, conv_bc = construct_convflux_upwind(8, x_f, bc=(None, {"outflow": True}),
+                                                     format=sparse_format)
     assert conv_matrix.shape[1] == 8
 
 
@@ -357,3 +359,43 @@ def test_explicit_tvd_convection_break_row():
     bounded test above can fail."""
     c_min, c_max = _explicit_step_extremes(smart, 0.30)
     assert c_max > 1 + 1e-4
+
+
+# ---------------------------------------------------------------------------
+# An unset (None) boundary with outgoing velocity: a closed outlet
+# ---------------------------------------------------------------------------
+
+def test_unset_outlet_warns_and_carries_no_flux():
+    """bc None at an outlet is the operator of a Dirichlet zero there: warn."""
+    import warnings
+    x_f = np.linspace(0, 1, 11)
+    inlet = {"a": 0, "b": 1, "d": 1}
+    with pytest.warns(UserWarning, match="right \\(last\\) boundary face"):
+        m_none, b_none = construct_convflux_upwind(10, x_f, bc=(inlet, None), v=1.0)
+    m_zero, b_zero = construct_convflux_upwind(10, x_f, bc=(inlet, {"a": 0, "b": 1, "d": 0}),
+                                               v=1.0)
+    np.testing.assert_allclose(m_none.toarray(), m_zero.toarray())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        construct_convflux_upwind(10, x_f, bc=(inlet, {"outflow": True}), v=1.0)
+        construct_convflux_upwind(10, x_f, bc=(None, {"outflow": True}), v=1.0)  # closed inlet
+        construct_convflux_upwind(10, x_f, bc=({"outflow": True}, None), v=-1.0)
+    with pytest.warns(UserWarning, match="left \\(first\\) boundary face"):
+        construct_convflux_upwind(10, x_f, bc=(None, inlet), v=-1.0)
+    v = np.ones(11)
+    v[-1] = 0.0                                     # no flow through the closed end
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        construct_convflux_upwind(10, x_f, bc=(inlet, None), v=v)
+
+
+def test_convflux_tvd_unset_outlet_warns_once():
+    import warnings
+    x_f = np.linspace(0, 1, 11)
+    from pymrm.convect import ConvFluxTVD
+    tvd = ConvFluxTVD(10, x_f, bc=({"a": 0, "b": 1, "d": 1}, None))
+    with pytest.warns(UserWarning, match="ConvFluxTVD"):
+        tvd(np.ones(10), 1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tvd(np.ones(10), 1.0)
