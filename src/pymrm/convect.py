@@ -54,7 +54,8 @@ def construct_convflux_upwind(
         (at the left end ``dc/dn = -dc/dx``). ``{"outflow": True}`` marks a pure-outflow boundary: the
         face value is the adjacent cell value (a stirred volume's exit). It is
         meant for faces where material leaves; if flow enters there, the face
-        still carries the adjacent cell value. ``None`` means no flux through
+        still carries the adjacent cell value. That cell value approximates
+        the outlet value to second order (see :func:`pymrm.helpers.is_outflow_bc`). ``None`` means no flux through
         that face (a closed end, the same operator as a Dirichlet value of
         zero); it warns when the velocity there points out of the domain,
         where an outlet needs ``{"outflow": True}``.
@@ -728,7 +729,10 @@ class ConvFluxTVD:
         Left and right boundary conditions ``a * dc/dn + b * c = d`` with
         ``n`` the outward normal, or ``{"outflow": True}``, as for
         :func:`construct_convflux_upwind`. Boundary faces carry the boundary
-        value without a TVD correction.
+        value without a TVD correction. With ``{"outflow": True}`` the last
+        cell approximates the outlet value to second order, and the profile
+        is first order only in a layer of 2 to 3 cells at the outlet (see
+        :func:`pymrm.helpers.is_outflow_bc`).
     tvd_limiter : callable, optional
         Limiter ``phi(c_norm, x_norm_c, x_norm_d)`` (default :func:`minmod`).
         The built-in limiters carry an analytic ``derivative`` attribute; for

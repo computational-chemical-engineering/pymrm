@@ -276,6 +276,13 @@ def is_outflow_bc(bc_side):
     the value of the adjacent cell (a stirred volume's exit, a tanks-in-series
     outlet). It cannot be expressed with ``a``, ``b`` and ``d``, which describe
     a reconstructed face value, so it is a separate marker.
+
+    With convection into the face, the last cell is an implicit Euler step
+    from its inflow face to the outlet: its value approximates the outlet
+    value ``c(L)`` to second order, not the cell average. A higher-order (TVD)
+    profile therefore drops to first order in a layer of 2 to 3 cells at the
+    outlet (the error falls about fourfold per cell upstream); measure
+    convergence order on the outlet value or at a fixed position.
     """
     if not isinstance(bc_side, dict) or not bc_side.get("outflow", False):
         return False
