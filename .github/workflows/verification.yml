@@ -26,7 +26,7 @@ jobs:
 
     - name: run tutorials
       run: |
-        python -m pip install .
+        python -m pip install ".[notebooks]"
         python scripts/run_tutorials.py
 
   examples:
@@ -43,6 +43,6 @@ jobs:
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
     - name: Run examples
       run: |
-        python -m pip install .
+        python -m pip install ".[notebooks]"
         python -m pip install pyamg   # optional AMG solver in newton_linear_solvers
         python scripts/run_examples.py
