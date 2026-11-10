@@ -15,6 +15,7 @@ physics.
 | Several domains in one Newton system, each with its own operators and fields | `exemplars/membrane_reactor.py` (countercurrent retentate and permeate) | sub-shapes per domain, `BlockLayout` (channels concatenated along the field axis) with rectangular coupling blocks, per-cell coupling by `construct_coefficient_matrix`, constant blocks placed once |
 | Pressure and flow solved together; velocity depends on the state | `exemplars/darcy_gas_reactor.py` (Darcy flow, ideal gas, reaction) | face velocity from `construct_grad` of pressure; flux as a product, Jacobian by the product rule |
 | Nested scales: a particle (or film, washcoat) at every reactor cell | `exemplars/nested_particle_bed.py` (plug-flow bed, resolved spheres, film) | `construct_grad(..., shapes_d=...)` for the bulk-dependent surface condition, `BlockLayout(...).pick` over the face space to select the surface face; Schur complement as a custom `newton` solver |
+| Axial profiles plus well-mixed unknowns in one Newton system; a state-dependent velocity in a convected molar flux | `exemplars/slurry_bubble_column.py` (plug-flow gas, well-mixed slurry, gas contraction) | `BlockLayout` with a profile domain and a scalar domain; upwind operator built once with `v=1.0` acting on the molar flow `q = s(y) y`, Jacobian by the product rule; outlet `{"outflow": True}` read with `compute_boundary_values` |
 
 ## Monolithic first
 

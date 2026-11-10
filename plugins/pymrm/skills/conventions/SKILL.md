@@ -26,6 +26,9 @@ a model that will be kept, shared or extended.
 | `exemplars/steady_tvd_channel.py` | a steady 2-D channel with TVD convection solved by Newton (`ConvFluxTVD`, exact Jacobian, observed orders, break row) |
 | `exemplars/assembly_styles.py` | one two-field model in all three assembly styles, with a Jacobian cross-check |
 | `exemplars/cstr_steady_states.py` | a pointwise algebraic model in compact script format (scaled unknowns, multiple steady states, two routes) |
+| `exemplars/continuation_s_curve.py` | a solution branch along a parameter with `continuation` (S-curve of a non-isothermal pellet: warm starts, reading `success`, `last_param` and the message at a fold, sweeping up and down for the multiplicity window, a shooting route) |
+| `exemplars/correlation_roots.py` | crossings, thresholds and extrema of correlations: `find_roots` wrapped to raise unless exactly one root, an extremum as the root of the analytic derivative (pole multiplied out), limits in closed form instead of grid ends |
+| `exemplars/refinement_orders.py` | orders of convergence with time split from space: grid order from `observed_orders` on the semi-discrete solution exact in time (eigendecomposition) with its round-off bound cond(V) eps, time order on one fixed grid against that solution, a series reference, exact cell volumes as weights |
 
 Paths are relative to this skill's directory.
 
