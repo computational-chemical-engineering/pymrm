@@ -117,11 +117,15 @@ def _overwrite_outflow_faces(face, delta, cell_centered_values, outflow, axis):
     return np.moveaxis(face, 0, ax), np.moveaxis(delta, 0, ax)
 
 
-def _interp_single_cell(
-    cell_centered_values, x_f, x_c, bc, shape, axis, staggered_values, shape_f, shape_bc, shape_bc_d
-):
+def _on_boundary(value, geo):
+    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``."""
+    return np.reshape(value + np.zeros(geo.shape_bc), geo.shape_bc_d)
+
+
+def _interp_single_cell(cells, x_f, x_c, bc, geo):
     """Face values of a single-cell domain from the two boundary conditions."""
-    a, b, d = _unwrap_bc_pair(shape, bc, axis)
+    staggered_values = np.empty(geo.shape_f_t)
+    a, b, d = _unwrap_bc_pair(geo.shape, bc, geo.axis)
     alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
     alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
     alpha_0_left = alpha_1 - alpha_2_left
@@ -132,43 +136,86 @@ def _interp_single_cell(
     ) - alpha_2_left * alpha_2_right * a[0] * a[1]
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
     fctr_m = alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr
-    fctr_m = fctr_m + np.zeros(shape_bc)
-    fctr_m = np.reshape(fctr_m, shape_bc_d)
-    staggered_values[:, 0, :] = fctr_m * cell_centered_values[:, 0, :]
+    staggered_values[:, 0, :] = _on_boundary(fctr_m, geo) * cells[:, 0, :]
     fctr_m = alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr
-    fctr_m = fctr_m + np.zeros(shape_bc)
-    fctr_m = np.reshape(fctr_m, shape_bc_d)
-    staggered_values[:, 1, :] = fctr_m * cell_centered_values[:, 0, :]
+    staggered_values[:, 1, :] = _on_boundary(fctr_m, geo) * cells[:, 0, :]
     fctr_m = (
         (a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]
     ) * fctr
-    fctr_m = fctr_m + np.zeros(shape_bc)
-    fctr_m = np.reshape(fctr_m, shape_bc_d)
-    staggered_values[:, 0, :] += fctr_m
+    staggered_values[:, 0, :] += _on_boundary(fctr_m, geo)
     fctr_m = (
         (a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]
     ) * fctr
-    fctr_m = fctr_m + np.zeros(shape_bc)
-    fctr_m = np.reshape(fctr_m, shape_bc_d)
-    staggered_values[:, 1, :] += fctr_m
-    staggered_values = staggered_values.reshape(shape_f)
-    delta_staggered_values = np.zeros(shape_f)
-    return staggered_values, delta_staggered_values
+    staggered_values[:, 1, :] += _on_boundary(fctr_m, geo)
+    return staggered_values.reshape(geo.shape_f), np.zeros(geo.shape_f)
 
 
-def _wall_face_value(bc_i, shape, axis, alpha_1, alpha_2, c_near, c_far, shape_bc, shape_bc_d):
+def _wall_face_value(bc_i, geo, alphas, c_near, c_far):
     """Face value at a boundary from the two adjacent cells and its boundary condition."""
-    a, b, d = _unwrap_bc_side(shape, bc_i, axis)
+    alpha_1, alpha_2 = alphas
+    a, b, d = _unwrap_bc_side(geo.shape, bc_i, geo.axis)
     alpha_0 = alpha_1 - alpha_2
     fctr = alpha_0 * a + b
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    a_fctr = a * fctr
-    a_fctr = a_fctr + np.zeros(shape_bc)
-    a_fctr = np.reshape(a_fctr, shape_bc_d)
-    d_fctr = d * fctr
-    d_fctr = d_fctr + np.zeros(shape_bc)
-    d_fctr = np.reshape(d_fctr, shape_bc_d)
+    a_fctr = _on_boundary(a * fctr, geo)
+    d_fctr = _on_boundary(d * fctr, geo)
     return d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
+
+
+def _wall_faces(cells, x_f, x_c, bc, geo):
+    """Face buffer of a multi-cell domain with the two boundary faces filled in."""
+    faces = np.empty(geo.shape_f_t)
+    alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
+    alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
+    faces[:, 0, :] = _wall_face_value(
+        bc[0], geo, (alpha_1, alpha_2), cells[:, 0, :], cells[:, 1, :])
+    alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
+    alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
+    faces[:, -1, :] = _wall_face_value(
+        bc[1], geo, (alpha_1, alpha_2), cells[:, -1, :], cells[:, -2, :])
+    return faces
+
+
+def _upwind_positions(fltr_v_pos, x_f, x_c):
+    """Normalised coordinates of the interior faces and their upwind cells."""
+    x_f = x_f.reshape((1, -1, 1))
+    x_c = x_c.reshape((1, -1, 1))
+    x_d = x_f[:, 1:-1, :]
+    x_C = (
+        fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
+        + ~fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
+    )
+    x_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
+        (x_f[:, 0:1, :], x_c[:, 0:-2, :]), axis=1
+    ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
+        (x_c[:, 2:, :], x_f[:, -1:, :]), axis=1
+    )
+    x_D = (
+        fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
+        + ~fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
+    )
+    return (x_C - x_U) / (x_D - x_U), (x_d - x_U) / (x_D - x_U)
+
+
+def _upwind_values(fltr_v_pos, cells, faces):
+    """Upwind-cell values, normalised values and downwind-upwind jumps at interior faces."""
+    c_C = (
+        fltr_v_pos[:, 1:-1, :] * cells[:, :-1, :]
+        + ~fltr_v_pos[:, 1:-1, :] * cells[:, 1:, :]
+    )
+    c_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
+        (faces[:, 0:1, :], cells[:, 0:-2, :]), axis=1
+    ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
+        (cells[:, 2:, :], faces[:, -1:, :]), axis=1
+    )
+    c_D = (
+        fltr_v_pos[:, 1:-1, :] * cells[:, 1:, :]
+        + ~fltr_v_pos[:, 1:-1, :] * cells[:, :-1, :]
+    )
+    c_norm_C = np.zeros_like(c_C)
+    dc_DU = c_D - c_U
+    np.divide((c_C - c_U), dc_DU, out=c_norm_C, where=(dc_DU != 0))
+    return c_C, c_norm_C, dc_DU
 
 
 def interp_cntr_to_stagg_tvd(
@@ -217,80 +264,22 @@ def interp_cntr_to_stagg_tvd(
 
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
-    cell_centered_values = cell_centered_values.reshape(geo.shape_t)
-    staggered_values = np.empty(geo.shape_f_t)
-
+    cells = cell_centered_values.reshape(geo.shape_t)
     if geo.shape_t[1] == 1:
-        staggered_values, delta_staggered_values = _interp_single_cell(
-            cell_centered_values, x_f, x_c, bc, geo.shape, geo.axis, staggered_values,
-            geo.shape_f, geo.shape_bc, geo.shape_bc_d)
-    else:
-        # bc 0
-        alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
-        alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
-        staggered_values[:, 0, :] = _wall_face_value(
-            bc[0], geo.shape, geo.axis, alpha_1, alpha_2,
-            cell_centered_values[:, 0, :], cell_centered_values[:, 1, :], geo.shape_bc, geo.shape_bc_d)
-        # bc 1
-        alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-        alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-        staggered_values[:, -1, :] = _wall_face_value(
-            bc[1], geo.shape, geo.axis, alpha_1, alpha_2,
-            cell_centered_values[:, -1, :], cell_centered_values[:, -2, :], geo.shape_bc, geo.shape_bc_d)
+        return _interp_single_cell(cells, x_f, x_c, bc, geo)
 
-        v = np.broadcast_to(np.asarray(v), geo.shape_f)
-        v_t = v.reshape(geo.shape_f_t)
-        fltr_v_pos = v_t > 0
-
-        x_f = x_f.reshape((1, -1, 1))
-        x_c = x_c.reshape((1, -1, 1))
-        x_d = x_f[:, 1:-1, :]
-        x_C = (
-            fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
-            + ~fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
-        )
-        x_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
-            (x_f[:, 0:1, :], x_c[:, 0:-2, :]), axis=1
-        ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
-            (x_c[:, 2:, :], x_f[:, -1:, :]), axis=1
-        )
-        x_D = (
-            fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
-            + ~fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
-        )
-        x_norm_C = (x_C - x_U) / (x_D - x_U)
-        x_norm_d = (x_d - x_U) / (x_D - x_U)
-        c_C = (
-            fltr_v_pos[:, 1:-1, :] * cell_centered_values[:, :-1, :]
-            + ~fltr_v_pos[:, 1:-1, :] * cell_centered_values[:, 1:, :]
-        )
-        c_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
-            (staggered_values[:, 0:1, :], cell_centered_values[:, 0:-2, :]), axis=1
-        ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
-            (cell_centered_values[:, 2:, :], staggered_values[:, -1:, :]), axis=1
-        )
-        c_D = (
-            fltr_v_pos[:, 1:-1, :] * cell_centered_values[:, 1:, :]
-            + ~fltr_v_pos[:, 1:-1, :] * cell_centered_values[:, :-1, :]
-        )
-        c_norm_C = np.zeros_like(c_C)
-        dc_DU = c_D - c_U
-        np.divide((c_C - c_U), dc_DU, out=c_norm_C, where=(dc_DU != 0))
-        staggered_values = np.concatenate(
-            (staggered_values[:, 0:1, :], c_C, staggered_values[:, -1:, :]), axis=1
-        )
-        if tvd_limiter is None:
-            delta_staggered_values = np.zeros(geo.shape_f)
-            staggered_values = staggered_values.reshape(geo.shape_f)
-        else:
-            delta_staggered_values = np.zeros(geo.shape_f_t)
-            delta_staggered_values[:, 1:-1, :] = (
-                tvd_limiter(c_norm_C, x_norm_C, x_norm_d) * dc_DU
-            )
-            staggered_values += delta_staggered_values
-            delta_staggered_values = delta_staggered_values.reshape(geo.shape_f)
-            staggered_values = staggered_values.reshape(geo.shape_f)
-    return staggered_values, delta_staggered_values
+    faces = _wall_faces(cells, x_f, x_c, bc, geo)
+    v = np.broadcast_to(np.asarray(v), geo.shape_f)
+    fltr_v_pos = v.reshape(geo.shape_f_t) > 0
+    x_norm_C, x_norm_d = _upwind_positions(fltr_v_pos, x_f, x_c)
+    c_C, c_norm_C, dc_DU = _upwind_values(fltr_v_pos, cells, faces)
+    faces = np.concatenate((faces[:, 0:1, :], c_C, faces[:, -1:, :]), axis=1)
+    if tvd_limiter is None:
+        return faces.reshape(geo.shape_f), np.zeros(geo.shape_f)
+    delta = np.zeros(geo.shape_f_t)
+    delta[:, 1:-1, :] = tvd_limiter(c_norm_C, x_norm_C, x_norm_d) * dc_DU
+    faces += delta
+    return faces.reshape(geo.shape_f), delta.reshape(geo.shape_f)
 
 
 def create_staggered_array(array, shape, axis, x_f=None, x_c=None):
