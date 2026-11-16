@@ -495,10 +495,10 @@ class _NewtonRun:
         g_flat = g_raw.reshape(-1)
         if sparse.issparse(jac) and jac.format not in ("csr", "csc", "coo", "bsr", "dia"):
             jac = jac.tocsc()      # lil, dok: no .data array of the stored values
-        finite = np.all(np.isfinite(g_flat))
+        finite = np.isfinite(g_flat).all()
         if finite and _is_matrix(jac):
             data = jac.data if sparse.issparse(jac) else jac
-            finite = np.all(np.isfinite(data))
+            finite = np.isfinite(data).all()
         if not finite:
             self.state["bad"] = g_raw
             return None
@@ -568,7 +568,7 @@ class _NewtonRun:
             self.finish(5, ev, step_inf, float("nan"), str(exc))     # raises
         except _LinearSolverFailed as exc:
             raise KrylovBreakdown(*self._outcome(6, ev, step_inf, float("nan"), str(exc)))
-        if not np.all(np.isfinite(dx)):
+        if not np.isfinite(dx).all():
             self.finish(6, ev, step_inf, float("nan"), "non-finite Newton step")     # raises
         return solve, r, dx
 
@@ -634,7 +634,7 @@ class _NewtonRun:
     def _measure(self):
         """Step norm, convergence and stagnation tests and backward error of this iteration."""
         dy = self.dx / self.d
-        step_inf = float(np.max(np.abs(dy))) if self.n else 0.0
+        step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
         near = converged or (self.refresh is None and excess < _NEAR)
         self.state["step"] = step_inf
