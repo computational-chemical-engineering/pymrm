@@ -67,6 +67,7 @@ and the source.
 
 from dataclasses import dataclass
 import math
+from typing import NamedTuple
 import warnings
 import numpy as np
 from scipy.sparse import csr_array, coo_array
@@ -382,156 +383,194 @@ def _sdf_theta_fn(sdf, strides):
     return theta_fn
 
 
-def _build_side(theta_fn, spatial_shape, x_c, strides, region, other, rescale):
-    """Build an :class:`_IBMSide` for one region of the immersed interface.
+# Per-crossing columns collected for one side, and the dtype of each when empty.
+_SIDE_COLUMNS = (
+    "row", "ghost", "opp", "coef_c", "coef_o",
+    "coef_w_self", "coef_w_sib", "is_sw",
+    "axis", "direction", "crossing_key", "coords",
+)
+_SIDE_DTYPES = ((np.intp,) * 3 + (float,) * 4 + (bool,) + (np.intp,) * 3
+                + (float,))
 
-    Parameters
-    ----------
-    theta_fn : callable
-        ``theta_fn(cells, axis, direction) -> theta`` giving the fractional
-        wall position along the segment from each cut cell towards its
-        region-switching neighbour (see :func:`_sdf_theta_fn`).  Queried only
-        for faces between *region* and *other* cells.
-    spatial_shape : tuple
-        Spatial grid shape.
-    x_c : list of ndarray
-        Cell-centre coordinates, one 1-D array per spatial axis.
-    strides : ndarray of int
-        C-order flat strides of ``spatial_shape``.
-    region : ndarray of bool
-        Cells that own rows on this side.
-    other : ndarray of bool
-        Cells in the opposite region (ghost cells).
-    rescale : bool
-        Whether to compute per-row conditioning scale.
+
+class _SideGrid(NamedTuple):
+    """Spatial grid of an IBM side: shape, cell-centre coordinates, flat strides."""
+
+    spatial_shape: tuple
+    x_c: list
+    strides: np.ndarray
+
+
+class _SideRegions(NamedTuple):
+    """Cells that own rows on a side (*region*) and the opposite region (*other*)."""
+
+    region: np.ndarray
+    other: np.ndarray
+
+
+class _CutMasks(NamedTuple):
+    """Masks of one axis direction: ghost cells, sandwich cells, opposite validity."""
+
+    gmask: np.ndarray
+    omask: np.ndarray
+    opp_valid: np.ndarray
+
+
+class _CutGeometry(NamedTuple):
+    """Cut cells of one axis direction with the coordinates along that axis."""
+
+    cells: np.ndarray
+    strides: np.ndarray
+    a: int
+    direction: int
+    xs: tuple           # (xc, xg, xo, xw)
+
+
+class _CutKinds(NamedTuple):
+    """Reconstruction kind of every cut cell."""
+
+    sandwich: np.ndarray
+    fallback: np.ndarray
+    normal: np.ndarray
+
+
+def _cut_coefficients(theta_fn, geo, kinds):
+    """Lagrange coefficients and opposite cells of the cut cells of one direction."""
+    cells, a, direction = geo.cells, geo.a, geo.direction
+    xc, xg, xo, xw = geo.xs
+    sandwich, fallback, normal = kinds
+    coef_c = np.zeros(cells.size)
+    coef_o = np.zeros(cells.size)
+    coef_w_self = np.zeros(cells.size)
+    coef_w_sib = np.zeros(cells.size)
+    opp_lin = np.full(cells.size, -1, dtype=np.intp)
+
+    if np.any(normal):
+        l0, l1, l2 = _lagrange3(xo[normal], xc[normal], xw[normal], xg[normal])
+        coef_o[normal] = l0
+        coef_c[normal] = l1
+        coef_w_self[normal] = l2
+        opp_lin[normal] = cells[normal] - direction * geo.strides[a]
+
+    if np.any(sandwich):
+        # Opposite neighbour is in-domain for sandwich cells (omask ⊆
+        # valid on the opposite side); its wall sits on the opposite
+        # face, i.e. the crossing in the -direction.
+        theta_o = theta_fn(cells[sandwich], a, -direction)
+        xw_o = xc[sandwich] + theta_o * (xo[sandwich] - xc[sandwich])
+        m0, m1, m2 = _lagrange3(xw_o, xc[sandwich], xw[sandwich], xg[sandwich])
+        coef_w_sib[sandwich] = m0
+        coef_c[sandwich] = m1
+        coef_w_self[sandwich] = m2
+
+    if np.any(fallback):
+        xcf, xwf, xgf = xc[fallback], xw[fallback], xg[fallback]
+        coef_c[fallback] = (xgf - xwf) / (xcf - xwf)
+        coef_w_self[fallback] = (xgf - xcf) / (xwf - xcf)
+    return coef_c, coef_o, coef_w_self, coef_w_sib, opp_lin
+
+
+def _cut_cell_entries(theta_fn, grid, a, direction, masks):
+    """Crossing entries of one axis direction, or ``None`` without cut cells.
+
+    Returns ``(entries, has_fallback)``: a dict of per-crossing columns and
+    whether any cut cell needs the first-order fallback reconstruction.
     """
+    spatial_shape, x_c, strides = grid
     ndim_s = len(spatial_shape)
-    n_spatial = math.prod(spatial_shape)
+    cells = np.flatnonzero(masks.gmask.ravel())
+    if cells.size == 0:
+        return None
+    multi = np.unravel_index(cells, spatial_shape)
+    ia = multi[a]
 
-    cols = {k: [] for k in (
-        "row", "ghost", "opp", "coef_c", "coef_o",
-        "coef_w_self", "coef_w_sib", "is_sw",
-        "axis", "direction", "crossing_key", "coords",
-    )}
+    # Ghost neighbour is in-domain for every cut cell (gmask ⊆ valid).
+    theta = theta_fn(cells, a, direction)
 
-    warned = False
-    for a in range(ndim_s):
-        # Only the region masks are shifted (cheap bool arrays); the wall
-        # positions are queried per cut cell through ``theta_fn`` further down,
-        # avoiding two full float-array shifts per axis.
-        other_p, valid_p = _neighbor(other, a, +1)
-        other_m, valid_m = _neighbor(other, a, -1)
+    xc = x_c[a][ia]
+    xg = x_c[a][ia + direction]
+    # The opposite cell at ``ia - direction`` feeds only the 'normal'
+    # (3-point) and 'sandwich' reconstructions, both of which require it
+    # to be in-domain (``opp_valid`` / ``omask``).  For 'fallback' cut
+    # cells the solid sits against the domain boundary, so ``ia -
+    # direction`` is out of bounds and ``xo`` is never used; clip the
+    # gather index to keep it in range instead of indexing past the edge.
+    xo = x_c[a][np.clip(ia - direction, 0, spatial_shape[a] - 1)]
+    xw = xc + theta * (xg - xc)
 
-        for direction in (+1, -1):
-            gmask = (region & valid_p & other_p) if direction == +1 else (region & valid_m & other_m)
-            omask = (region & valid_m & other_m) if direction == +1 else (region & valid_p & other_p)
-            opp_valid = valid_m if direction == +1 else valid_p
+    sandwich = masks.omask.ravel()[cells]
+    fallback = (~sandwich) & (~masks.opp_valid.ravel()[cells])
+    normal = (~sandwich) & (~fallback)
 
-            cells = np.flatnonzero(gmask.ravel())
-            if cells.size == 0:
-                continue
-            multi = np.unravel_index(cells, spatial_shape)
-            ia = multi[a]
+    geo = _CutGeometry(cells, strides, a, direction, (xc, xg, xo, xw))
+    coef_c, coef_o, coef_w_self, coef_w_sib, opp_lin = _cut_coefficients(
+        theta_fn, geo, _CutKinds(sandwich, fallback, normal))
 
-            # Ghost neighbour is in-domain for every cut cell (gmask ⊆ valid).
-            theta = theta_fn(cells, a, direction)
+    ghost_lin = cells + direction * strides[a]
+    lower = np.minimum(cells, ghost_lin)
+    key = lower * ndim_s + a
 
-            xc = x_c[a][ia]
-            xg = x_c[a][ia + direction]
-            # The opposite cell at ``ia - direction`` feeds only the 'normal'
-            # (3-point) and 'sandwich' reconstructions, both of which require it
-            # to be in-domain (``opp_valid`` / ``omask``).  For 'fallback' cut
-            # cells the solid sits against the domain boundary, so ``ia -
-            # direction`` is out of bounds and ``xo`` is never used; clip the
-            # gather index to keep it in range instead of indexing past the edge.
-            xo = x_c[a][np.clip(ia - direction, 0, spatial_shape[a] - 1)]
-            xw = xc + theta * (xg - xc)
+    coords = np.empty((cells.size, ndim_s))
+    for j in range(ndim_s):
+        coords[:, j] = x_c[j][multi[j]]
+    coords[:, a] = xw
 
-            sandwich = omask.ravel()[cells]
-            fallback = (~sandwich) & (~opp_valid.ravel()[cells])
-            normal = (~sandwich) & (~fallback)
+    entries = {
+        "row": cells.astype(np.intp),
+        "ghost": ghost_lin.astype(np.intp),
+        "opp": opp_lin,
+        "coef_c": coef_c,
+        "coef_o": coef_o,
+        "coef_w_self": coef_w_self,
+        "coef_w_sib": coef_w_sib,
+        "is_sw": sandwich,
+        "axis": np.full(cells.size, a, dtype=np.intp),
+        "direction": np.full(cells.size, direction, dtype=np.intp),
+        "crossing_key": key.astype(np.intp),
+        "coords": coords,
+    }
+    return entries, bool(np.any(fallback))
 
-            coef_c = np.zeros(cells.size)
-            coef_o = np.zeros(cells.size)
-            coef_w_self = np.zeros(cells.size)
-            coef_w_sib = np.zeros(cells.size)
-            opp_lin = np.full(cells.size, -1, dtype=np.intp)
 
-            if np.any(normal):
-                l0, l1, l2 = _lagrange3(xo[normal], xc[normal], xw[normal], xg[normal])
-                coef_o[normal] = l0
-                coef_c[normal] = l1
-                coef_w_self[normal] = l2
-                opp_lin[normal] = cells[normal] - direction * strides[a]
+def _axis_entries(theta_fn, grid, regions, a):
+    """Crossing entries along axis *a* for both directions (empty ones dropped)."""
+    # Only the region masks are shifted (cheap bool arrays); the wall
+    # positions are queried per cut cell through ``theta_fn`` further down,
+    # avoiding two full float-array shifts per axis.
+    other_p, valid_p = _neighbor(regions.other, a, +1)
+    other_m, valid_m = _neighbor(regions.other, a, -1)
+    region = regions.region
+    found = []
+    for direction in (+1, -1):
+        if direction == +1:
+            fwd, bwd = (valid_p, other_p), (valid_m, other_m)
+        else:
+            fwd, bwd = (valid_m, other_m), (valid_p, other_p)
+        masks = _CutMasks(region & fwd[0] & fwd[1], region & bwd[0] & bwd[1],
+                          bwd[0])
+        entries = _cut_cell_entries(theta_fn, grid, a, direction, masks)
+        if entries is not None:
+            found.append(entries)
+    return found
 
-            if np.any(sandwich):
-                # Opposite neighbour is in-domain for sandwich cells (omask ⊆
-                # valid on the opposite side); its wall sits on the opposite
-                # face, i.e. the crossing in the -direction.
-                theta_o = theta_fn(cells[sandwich], a, -direction)
-                xw_o = xc[sandwich] + theta_o * (xo[sandwich] - xc[sandwich])
-                m0, m1, m2 = _lagrange3(xw_o, xc[sandwich], xw[sandwich], xg[sandwich])
-                coef_w_sib[sandwich] = m0
-                coef_c[sandwich] = m1
-                coef_w_self[sandwich] = m2
 
-            if np.any(fallback):
-                if not warned:
-                    warnings.warn(
-                        "IBM: immersed solid adjacent to the domain boundary; "
-                        "falling back to first-order reconstruction.",
-                        RuntimeWarning, stacklevel=4,
-                    )
-                    warned = True
-                xcf, xwf, xgf = xc[fallback], xw[fallback], xg[fallback]
-                coef_c[fallback] = (xgf - xwf) / (xcf - xwf)
-                coef_w_self[fallback] = (xgf - xcf) / (xwf - xcf)
-
-            ghost_lin = cells + direction * strides[a]
-            lower = np.minimum(cells, ghost_lin)
-            key = lower * ndim_s + a
-
-            coords = np.empty((cells.size, ndim_s))
-            for j in range(ndim_s):
-                coords[:, j] = x_c[j][multi[j]]
-            coords[:, a] = xw
-
-            cols["row"].append(cells.astype(np.intp))
-            cols["ghost"].append(ghost_lin.astype(np.intp))
-            cols["opp"].append(opp_lin)
-            cols["coef_c"].append(coef_c)
-            cols["coef_o"].append(coef_o)
-            cols["coef_w_self"].append(coef_w_self)
-            cols["coef_w_sib"].append(coef_w_sib)
-            cols["is_sw"].append(sandwich)
-            cols["axis"].append(np.full(cells.size, a, dtype=np.intp))
-            cols["direction"].append(np.full(cells.size, direction, dtype=np.intp))
-            cols["crossing_key"].append(key.astype(np.intp))
-            cols["coords"].append(coords)
-
+def _concat_columns(cols, ndim_s):
+    """Concatenate the collected per-direction columns (empty arrays if none)."""
     if cols["row"]:
-        row = np.concatenate(cols["row"])
-        ghost = np.concatenate(cols["ghost"])
-        opp = np.concatenate(cols["opp"])
-        coef_c = np.concatenate(cols["coef_c"])
-        coef_o = np.concatenate(cols["coef_o"])
-        coef_w_self = np.concatenate(cols["coef_w_self"])
-        coef_w_sib = np.concatenate(cols["coef_w_sib"])
-        is_sw = np.concatenate(cols["is_sw"])
-        axis = np.concatenate(cols["axis"])
-        direction_arr = np.concatenate(cols["direction"])
-        crossing_key = np.concatenate(cols["crossing_key"])
-        coords = np.concatenate(cols["coords"], axis=0)
-    else:
-        row = ghost = opp = np.empty(0, dtype=np.intp)
-        coef_c = coef_o = coef_w_self = coef_w_sib = np.empty(0)
-        is_sw = np.empty(0, dtype=bool)
-        axis = direction_arr = crossing_key = np.empty(0, dtype=np.intp)
-        coords = np.empty((0, ndim_s))
+        return {k: np.concatenate(v, axis=0) for k, v in cols.items()}
+    merged = {k: np.empty(0, dtype=d)
+              for k, d in zip(_SIDE_COLUMNS, _SIDE_DTYPES)}
+    merged[_SIDE_COLUMNS[-1]] = np.empty((0, ndim_s))   # the coordinates
+    return merged
 
-    # Link sandwich siblings within this side.  A sibling is the entry with the
-    # same (row, axis) but the opposite direction; find it by matching a packed
-    # integer key with a sorted search instead of a Python-level dict loop.
+
+def _link_siblings(row, axis, direction_arr, is_sw, ndim_s):
+    """Link sandwich siblings within one side.
+
+    A sibling is the entry with the same (row, axis) but the opposite
+    direction; find it by matching a packed integer key with a sorted search
+    instead of a Python-level dict loop.
+    """
     sib = np.full(row.size, -1, dtype=np.intp)
     if np.any(is_sw):
         dir_bit = (direction_arr > 0).astype(np.intp)
@@ -546,17 +585,68 @@ def _build_side(theta_fn, spatial_shape, x_c, strides, region, other, rescale):
         match = np.zeros(sw.size, dtype=bool)
         match[in_range] = keys_sorted[pos[in_range]] == key_want[sw][in_range]
         sib[sw[match]] = order[pos[match]]
+    return sib
 
-    # Per-row conditioning scale (per spatial cell).
+
+def _row_scale(n_spatial, row, coefs, rescale):
+    """Per-row conditioning scale (per spatial cell)."""
     row_scale = np.ones(n_spatial)
     if rescale and row.size:
-        max_coef = np.maximum.reduce(
-            [np.abs(coef_c), np.abs(coef_o), np.abs(coef_w_self), np.abs(coef_w_sib)]
-        )
+        max_coef = np.maximum.reduce([np.abs(c) for c in coefs])
         per_cell = np.zeros(n_spatial)
         np.maximum.at(per_cell, row, max_coef)
         cut = per_cell > 1.0
         row_scale[cut] = 1.0 / per_cell[cut]
+    return row_scale
+
+
+def _build_side(theta_fn, grid, regions, rescale):
+    """Build an :class:`_IBMSide` for one region of the immersed interface.
+
+    Parameters
+    ----------
+    theta_fn : callable
+        ``theta_fn(cells, axis, direction) -> theta`` giving the fractional
+        wall position along the segment from each cut cell towards its
+        region-switching neighbour (see :func:`_sdf_theta_fn`).  Queried only
+        for faces between *region* and *other* cells.
+    grid : _SideGrid
+        Spatial grid shape, cell-centre coordinates (one 1-D array per
+        spatial axis) and C-order flat strides.
+    regions : _SideRegions
+        ``region``: cells that own rows on this side; ``other``: cells in the
+        opposite region (ghost cells).
+    rescale : bool
+        Whether to compute per-row conditioning scale.
+    """
+    ndim_s = len(grid.spatial_shape)
+    n_spatial = math.prod(grid.spatial_shape)
+
+    cols = {k: [] for k in _SIDE_COLUMNS}
+
+    warned = False
+    for a in range(ndim_s):
+        for entries, has_fallback in _axis_entries(theta_fn, grid, regions, a):
+            if has_fallback and not warned:
+                warnings.warn(
+                    "IBM: immersed solid adjacent to the domain boundary; "
+                    "falling back to first-order reconstruction.",
+                    RuntimeWarning, stacklevel=4,
+                )
+                warned = True
+            for k, v in entries.items():
+                cols[k].append(v)
+
+    m = _concat_columns(cols, ndim_s)
+    row, ghost, opp = m["row"], m["ghost"], m["opp"]
+    coef_c, coef_o = m["coef_c"], m["coef_o"]
+    coef_w_self, coef_w_sib = m["coef_w_self"], m["coef_w_sib"]
+    is_sw, axis = m["is_sw"], m["axis"]
+    direction_arr, crossing_key = m["direction"], m["crossing_key"]
+    coords = m["coords"]
+    sib = _link_siblings(row, axis, direction_arr, is_sw, ndim_s)
+    row_scale = _row_scale(
+        n_spatial, row, (coef_c, coef_o, coef_w_self, coef_w_sib), rescale)
 
     return _IBMSide(
         row=row, ghost=ghost, opp=opp,
@@ -654,27 +744,30 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
         [math.prod(sdf.shape[a + 1:]) for a in range(sdf.ndim)], dtype=np.intp
     )
     return _construct_ibm_core(sdf < 0.0, _sdf_theta_fn(sdf, strides), x_c,
-                               axes, shape, rescale)
+                               _FieldLayout(axes, shape), rescale)
 
 
-def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
-    """Shared IBM construction from a solid mask and a wall-position provider.
+class _FieldLayout(NamedTuple):
+    """Spatial axes of the full field and the full field shape (either may be None)."""
 
-    ``solid`` is the boolean cell-classification on the spatial grid;
-    ``theta_fn(cells, axis, direction)`` supplies the fractional wall position
-    for directed region-switching faces (see :func:`_build_side`).  The SDF
-    entry point :func:`construct_ibm` and the particle entry point in
-    :mod:`pymrm.particles` both delegate here.
+    axes: tuple
+    shape: tuple
 
-    With ``pair=False`` the unpaired sides are returned as
-    ``(out_side, in_side, meta)`` so a caller can append extra crossings
-    (e.g. particle contact crossings) before :func:`_pair_sides_to_ibm`.
-    """
-    solid = np.asarray(solid, dtype=bool)
-    ndim_s = solid.ndim
-    spatial_shape = solid.shape
 
-    # Normalise x_c to a list of 1-D arrays.
+class _IBMMeta(NamedTuple):
+    """Grid and field-layout metadata shared by both sides of an IBM."""
+
+    spatial_shape: tuple
+    shape: tuple
+    axes: tuple
+    ns_shape: tuple
+    ns_size: int
+    n_cells: int
+    n_spatial_cells: int
+
+
+def _normalize_core_x_c(x_c, ndim_s):
+    """Normalise x_c to a list of 1-D arrays, one per spatial axis."""
     if isinstance(x_c, np.ndarray) and x_c.ndim == 1:
         x_c = [x_c]
     else:
@@ -683,10 +776,14 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
         raise ValueError(
             f"len(x_c)={len(x_c)} must equal the spatial dimension {ndim_s}"
         )
+    return x_c
 
-    # Normalise axes and shape.
+
+def _normalize_axes_shape(layout, spatial_shape):
+    """Normalise the spatial axes and the full field shape."""
+    axes, shape = layout
     if axes is None and shape is None:
-        axes = tuple(range(ndim_s))
+        axes = tuple(range(len(spatial_shape)))
         shape = spatial_shape
     elif shape is None:
         axes = tuple(int(a) for a in axes)
@@ -699,13 +796,36 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
                 f"spatial shape {spatial_shape} is inconsistent with "
                 f"shape={shape} at axes={axes}"
             )
+    return axes, shape
 
+
+def _ibm_meta(spatial_shape, shape, axes):
+    """Non-spatial shape, sizes and layout of the full field."""
     axes_set = set(axes)
     ns_axes = [a for a in range(len(shape)) if a not in axes_set]
     ns_shape = tuple(shape[a] for a in ns_axes)
     ns_size = math.prod(ns_shape) if ns_shape else 1
     n_cells = math.prod(shape)
     n_spatial_cells = math.prod(spatial_shape)
+    return _IBMMeta(spatial_shape=tuple(spatial_shape), shape=shape, axes=axes,
+                    ns_shape=ns_shape, ns_size=ns_size, n_cells=n_cells,
+                    n_spatial_cells=n_spatial_cells)
+
+
+def _construct_ibm_sides(solid, theta_fn, x_c, layout, rescale):
+    """Unpaired IBM construction: ``(out_side, in_side, meta)``.
+
+    ``solid`` is the boolean cell-classification on the spatial grid;
+    ``theta_fn(cells, axis, direction)`` supplies the fractional wall position
+    for directed region-switching faces (see :func:`_build_side`).  A caller
+    can append extra crossings (e.g. particle contact crossings) before
+    :func:`_pair_sides_to_ibm`.
+    """
+    solid = np.asarray(solid, dtype=bool)
+    ndim_s = solid.ndim
+    spatial_shape = solid.shape
+    x_c = _normalize_core_x_c(x_c, ndim_s)
+    axes, shape = _normalize_axes_shape(layout, spatial_shape)
 
     strides = np.array(
         [math.prod(spatial_shape[a + 1:]) for a in range(ndim_s)], dtype=np.intp
@@ -713,19 +833,25 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
 
     fluid = ~solid
 
-    out_s = _build_side(theta_fn, spatial_shape, x_c, strides, fluid, solid, rescale)
-    in_s = _build_side(theta_fn, spatial_shape, x_c, strides, solid, fluid, rescale)
+    grid = _SideGrid(spatial_shape, x_c, strides)
+    out_s = _build_side(theta_fn, grid, _SideRegions(fluid, solid), rescale)
+    in_s = _build_side(theta_fn, grid, _SideRegions(solid, fluid), rescale)
 
-    meta = dict(spatial_shape=tuple(spatial_shape), shape=shape, axes=axes,
-                ns_shape=ns_shape, ns_size=ns_size, n_cells=n_cells,
-                n_spatial_cells=n_spatial_cells)
-    if not pair:
-        return out_s, in_s, meta
-    return _pair_sides_to_ibm(out_s, in_s, **meta)
+    return out_s, in_s, _ibm_meta(spatial_shape, shape, axes)
 
 
-def _pair_sides_to_ibm(out_s, in_s, *, spatial_shape, shape, axes, ns_shape,
-                       ns_size, n_cells, n_spatial_cells):
+def _construct_ibm_core(solid, theta_fn, x_c, layout, rescale):
+    """Shared IBM construction from a solid mask and a wall-position provider.
+
+    The SDF entry point :func:`construct_ibm` delegates here; the particle
+    entry point in :mod:`pymrm.particles` uses :func:`_construct_ibm_sides`.
+    """
+    out_s, in_s, meta = _construct_ibm_sides(solid, theta_fn, x_c, layout,
+                                             rescale)
+    return _pair_sides_to_ibm(out_s, in_s, meta)
+
+
+def _pair_sides_to_ibm(out_s, in_s, meta):
     """Pair the two :class:`_IBMSide` objects into an :class:`IBM`.
 
     Outside and inside entries are matched by sorting on the canonical face
@@ -771,13 +897,13 @@ def _pair_sides_to_ibm(out_s, in_s, *, spatial_shape, shape, axes, ns_shape,
         sib_in=_remap_sib(in_s.sib, sort_in),
         row_scale_in=in_s.row_scale,
 
-        spatial_shape=tuple(spatial_shape),
-        shape=shape,
-        axes=axes,
-        ns_shape=ns_shape,
-        ns_size=ns_size,
-        n_cells=n_cells,
-        n_spatial_cells=n_spatial_cells,
+        spatial_shape=tuple(meta.spatial_shape),
+        shape=meta.shape,
+        axes=meta.axes,
+        ns_shape=meta.ns_shape,
+        ns_size=meta.ns_size,
+        n_cells=meta.n_cells,
+        n_spatial_cells=meta.n_spatial_cells,
     )
 
 
@@ -863,6 +989,87 @@ def _normalize_values(values_outside, values_inside, npnt, ns_shape):
     return a, b
 
 
+class _SideIndices(NamedTuple):
+    """Full-field flat indices of one side's cut-cell rows, ghosts and opposites."""
+
+    row: np.ndarray
+    ghost: np.ndarray
+    opp: np.ndarray
+    has_opp: np.ndarray
+
+
+class _SourceCols(NamedTuple):
+    """Source-matrix column indices of a crossing layer and the matrix shape."""
+
+    own_col: np.ndarray
+    j_tile: np.ndarray
+    shape: tuple
+
+
+def _make_expander(ibm):
+    """Return ``expand(spatial_flat)`` mapping spatial to full flat indices."""
+    pure_spatial = _is_pure_spatial(ibm)
+    ns_c = _ns_contributions(ibm.shape, ibm.axes)  # (ns,)
+
+    def expand(spatial_flat):
+        """Spatial flat → full flat matrix of shape (len, ns)."""
+        if pure_spatial:
+            return np.asarray(spatial_flat, dtype=np.intp)[:, np.newaxis]
+        sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
+        return sc[:, np.newaxis] + ns_c[np.newaxis, :]
+
+    return expand
+
+
+def _side_indices(expand, row, ghost, opp):
+    """Expanded row, ghost and opposite indices of one side."""
+    f_row = expand(row)                   # (npnt, ns)
+    f_ghost = expand(ghost)               # (npnt, ns)
+    has_opp = opp >= 0                    # (npnt,)
+    f_opp = expand(np.where(has_opp, opp, row))
+    return _SideIndices(f_row, f_ghost, f_opp, has_opp)
+
+
+def _per_crossing(arr, shape):
+    """Broadcast 1-D per-crossing array to (npnt, ns) view."""
+    return np.broadcast_to(arr[:, np.newaxis], shape)
+
+
+def _side_correction(v, idx, coef_c, coef_o):
+    """COO triplets of the matrix correction that folds one side's ghosts."""
+    ns = v.shape[1]
+    has_opp_2d = idx.has_opp[:, np.newaxis].repeat(ns, axis=1)  # (npnt, ns) bool
+    cr_flat = idx.row.ravel()
+    fg_flat = idx.ghost.ravel()
+    fo_mask = has_opp_2d.ravel()
+    cr = np.concatenate([cr_flat,
+                         cr_flat[fo_mask],
+                         cr_flat])
+    cc = np.concatenate([cr_flat,                          # diagonal
+                         idx.opp.ravel()[fo_mask],        # opposite
+                         fg_flat])                         # ghost removal
+    cd = np.concatenate([(v * _per_crossing(coef_c, v.shape)).ravel(),
+                         (v * _per_crossing(coef_o, v.shape)).ravel()[fo_mask],
+                         -v.ravel()])
+    return cr, cc, cd
+
+
+def _side_source_matrix(v, idx, cols, sib, coefs):
+    """Source matrix of one side; *coefs* are the wall and sibling-wall coefficients."""
+    ns = v.shape[1]
+    has_sib_flat = np.repeat(sib >= 0, ns)
+    sib_col = (np.where(has_sib_flat, np.repeat(sib, ns), 0) * ns + cols.j_tile)
+    return coo_array(
+        (np.concatenate([(v * _per_crossing(coefs[0], v.shape)).ravel(),
+                         (v * _per_crossing(coefs[1], v.shape)).ravel()[has_sib_flat]]),
+         (np.concatenate([idx.row.ravel(),
+                          idx.row.ravel()[has_sib_flat]]),
+          np.concatenate([cols.own_col,
+                          sib_col[has_sib_flat]]))),
+        shape=cols.shape,
+    ).tocsr()
+
+
 def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
               return_bc="vector"):
     """Apply the immersed-boundary method to an operator matrix.
@@ -933,64 +1140,19 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     A = csr_array(mat)
 
     # --- Full flat index expansion ---
-    pure_spatial = _is_pure_spatial(ibm)
-    ns_c = _ns_contributions(ibm.shape, ibm.axes)  # (ns,)
-
-    def expand(spatial_flat):
-        """Spatial flat → full flat matrix of shape (len, ns)."""
-        if pure_spatial:
-            return np.asarray(spatial_flat, dtype=np.intp)[:, np.newaxis]
-        sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
-        return sc[:, np.newaxis] + ns_c[np.newaxis, :]
-
-    f_row_out = expand(ibm.row_out)       # (npnt, ns)
-    f_ghost_out = expand(ibm.ghost_out)   # (npnt, ns)
-    f_row_in = expand(ibm.row_in)
-    f_ghost_in = expand(ibm.ghost_in)
-
-    has_opp_out = ibm.opp_out >= 0        # (npnt,)
-    f_opp_out = expand(np.where(has_opp_out, ibm.opp_out, ibm.row_out))
-    has_opp_in = ibm.opp_in >= 0
-    f_opp_in = expand(np.where(has_opp_in, ibm.opp_in, ibm.row_in))
+    expand = _make_expander(ibm)
+    out = _side_indices(expand, ibm.row_out, ibm.ghost_out, ibm.opp_out)
+    inn = _side_indices(expand, ibm.row_in, ibm.ghost_in, ibm.opp_in)
 
     # --- Read ghost matrix entries: v[k, j] = A[row(k,j), ghost(k,j)] ---
-    v_out = _read_entries(A, f_row_out.ravel(), f_ghost_out.ravel()).reshape(npnt, ns)
-    v_in = _read_entries(A, f_row_in.ravel(), f_ghost_in.ravel()).reshape(npnt, ns)
-
-    def bc_coef(arr):
-        """Broadcast 1-D per-crossing array to (npnt, ns) view."""
-        return np.broadcast_to(arr[:, np.newaxis], (npnt, ns))
+    v_out = _read_entries(A, out.row.ravel(), out.ghost.ravel()).reshape(npnt, ns)
+    v_in = _read_entries(A, inn.row.ravel(), inn.ghost.ravel()).reshape(npnt, ns)
 
     # --- Matrix correction (COO) ---
-    has_opp_out_2d = has_opp_out[:, np.newaxis].repeat(ns, axis=1)  # (npnt, ns) bool
-    has_opp_in_2d = has_opp_in[:, np.newaxis].repeat(ns, axis=1)
-
-    cr_out_flat = f_row_out.ravel()
-    fg_out_flat = f_ghost_out.ravel()
-    fo_out_mask = has_opp_out_2d.ravel()
-    cr_in_flat = f_row_in.ravel()
-    fg_in_flat = f_ghost_in.ravel()
-    fo_in_mask = has_opp_in_2d.ravel()
-
-    cr_out = np.concatenate([cr_out_flat,
-                             cr_out_flat[fo_out_mask],
-                             cr_out_flat])
-    cc_out = np.concatenate([cr_out_flat,                          # diagonal
-                             f_opp_out.ravel()[fo_out_mask],      # opposite
-                             fg_out_flat])                         # ghost removal
-    cd_out = np.concatenate([(v_out * bc_coef(ibm.coef_c_out)).ravel(),
-                             (v_out * bc_coef(ibm.coef_o_out)).ravel()[fo_out_mask],
-                             -v_out.ravel()])
-
-    cr_in = np.concatenate([cr_in_flat,
-                            cr_in_flat[fo_in_mask],
-                            cr_in_flat])
-    cc_in = np.concatenate([cr_in_flat,
-                            f_opp_in.ravel()[fo_in_mask],
-                            fg_in_flat])
-    cd_in = np.concatenate([(v_in * bc_coef(ibm.coef_c_in)).ravel(),
-                            (v_in * bc_coef(ibm.coef_o_in)).ravel()[fo_in_mask],
-                            -v_in.ravel()])
+    cr_out, cc_out, cd_out = _side_correction(v_out, out, ibm.coef_c_out,
+                                              ibm.coef_o_out)
+    cr_in, cc_in, cd_in = _side_correction(v_in, inn, ibm.coef_c_in,
+                                           ibm.coef_o_in)
 
     correction = coo_array(
         (np.concatenate([cd_out, cd_in]),
@@ -1010,31 +1172,12 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     k_rep = np.repeat(np.arange(npnt, dtype=np.intp), ns)   # (npnt*ns,)
     j_tile = np.tile(np.arange(ns, dtype=np.intp), npnt)    # (npnt*ns,)
     own_col = k_rep * ns + j_tile                            # (npnt*ns,)
+    cols = _SourceCols(own_col, j_tile, (n_full, n_cols))
 
-    has_sib_out_flat = np.repeat(ibm.sib_out >= 0, ns)      # (npnt*ns,)
-    sib_out_col = (np.where(has_sib_out_flat, np.repeat(ibm.sib_out, ns), 0) * ns + j_tile)
-    has_sib_in_flat = np.repeat(ibm.sib_in >= 0, ns)
-    sib_in_col = (np.where(has_sib_in_flat, np.repeat(ibm.sib_in, ns), 0) * ns + j_tile)
-
-    G_out = coo_array(
-        (np.concatenate([(v_out * bc_coef(ibm.coef_w_out)).ravel(),
-                         (v_out * bc_coef(ibm.coef_w_sib_out)).ravel()[has_sib_out_flat]]),
-         (np.concatenate([f_row_out.ravel(),
-                          f_row_out.ravel()[has_sib_out_flat]]),
-          np.concatenate([own_col,
-                          sib_out_col[has_sib_out_flat]]))),
-        shape=(n_full, n_cols),
-    ).tocsr()
-
-    G_in = coo_array(
-        (np.concatenate([(v_in * bc_coef(ibm.coef_w_in)).ravel(),
-                         (v_in * bc_coef(ibm.coef_w_sib_in)).ravel()[has_sib_in_flat]]),
-         (np.concatenate([f_row_in.ravel(),
-                          f_row_in.ravel()[has_sib_in_flat]]),
-          np.concatenate([own_col,
-                          sib_in_col[has_sib_in_flat]]))),
-        shape=(n_full, n_cols),
-    ).tocsr()
+    G_out = _side_source_matrix(v_out, out, cols, ibm.sib_out,
+                                (ibm.coef_w_out, ibm.coef_w_sib_out))
+    G_in = _side_source_matrix(v_in, inn, cols, ibm.sib_in,
+                               (ibm.coef_w_in, ibm.coef_w_sib_in))
 
     _scale_csr_rows(G_out, scale_rows, scale_vals)
     _scale_csr_rows(G_in, scale_rows, scale_vals)
