@@ -3,7 +3,7 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
+from pymrm.helpers import _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair
 from pymrm.grid import generate_grid
 from pymrm.convect import _convflux_bc_by_boundary, _convflux_geometry
 
@@ -179,17 +179,7 @@ def _grad_bc_single_cell(shape, x_f, x_c, bc, axis):
     alpha_0_left = alpha_1 - alpha_2_left
     alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
     alpha_0_right = alpha_1 - alpha_2_right
-    a, b, d = [
-        [
-            (
-                unwrap_bc_coeff(shape, bc_element[key], axis=axis)
-                if bc_element
-                else np.zeros((1,) * len(shape))
-            )
-            for bc_element in bc
-        ]
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_pair(shape, bc, axis)
     fctr = (b[0] + alpha_0_left * a[0]) * (
         b[1] + alpha_0_right * a[1]
     ) - alpha_2_left * alpha_2_right * a[0] * a[1]
@@ -262,14 +252,7 @@ def _grad_bc_two_cell(shape, x_f, x_c, bc, axis):
     alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
     alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
     alpha_0 = alpha_1 - alpha_2
-    a, b, d = [
-        (
-            unwrap_bc_coeff(shape, bc[0][key], axis=axis)
-            if bc[0]
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_side(shape, bc[0], axis)
     b = b / alpha_0
     fctr = a + b
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
@@ -282,14 +265,7 @@ def _grad_bc_two_cell(shape, x_f, x_c, bc, axis):
     values_bc[:, 0, :] = -d_fctr
 
     # Get a, b, and d for right bc from dictionary
-    a, b, d = [
-        (
-            unwrap_bc_coeff(shape, bc[1][key], axis=axis)
-            if bc[1]
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_side(shape, bc[1], axis)
     alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
     alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
     alpha_0 = alpha_1 - alpha_2

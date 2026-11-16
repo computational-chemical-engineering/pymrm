@@ -88,6 +88,33 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
+def _unwrap_bc_side(shape, bc_side, axis):
+    """Coefficients ``a``, ``b``, ``d`` of one boundary condition (zeros if it is ``None``)."""
+    return [
+        (
+            unwrap_bc_coeff(shape, bc_side[key], axis=axis)
+            if bc_side
+            else np.zeros((1,) * len(shape))
+        )
+        for key in ["a", "b", "d"]
+    ]
+
+
+def _unwrap_bc_pair(shape, bc, axis):
+    """Coefficients ``a``, ``b``, ``d`` of two boundary conditions, each a list over the sides."""
+    return [
+        [
+            (
+                unwrap_bc_coeff(shape, bc_side[key], axis=axis)
+                if bc_side
+                else np.zeros((1,) * len(shape))
+            )
+            for bc_side in bc
+        ]
+        for key in ["a", "b", "d"]
+    ]
+
+
 def _stagger_shape(shape, axis):
     """``shape`` with the length along ``axis`` increased by one (face-centred length)."""
     return tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
