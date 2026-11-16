@@ -398,20 +398,18 @@ def _side_coords(x_f, x_c, i):
     return x_f[-1], x_c[-1], x_c[-2]
 
 
-def _side_alphas(xs):
-    """Weights ``(alpha_1, alpha_2)`` of the one-sided wall gradient from ``_side_coords``."""
-    x_wall, x_near, x_far = xs
-    alpha_1 = (x_far - x_wall) / ((x_near - x_wall) * (x_far - x_near))
-    alpha_2 = (x_near - x_wall) / ((x_far - x_wall) * (x_far - x_near))
-    return alpha_1, alpha_2
+def _side_alphas_of(walls, i):
+    """Weights ``(alpha_1, alpha_2)`` of boundary ``i`` in the direction into the domain."""
+    left, right = _wall_alphas(*walls)
+    return left if i == 0 else (-right[0], -right[1])
 
 
-def _boundary_values_two_cell_side(cells, bc_i, i, xs, geo):
+def _boundary_values_two_cell_side(cells, bc_i, i, walls, geo):
     """Boundary value and gradient at boundary ``i`` from the two adjacent cells."""
     sgn, idx_0, idx_1 = (1, 0, 1) if i == 0 else (-1, -1, -2)
-    x_wall, x_near, x_far = xs
+    x_wall, x_near, x_far = _side_coords(*walls, i)
     a, b, d = _unwrap_bc_side(geo.shape, bc_i, geo.axis)
-    alpha_1, alpha_2 = _side_alphas(xs)
+    alpha_1, alpha_2 = _side_alphas_of(walls, i)
     alpha_0 = alpha_1 - alpha_2
     a *= sgn
     fctr = alpha_0 * a + b
@@ -518,7 +516,7 @@ def compute_boundary_values(
             )
         for i in bounds:
             boundary_values[i], boundary_grads[i] = _boundary_values_two_cell_side(
-                cells, bc[i], i, _side_coords(x_f, x_c, i), geo)
+                cells, bc[i], i, (x_f, x_c), geo)
 
     if bound_id is None:
         return (
@@ -578,10 +576,10 @@ def _boundary_value_indices(shape_t, idx_c_0, idx_c_1):
     return i_c, i_f, i_f_bc
 
 
-def _boundary_value_weights(bc, geo, xs, bound_id):
+def _boundary_value_weights(bc, geo, walls, bound_id):
     """Weights of the two nearest cells and of the source in a boundary value."""
     sgn, idx_0, idx_1 = (1, 0, 1) if bound_id == 0 else (-1, -1, -2)
-    x_wall, x_near, x_far = xs
+    x_wall, x_near, x_far = _side_coords(*walls, bound_id)
     n0, _, n2 = geo.shape_t
     values_bc = np.empty((n0, n2))
     values = np.empty((n0, 2, n2))
@@ -589,7 +587,7 @@ def _boundary_value_weights(bc, geo, xs, bound_id):
     # Get a, b, and d from dictionary
     a, b, d = _unwrap_bc_side(geo.shape, bc, geo.axis)
     a *= sgn
-    alpha_1, alpha_2 = _side_alphas(xs)
+    alpha_1, alpha_2 = _side_alphas_of(walls, bound_id)
     alpha_0 = alpha_1 - alpha_2
     fctr = alpha_0 * a + b
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
@@ -687,6 +685,6 @@ def construct_boundary_value_matrices(
         else:
             x_c = 0.5 * np.array([x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]])
     i_c, i_f, i_f_bc = _boundary_value_indices(geo.shape_t, idx_c_0, idx_c_1)
-    values, values_bc = _boundary_value_weights(bc, geo, _side_coords(x_f, x_c, bound_id), bound_id)
+    values, values_bc = _boundary_value_weights(bc, geo, (x_f, x_c), bound_id)
     matrix = _boundary_value_matrix(values, i_f, i_c, geo, format)
     return matrix, _boundary_value_source(values_bc, i_f_bc, shape_d, geo)
