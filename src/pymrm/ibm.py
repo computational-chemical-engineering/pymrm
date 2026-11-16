@@ -535,14 +535,13 @@ def _cut_cell_entries(theta_fn, grid, a, direction, masks):
 
 
 def _axis_entries(theta_fn, grid, regions, a):
-    """Crossing entries along axis *a* for both directions (empty ones dropped)."""
+    """Yield the crossing entries along axis *a* per direction (empty ones skipped)."""
     # Only the region masks are shifted (cheap bool arrays); the wall
     # positions are queried per cut cell through ``theta_fn`` further down,
     # avoiding two full float-array shifts per axis.
     other_p, valid_p = _neighbor(regions.other, a, +1)
     other_m, valid_m = _neighbor(regions.other, a, -1)
     region = regions.region
-    found = []
     for direction in (+1, -1):
         if direction == +1:
             fwd, bwd = (valid_p, other_p), (valid_m, other_m)
@@ -552,8 +551,7 @@ def _axis_entries(theta_fn, grid, regions, a):
                           bwd[0])
         entries = _cut_cell_entries(theta_fn, grid, a, direction, masks)
         if entries is not None:
-            found.append(entries)
-    return found
+            yield entries
 
 
 def _concat_columns(cols, ndim_s):
