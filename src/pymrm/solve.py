@@ -183,7 +183,7 @@ class _LinearSolver:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", LinAlgWarning)
             factor = lu_factor(a, check_finite=False)
-        if np.any(np.diag(factor[0]) == 0.0):
+        if (factor[0].diagonal() == 0.0).any():
             raise _SingularJacobian("exactly singular")
         if r is None:
             return (lambda rhs: lu_solve(factor, rhs, check_finite=False)), None
