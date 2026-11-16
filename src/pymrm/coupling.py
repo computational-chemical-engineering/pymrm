@@ -771,6 +771,22 @@ def _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t
     return interface_bc
 
 
+def _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format):
+    """Sparse matrices mapping the cells around the interface to the two interface values."""
+    interface_matrix = [None] * 2
+    for j in range(2):
+        fltr = values[j].ravel() != 0
+        values_filtered = values[j].ravel()[fltr]
+        row_indices_filtered = row_indices.ravel()[fltr]
+        col_indices_filtered = col_indices.ravel()[fltr]
+        interface_matrix[j] = _sparse_array(
+            (values_filtered, (row_indices_filtered, col_indices_filtered)),
+            shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
+            format=format,
+        )
+    return interface_matrix
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -851,17 +867,7 @@ def construct_interface_matrices(
     col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
 
     # Create the sparse matrix representing the interface
-    interface_matrix = [None] * 2
-    for j in range(2):
-        fltr = values[j].ravel() != 0
-        values_filtered = values[j].ravel()[fltr]
-        row_indices_filtered = row_indices.ravel()[fltr]
-        col_indices_filtered = col_indices.ravel()[fltr]
-        interface_matrix[j] = _sparse_array(
-            (values_filtered, (row_indices_filtered, col_indices_filtered)),
-            shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
-            format=format,
-        )
+    interface_matrix = _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format)
 
     row_indices_bc = np.ravel_multi_index(
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
