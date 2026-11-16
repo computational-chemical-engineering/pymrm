@@ -713,6 +713,33 @@ def _interface_alphas(x_cs, x_fs):
     return alpha_0, alpha_1, alpha_2
 
 
+def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
+    """Inverse of the interface system and the stencil weights of the two interface values."""
+    m = [[None for _ in range(2)] for _ in range(2)]
+    v = [[None for _ in range(4)] for _ in range(2)]
+    m_inv = [[None for _ in range(2)] for _ in range(2)]
+    values = [[None for _ in range(4)] for _ in range(2)]
+    for i in range(2):  # loop over the two conditions
+        m[i][0] = a[i][0] * alpha_0[0] + b[i][0]
+        m[i][1] = a[i][1] * alpha_0[1] + b[i][1]
+        v[i][0] = -a[i][0] * alpha_2[0]
+        v[i][1] = a[i][0] * alpha_1[0]
+        v[i][2] = a[i][1] * alpha_1[1]
+        v[i][3] = -a[i][1] * alpha_2[1]
+    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+    det_inv = np.where(det != 0.0, 1.0 / det, 0.0)
+    m_inv[0][0] = m[1][1] * det_inv
+    m_inv[0][1] = -m[0][1] * det_inv
+    m_inv[1][0] = -m[1][0] * det_inv
+    m_inv[1][1] = m[0][0] * det_inv
+    for j in range(2):
+        for i in range(4):
+            values[j][i] = m_inv[j][0] * v[0][i] + m_inv[j][1] * v[1][i]
+            values[j][i] = np.broadcast_to(values[j][i], shape_i)
+        values[j] = np.concatenate(values[j], axis=axis)
+    return m_inv, values
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -778,28 +805,7 @@ def construct_interface_matrices(
     # dc/dn[1] = -alpha_0[1] c_i + alpha_1[1] c[0] - alpha_2[1] c[1]
     # interface conditions of the form:
 
-    m = [[None for _ in range(2)] for _ in range(2)]
-    v = [[None for _ in range(4)] for _ in range(2)]
-    m_inv = [[None for _ in range(2)] for _ in range(2)]
-    values = [[None for _ in range(4)] for _ in range(2)]
-    for i in range(2):  # loop over the two conditions
-        m[i][0] = a[i][0] * alpha_0[0] + b[i][0]
-        m[i][1] = a[i][1] * alpha_0[1] + b[i][1]
-        v[i][0] = -a[i][0] * alpha_2[0]
-        v[i][1] = a[i][0] * alpha_1[0]
-        v[i][2] = a[i][1] * alpha_1[1]
-        v[i][3] = -a[i][1] * alpha_2[1]
-    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
-    det_inv = np.where(det != 0.0, 1.0 / det, 0.0)
-    m_inv[0][0] = m[1][1] * det_inv
-    m_inv[0][1] = -m[0][1] * det_inv
-    m_inv[1][0] = -m[1][0] * det_inv
-    m_inv[1][1] = m[0][0] * det_inv
-    for j in range(2):
-        for i in range(4):
-            values[j][i] = m_inv[j][0] * v[0][i] + m_inv[j][1] * v[1][i]
-            values[j][i] = np.broadcast_to(values[j][i], shape_i)
-        values[j] = np.concatenate(values[j], axis=axis)
+    m_inv, values = _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis)
 
     shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
     n0, n1, n2 = shape_t
