@@ -101,6 +101,21 @@ def _unwrap_bc_side(shape, bc_side, axis):
     return [_bc_coeff(shape, bc_side, key, axis) for key in ["a", "b", "d"]]
 
 
+def _wall_factor(bc_side, geo, alpha_1, alpha_2, sgn=1):
+    """Coefficients of one boundary condition and its wall factor ``1 / (alpha_0 a + b)``.
+
+    Returns ``(a, b, d, alpha_0, fctr)`` with ``alpha_0 = alpha_1 - alpha_2`` and ``a``
+    multiplied by ``sgn``; ``fctr`` is left at zero where ``alpha_0 a + b`` vanishes.
+    """
+    a, b, d = _unwrap_bc_side(geo.shape, bc_side, geo.axis)
+    alpha_0 = alpha_1 - alpha_2
+    if sgn != 1:
+        a *= sgn
+    fctr = alpha_0 * a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    return a, b, d, alpha_0, fctr
+
+
 def _unwrap_bc_pair(shape, bc, axis):
     """Coefficients ``a``, ``b``, ``d`` of two boundary conditions, each a list over the sides."""
     return [[_bc_coeff(shape, bc_side, key, axis) for bc_side in bc] for key in ["a", "b", "d"]]

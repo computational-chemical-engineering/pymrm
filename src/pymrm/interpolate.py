@@ -4,8 +4,8 @@ import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .helpers import (
-    substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _field_geometry,
-    _single_cell_system, _wall_alphas, _on_bc)
+    substitute_outflow_bc, is_outflow_bc, _field_geometry,
+    _single_cell_system, _wall_alphas, _on_bc, _wall_factor)
 
 
 def _geometry_along(shape, axis):
@@ -149,10 +149,7 @@ def _interp_single_cell(cells, x_f, x_c, bc, geo):
 def _wall_face_value(bc_i, geo, alphas, c_near, c_far):
     """Face value at a boundary from the two adjacent cells and its boundary condition."""
     alpha_1, alpha_2 = alphas
-    a, b, d = _unwrap_bc_side(geo.shape, bc_i, geo.axis)
-    alpha_0 = alpha_1 - alpha_2
-    fctr = alpha_0 * a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a, _, d, _, fctr = _wall_factor(bc_i, geo, alpha_1, alpha_2)
     a_fctr = _on_boundary(a * fctr, geo)
     d_fctr = _on_boundary(d * fctr, geo)
     return d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
@@ -412,12 +409,8 @@ def _boundary_values_two_cell_side(cells, bc_i, i, walls, geo):
     """Boundary value and gradient at boundary ``i`` from the two adjacent cells."""
     sgn, idx_0, idx_1 = (1, 0, 1) if i == 0 else (-1, -1, -2)
     x_wall, x_near, x_far = _side_coords(*walls, i)
-    a, b, d = _unwrap_bc_side(geo.shape, bc_i, geo.axis)
     alpha_1, alpha_2 = _side_alphas_of(walls, i)
-    alpha_0 = alpha_1 - alpha_2
-    a *= sgn
-    fctr = alpha_0 * a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a, b, d, alpha_0, fctr = _wall_factor(bc_i, geo, alpha_1, alpha_2, sgn)
     a_fctr = _on_bc(a * fctr, geo)
     b_fctr = _on_bc(b * fctr, geo)
     d_fctr = _on_bc(d * fctr, geo)
@@ -588,13 +581,8 @@ def _boundary_value_weights(bc, geo, walls, bound_id):
     values_bc = np.empty((n0, n2))
     values = np.empty((n0, 2, n2))
 
-    # Get a, b, and d from dictionary
-    a, b, d = _unwrap_bc_side(geo.shape, bc, geo.axis)
-    a *= sgn
     alpha_1, alpha_2 = _side_alphas_of(walls, bound_id)
-    alpha_0 = alpha_1 - alpha_2
-    fctr = alpha_0 * a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a, _, d, _, fctr = _wall_factor(bc, geo, alpha_1, alpha_2, sgn)
     a_fctr = _on_bc(a * fctr, geo)
     d_fctr = _on_bc(d * fctr, geo)
     values[:, idx_0, :] = a_fctr * alpha_1

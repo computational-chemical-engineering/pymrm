@@ -7,8 +7,8 @@ from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array, _align_to_axes
 from .helpers import (
-    _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _field_geometry,
-    _BoundaryFaceTerms, _boundary_face_indices, _on_bc, _wall_alphas, _diagonal_sources,
+    _sparse_array, substitute_outflow_bc, _field_geometry,
+    _BoundaryFaceTerms, _boundary_face_indices, _on_bc, _wall_alphas, _wall_factor, _diagonal_sources,
     _bc_operators_by_boundary, _single_cell_system)
 
 
@@ -224,11 +224,7 @@ def _scale_single_cell(terms, v, geo):
 
 def _convflux_wall_factors(bc_side, geo, alphas):
     """Factors ``a / (alpha_0 a + b)`` and ``d / (alpha_0 a + b)`` of one boundary face."""
-    alpha_1, alpha_2 = alphas
-    a, b, d = _unwrap_bc_side(geo.shape, bc_side, geo.axis)
-    alpha_0 = alpha_1 - alpha_2
-    fctr = alpha_0 * a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a, _, d, _, fctr = _wall_factor(bc_side, geo, *alphas)
     return _on_bc(a * fctr, geo), _on_bc(d * fctr, geo)
 
 
