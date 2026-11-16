@@ -383,14 +383,14 @@ def _sdf_theta_fn(sdf, strides):
     return theta_fn
 
 
-# Per-crossing columns collected for one side, and the dtype of each when empty.
+# Per-crossing columns collected for one side: (name, dtype of the empty column).
 _SIDE_COLUMNS = (
-    "row", "ghost", "opp", "coef_c", "coef_o",
-    "coef_w_self", "coef_w_sib", "is_sw",
-    "axis", "direction", "crossing_key", "coords",
+    ("row", np.intp), ("ghost", np.intp), ("opp", np.intp),
+    ("coef_c", float), ("coef_o", float),
+    ("coef_w_self", float), ("coef_w_sib", float), ("is_sw", bool),
+    ("axis", np.intp), ("direction", np.intp), ("crossing_key", np.intp),
+    ("coords", float),
 )
-_SIDE_DTYPES = ((np.intp,) * 3 + (float,) * 4 + (bool,) + (np.intp,) * 3
-                + (float,))
 
 
 class _SideGrid(NamedTuple):
@@ -558,9 +558,8 @@ def _concat_columns(cols, ndim_s):
     """Concatenate the collected per-direction columns (empty arrays if none)."""
     if cols["row"]:
         return {k: np.concatenate(v, axis=0) for k, v in cols.items()}
-    merged = {k: np.empty(0, dtype=d)
-              for k, d in zip(_SIDE_COLUMNS, _SIDE_DTYPES)}
-    merged[_SIDE_COLUMNS[-1]] = np.empty((0, ndim_s))   # the coordinates
+    merged = {k: np.empty(0, dtype=d) for k, d in _SIDE_COLUMNS}
+    merged[_SIDE_COLUMNS[-1][0]] = np.empty((0, ndim_s))   # the coordinates
     return merged
 
 
@@ -622,7 +621,7 @@ def _build_side(theta_fn, grid, regions, rescale):
     ndim_s = len(grid.spatial_shape)
     n_spatial = math.prod(grid.spatial_shape)
 
-    cols = {k: [] for k in _SIDE_COLUMNS}
+    cols = {k: [] for k, _ in _SIDE_COLUMNS}
 
     warned = False
     for a in range(ndim_s):
