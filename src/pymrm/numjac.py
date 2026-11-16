@@ -8,6 +8,74 @@ from scipy.sparse.csgraph import reverse_cuthill_mckee
 from numba import njit, prange
 
 
+def _slice_to_list(slc, dim_size):
+    return list(range(*slc.indices(dim_size)))
+
+
+def _expand_axis(axis_val, dim_size):
+    """
+    Expand a single axis value which could be:
+    - int
+    - slice
+    - list of ints/slices
+    - range
+    """
+    if isinstance(axis_val, int):
+        # Single integer, no expansion needed
+        return [axis_val]
+    elif isinstance(axis_val, slice):
+        # Expand slice
+        return _slice_to_list(axis_val, dim_size)
+    elif isinstance(axis_val, list):
+        # Could be a list of integers or slices
+        expanded_list = []
+        for v in axis_val:
+            if isinstance(v, int):
+                expanded_list.append(v)
+            elif isinstance(v, slice):
+                expanded_list.extend(_slice_to_list(v, dim_size))
+            elif isinstance(v, range):
+                expanded_list.extend(list(v))
+            else:
+                raise ValueError(
+                    "Unsupported element in list for axis expansion: {}".format(
+                        type(v)
+                    )
+                )
+        return expanded_list
+    elif isinstance(axis_val, range):
+        return list(axis_val)
+    else:
+        raise ValueError(
+            "Unsupported type in axis specification: {}".format(type(axis_val))
+        )
+
+
+def _expand_index(idx, shape):
+    """
+    Expand a single index tuple. The index can contain ints, slices, lists, or ranges.
+    Returns a list of fully expanded tuples, or [None] if idx is None.
+
+    Parameters:
+    - idx (tuple): Index tuple to expand.
+    - shape (tuple): Shape of the array.
+
+    Returns:
+    - list: Expanded list of tuples.
+    """
+    if not isinstance(idx, tuple):
+        raise ValueError("Index must be a tuple or None.")
+
+    expanded_dims = []
+    for i, val in enumerate(idx):
+        expanded_dims.append(_expand_axis(val, shape[i]))
+
+    # Cartesian product of all expanded dimensions
+    from itertools import product
+
+    return list(product(*expanded_dims))
+
+
 def expand_dependencies(shape_in, shape_out, dependencies):
     """Expand compact dependency definitions into fully explicit tuples.
 
@@ -24,72 +92,6 @@ def expand_dependencies(shape_in, shape_out, dependencies):
         Expanded dependencies in the canonical form
         ``(index_in, index_out, fixed_axes, periodic_axes)``.
     """
-
-    # Helper functions
-    def slice_to_list(slc, dim_size):
-        return list(range(*slc.indices(dim_size)))
-
-    def expand_axis(axis_val, dim_size):
-        """
-        Expand a single axis value which could be:
-        - int
-        - slice
-        - list of ints/slices
-        - range
-        """
-        if isinstance(axis_val, int):
-            # Single integer, no expansion needed
-            return [axis_val]
-        elif isinstance(axis_val, slice):
-            # Expand slice
-            return slice_to_list(axis_val, dim_size)
-        elif isinstance(axis_val, list):
-            # Could be a list of integers or slices
-            expanded_list = []
-            for v in axis_val:
-                if isinstance(v, int):
-                    expanded_list.append(v)
-                elif isinstance(v, slice):
-                    expanded_list.extend(slice_to_list(v, dim_size))
-                elif isinstance(v, range):
-                    expanded_list.extend(list(v))
-                else:
-                    raise ValueError(
-                        "Unsupported element in list for axis expansion: {}".format(
-                            type(v)
-                        )
-                    )
-            return expanded_list
-        elif isinstance(axis_val, range):
-            return list(axis_val)
-        else:
-            raise ValueError(
-                "Unsupported type in axis specification: {}".format(type(axis_val))
-            )
-
-    def expand_index(idx, shape):
-        """
-        Expand a single index tuple. The index can contain ints, slices, lists, or ranges.
-        Returns a list of fully expanded tuples, or [None] if idx is None.
-
-        Parameters:
-        - idx (tuple): Index tuple to expand.
-        - shape (tuple): Shape of the array.
-
-        Returns:
-        - list: Expanded list of tuples.
-        """
-        if not isinstance(idx, tuple):
-            raise ValueError("Index must be a tuple or None.")
-
-        expanded_dims = []
-        for i, val in enumerate(idx):
-            expanded_dims.append(expand_axis(val, shape[i]))
-
-        # Cartesian product of all expanded dimensions
-        from itertools import product
-
-        return list(product(*expanded_dims))
 
     # Normalize dependencies to a list
     if isinstance(dependencies, tuple):
@@ -145,8 +147,8 @@ def expand_dependencies(shape_in, shape_out, dependencies):
                     "Fixed axes are not allowed when the out-index is None."
                 )
             idx_out = (0,) * len(shape_out)
-        in_expanded = expand_index(idx_in, shape_in)  # list of tuples
-        out_expanded = expand_index(idx_out, shape_out)  # list of tuples or [None]
+        in_expanded = _expand_index(idx_in, shape_in)  # list of tuples
+        out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
 
         for idx_out in out_expanded:
             for idx_in in in_expanded:
