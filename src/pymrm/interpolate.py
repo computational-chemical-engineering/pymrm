@@ -333,6 +333,11 @@ def _align_to_axes(array, shape, axis):
     return array.reshape(shape_new)
 
 
+def _query_sides(bound_id):
+    """Boundaries asked for: both when ``bound_id`` is ``None``, else the one given."""
+    return [0, 1] if bound_id is None else [bound_id]
+
+
 def _outflow_flags(bc, outflow, sides):
     """Outflow flag per queried side."""
     if isinstance(bc, dict) or len(outflow) == 1:
@@ -489,14 +494,14 @@ def compute_boundary_values(
         if any(outflow):
             result = list(compute_boundary_values(
                 cell_centered_values, x_f, x_c, bc, axis, bound_id))
-            sides = [0, 1] if bound_id is None else [bound_id]
+            sides = _query_sides(bound_id)
             return _overwrite_outflow_sides(
                 result, cell_centered_values, axis, sides, _outflow_flags(bc, outflow, sides))
 
     geo = _geometry_along(cell_centered_values.shape, axis)
     cells = cell_centered_values.reshape(geo.shape_t)
     single_cell = geo.shape_t[1] == 1
-    bounds = [0, 1] if bound_id is None else [bound_id]
+    bounds = _query_sides(bound_id)
 
     bc = _normalize_boundary_bc(bc, bound_id, single_cell)
 
