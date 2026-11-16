@@ -373,6 +373,25 @@ def _rms(v):
     return float(np.sqrt(np.mean(np.square(v))))
 
 
+def _damping_mode(damping, callback, lin):
+    """The damping ``newton`` uses: ``damping``, with ``"auto"`` resolved."""
+    if damping == "auto":
+        user_hooks = callback is not None or lin.kind == "callable"
+        return "none" if user_hooks else _AUTO_DAMPING
+    if damping in ("none", "guarded", "monotone", "armijo"):
+        return damping
+    raise ValueError(f"Unsupported damping {damping!r}.")
+
+
+def _scale_vector(scale, shape):
+    """``scale`` as a flat array of the unknowns' scales (None if not given), checked."""
+    d_user = None if scale is None else \
+        np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
+    if d_user is not None and not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
+        raise ValueError("scale must be finite and positive for every unknown.")
+    return d_user
+
+
 @dataclass(eq=False)
 class _NewtonRun:
     """One :func:`newton` solve: the problem, its settings and the iteration counters."""
@@ -1083,20 +1102,11 @@ def newton(
         lin_solver_kwargs = {}
     lin = _LinearSolver(solver, lin_solver_kwargs, row_scaling)
 
-    if damping == "auto":
-        user_hooks = callback is not None or lin.kind == "callable"
-        mode = "none" if user_hooks else _AUTO_DAMPING
-    elif damping in ("none", "guarded", "monotone", "armijo"):
-        mode = damping
-    else:
-        raise ValueError(f"Unsupported damping {damping!r}.")
+    mode = _damping_mode(damping, callback, lin)
     lin.legacy = mode == "none" and not row_scaling
     legacy_exact = mode == "none" and backward_tol is None
 
-    d_user = None if scale is None else \
-        np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
-    if d_user is not None and not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
-        raise ValueError("scale must be finite and positive for every unknown.")
+    d_user = _scale_vector(scale, shape)
     d = np.ones(n) if d_user is None else d_user
     relative = rtol > 0 or not np.isscalar(tol)
     tol_vec = np.array(np.broadcast_to(np.asarray(tol, dtype=float), shape)).ravel() \
