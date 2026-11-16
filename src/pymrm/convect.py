@@ -909,6 +909,19 @@ class ConvFluxTVD:
         v_t = v_t.reshape(self._shape_f_t)
         return v_in, v_t
 
+    def _external_vectors(self, d):
+        """The external boundary vectors ``d`` as flat arrays, checked against ``shapes_d``."""
+        ext = [np.ones(1), np.ones(1)]
+        if self._with_d:
+            if d is None:
+                raise ValueError("built with shapes_d: pass d=(ext_left, ext_right)")
+            for i in range(2):
+                if self.shapes_d[i] is not None:
+                    ext[i] = np.asarray(d[i], dtype=float).reshape(-1)
+                    if ext[i].size != self._n_ext[i]:
+                        raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
+        return ext
+
     def __call__(self, c, v, d=None, jac_v=False):
         """Evaluate the face fluxes and their Jacobians.
 
@@ -952,15 +965,7 @@ class ConvFluxTVD:
             self._warned_unset = True
             _warn_unset_outflow(tuple(None if unset else {} for unset in self._bc_unset),
                                 v_t, "ConvFluxTVD")
-        ext = [np.ones(1), np.ones(1)]
-        if self._with_d:
-            if d is None:
-                raise ValueError("built with shapes_d: pass d=(ext_left, ext_right)")
-            for i in range(2):
-                if self.shapes_d[i] is not None:
-                    ext[i] = np.asarray(d[i], dtype=float).reshape(-1)
-                    if ext[i].size != self._n_ext[i]:
-                        raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
+        ext = self._external_vectors(d)
 
         c_flat = c.ravel()
         face_bnd = (self._m_face @ c_flat + self._e_face[0] @ ext[0]
