@@ -309,6 +309,10 @@ class BlockLayout:
                 start += n
             return
 
+        self._set_axis_layout(shapes, axis)
+
+    def _set_axis_layout(self, shapes, axis):
+        """Place the domains one after another along ``axis`` (all other axes shared)."""
         ndims = {len(shape) for shape in shapes.values()}
         if len(ndims) != 1:
             raise ValueError(
