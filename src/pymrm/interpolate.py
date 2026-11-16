@@ -104,6 +104,23 @@ def interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0):
     return staggered_values.reshape(shape_f)
 
 
+def _overwrite_outflow_faces(face, delta, cell_centered_values, outflow, axis):
+    """Set the outflow faces to the adjacent cell value with zero correction."""
+    cells = np.asarray(cell_centered_values)
+    ax = axis % cells.ndim
+    shape_f = list(cells.shape)
+    shape_f[ax] += 1
+    face = np.asarray(face).reshape(shape_f).copy()
+    delta = np.asarray(delta).reshape(shape_f).copy()
+    face, delta = np.moveaxis(face, ax, 0), np.moveaxis(delta, ax, 0)
+    cells = np.moveaxis(cells, ax, 0)
+    for flag, (i_face, i_cell) in zip(outflow, ((0, 0), (-1, -1))):
+        if flag:
+            face[i_face] = cells[i_cell]
+            delta[i_face] = 0.0
+    return np.moveaxis(face, 0, ax), np.moveaxis(delta, 0, ax)
+
+
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
@@ -143,19 +160,8 @@ def interp_cntr_to_stagg_tvd(
             face, delta = interp_cntr_to_stagg_tvd(
                 cell_centered_values, x_f, x_c, bc, v, tvd_limiter, axis
             )
-            cells = np.asarray(cell_centered_values)
-            ax = axis % cells.ndim
-            shape_f = list(cells.shape)
-            shape_f[ax] += 1
-            face = np.asarray(face).reshape(shape_f).copy()
-            delta = np.asarray(delta).reshape(shape_f).copy()
-            face, delta = np.moveaxis(face, ax, 0), np.moveaxis(delta, ax, 0)
-            cells = np.moveaxis(cells, ax, 0)
-            for flag, (i_face, i_cell) in zip(outflow, ((0, 0), (-1, -1))):
-                if flag:
-                    face[i_face] = cells[i_cell]
-                    delta[i_face] = 0.0
-            return np.moveaxis(face, 0, ax), np.moveaxis(delta, 0, ax)
+            return _overwrite_outflow_faces(
+                face, delta, cell_centered_values, outflow, axis)
 
     shape = list(cell_centered_values.shape)
     if axis < 0:
