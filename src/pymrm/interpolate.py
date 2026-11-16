@@ -3,7 +3,13 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from .helpers import substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair
+from .helpers import (
+    substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair, _field_geometry)
+
+
+def _geometry_along(shape, axis):
+    """Field geometry of ``shape`` along ``axis``, which may be negative."""
+    return _field_geometry(shape, axis + len(shape) if axis < 0 else axis)
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
@@ -69,18 +75,8 @@ def interp_cntr_to_stagg(cell_centered_values, x_f, x_c=None, axis=0):
     numpy.ndarray
         Staggered values with one additional element along ``axis``.
     """
-    shape = list(cell_centered_values.shape)
-    if axis < 0:
-        axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]
-    shape_f = shape.copy()
-    shape_f[axis] += 1
-    shape_f_t = shape_t.copy()
-    shape_f_t[1] += 1
+    geo = _geometry_along(cell_centered_values.shape, axis)
+    shape_t, shape_f, shape_f_t = geo.shape_t, geo.shape_f, geo.shape_f_t
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
 
@@ -175,26 +171,6 @@ def _wall_face_value(bc_i, shape, axis, alpha_1, alpha_2, c_near, c_far, shape_b
     return d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
 
 
-def _staggered_shapes(shape, axis):
-    """Triplet, face and boundary shapes of a cell-centered field along ``axis``."""
-    shape = list(shape)
-    if axis < 0:
-        axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]  # reshape as a triplet
-    shape_f = shape.copy()
-    shape_f[axis] = shape[axis] + 1
-    shape_f_t = shape_t.copy()
-    shape_f_t[1] = shape_f[axis]
-    shape_bc = shape_f.copy()
-    shape_bc[axis] = 1
-    shape_bc_d = [shape_t[0], shape_t[2]]
-    return shape, axis, shape_t, shape_f, shape_f_t, shape_bc, shape_bc_d
-
-
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
@@ -237,34 +213,33 @@ def interp_cntr_to_stagg_tvd(
             return _overwrite_outflow_faces(
                 face, delta, cell_centered_values, outflow, axis)
 
-    shape, axis, shape_t, shape_f, shape_f_t, shape_bc, shape_bc_d = _staggered_shapes(
-        cell_centered_values.shape, axis)
+    geo = _geometry_along(cell_centered_values.shape, axis)
 
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
-    cell_centered_values = cell_centered_values.reshape(shape_t)
-    staggered_values = np.empty(shape_f_t)
+    cell_centered_values = cell_centered_values.reshape(geo.shape_t)
+    staggered_values = np.empty(geo.shape_f_t)
 
-    if shape_t[1] == 1:
+    if geo.shape_t[1] == 1:
         staggered_values, delta_staggered_values = _interp_single_cell(
-            cell_centered_values, x_f, x_c, bc, shape, axis, staggered_values, shape_f,
-            shape_bc, shape_bc_d)
+            cell_centered_values, x_f, x_c, bc, geo.shape, geo.axis, staggered_values,
+            geo.shape_f, geo.shape_bc, geo.shape_bc_d)
     else:
         # bc 0
         alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
         alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
         staggered_values[:, 0, :] = _wall_face_value(
-            bc[0], shape, axis, alpha_1, alpha_2,
-            cell_centered_values[:, 0, :], cell_centered_values[:, 1, :], shape_bc, shape_bc_d)
+            bc[0], geo.shape, geo.axis, alpha_1, alpha_2,
+            cell_centered_values[:, 0, :], cell_centered_values[:, 1, :], geo.shape_bc, geo.shape_bc_d)
         # bc 1
         alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
         alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
         staggered_values[:, -1, :] = _wall_face_value(
-            bc[1], shape, axis, alpha_1, alpha_2,
-            cell_centered_values[:, -1, :], cell_centered_values[:, -2, :], shape_bc, shape_bc_d)
+            bc[1], geo.shape, geo.axis, alpha_1, alpha_2,
+            cell_centered_values[:, -1, :], cell_centered_values[:, -2, :], geo.shape_bc, geo.shape_bc_d)
 
-        v = np.broadcast_to(np.asarray(v), shape_f)
-        v_t = v.reshape(shape_f_t)
+        v = np.broadcast_to(np.asarray(v), geo.shape_f)
+        v_t = v.reshape(geo.shape_f_t)
         fltr_v_pos = v_t > 0
 
         x_f = x_f.reshape((1, -1, 1))
@@ -305,16 +280,16 @@ def interp_cntr_to_stagg_tvd(
             (staggered_values[:, 0:1, :], c_C, staggered_values[:, -1:, :]), axis=1
         )
         if tvd_limiter is None:
-            delta_staggered_values = np.zeros(shape_f)
-            staggered_values = staggered_values.reshape(shape_f)
+            delta_staggered_values = np.zeros(geo.shape_f)
+            staggered_values = staggered_values.reshape(geo.shape_f)
         else:
-            delta_staggered_values = np.zeros(shape_f_t)
+            delta_staggered_values = np.zeros(geo.shape_f_t)
             delta_staggered_values[:, 1:-1, :] = (
                 tvd_limiter(c_norm_C, x_norm_C, x_norm_d) * dc_DU
             )
             staggered_values += delta_staggered_values
-            delta_staggered_values = delta_staggered_values.reshape(shape_f)
-            staggered_values = staggered_values.reshape(shape_f)
+            delta_staggered_values = delta_staggered_values.reshape(geo.shape_f)
+            staggered_values = staggered_values.reshape(geo.shape_f)
     return staggered_values, delta_staggered_values
 
 
@@ -583,19 +558,9 @@ def compute_boundary_values(
             return _overwrite_outflow_sides(
                 result, cell_centered_values, bc, outflow, axis, bound_id)
 
-    shape = list(cell_centered_values.shape)
-    if axis < 0:
-        axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]  # reshape as a triplet
-    shape_b_t = shape_t.copy()
-    shape_b_t[1] = 2
-    shape_bc = shape.copy()
-    shape_bc[axis] = 1
-    shape_bc_d = [shape_t[0], shape_t[2]]
+    geo = _geometry_along(cell_centered_values.shape, axis)
+    shape, axis, shape_t = geo.shape, geo.axis, geo.shape_t
+    shape_bc, shape_bc_d = geo.shape_bc, geo.shape_bc_d
     cell_centered_values = cell_centered_values.reshape(shape_t)
 
     if bound_id is None:
@@ -725,9 +690,8 @@ def construct_boundary_value_matrices(
         raise ValueError("bound_id must be 0 or 1")
 
     # Trick: Reshape to triplet shape_t
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
-    shape_bc_d = (shape_t[0], shape_t[2])
+    geo = _field_geometry(shape, axis)
+    shape_t, shape_bc, shape_bc_d = geo.shape_t, geo.shape_bc, geo.shape_bc_d
 
     if shape_t[1] < 2:
         raise ValueError(

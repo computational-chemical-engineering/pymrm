@@ -19,6 +19,7 @@ Functions
 """
 
 import math
+from typing import NamedTuple
 import numpy as np
 from scipy.sparse import diags, csc_array, csr_array
 
@@ -113,6 +114,31 @@ def _unwrap_bc_pair(shape, bc, axis):
         ]
         for key in ["a", "b", "d"]
     ]
+
+
+class _FieldGeometry(NamedTuple):
+    """Shapes of a cell-centred field along one axis: triplet, face, boundary."""
+
+    shape: tuple
+    axis: int
+    shape_t: tuple
+    shape_f: tuple
+    shape_f_t: tuple
+    shape_bc: tuple
+    shape_bc_d: tuple
+
+
+def _field_geometry(shape, axis):
+    """Triplet, face and boundary shapes of a field of ``shape`` along ``axis``.
+
+    ``axis`` must be non-negative; the caller normalises it.
+    """
+    shape = tuple(shape)
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    return _FieldGeometry(
+        shape, axis, shape_t, shape_f, (shape_t[0], shape_f[axis], shape_t[2]),
+        shape[:axis] + (1,) + shape[axis + 1:], (shape_t[0], shape_t[2]))
 
 
 def _stagger_shape(shape, axis):
