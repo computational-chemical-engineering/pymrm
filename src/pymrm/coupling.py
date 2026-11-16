@@ -665,6 +665,34 @@ class BlockLayout:
         return jac
 
 
+def _interface_coefficients(ic, shape, shape_i, axis):
+    """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
+    a, b = [
+        [
+            tuple(
+                (
+                    unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis)
+                    if ic_elem and key in ic_elem
+                    else np.zeros((1,) * len(shape_i))
+                )
+                for j in range(2)
+            )
+            for ic_elem in ic
+        ]
+        for key in ["a", "b"]
+    ]
+
+    d = [
+        (
+            unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
+            if ic_elem and "d" in ic_elem
+            else np.zeros((1,) * len(shape_i))
+        )
+        for ic_elem in ic
+    ]
+    return a, b, d
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -721,29 +749,7 @@ def construct_interface_matrices(
             x_cs = list(x_cs)
             x_cs[i] = 0.5 * (x_fs[i][1:] + x_fs[i][:-1])
 
-    a, b = [
-        [
-            tuple(
-                (
-                    unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis)
-                    if ic_elem and key in ic_elem
-                    else np.zeros((1,) * len(shape_i))
-                )
-                for j in range(2)
-            )
-            for ic_elem in ic
-        ]
-        for key in ["a", "b"]
-    ]
-
-    d = [
-        (
-            unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
-            if ic_elem and "d" in ic_elem
-            else np.zeros((1,) * len(shape_i))
-        )
-        for ic_elem in ic
-    ]
+    a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
 
     alpha_1 = [None, None]
     alpha_1[0] = -(x_cs[0][-2] - x_fs[0][-1]) / (
