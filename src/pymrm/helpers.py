@@ -141,6 +141,91 @@ def _field_geometry(shape, axis):
         shape[:axis] + (1,) + shape[axis + 1:], (shape_t[0], shape_t[2]))
 
 
+class _BoundaryFaceTerms(NamedTuple):
+    """Boundary-face coefficients with the index grids they are placed on."""
+
+    values: np.ndarray
+    values_bc: np.ndarray
+    values_bc_src: np.ndarray
+    i_c: np.ndarray
+    i_f: np.ndarray
+    i_f_bc: np.ndarray
+
+
+def _boundary_face_indices(geo, cell_idx, face_idx):
+    """Flat cell, face and boundary-face indices of the boundary stencils.
+
+    ``cell_idx`` and ``face_idx`` list the positions along the axis of each stencil
+    entry; the boundary faces are the first and the last face.
+    """
+    n0, _, n2 = geo.shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+
+    def flat(idx, shape):
+        return np.ravel_multi_index((i0, np.array(idx).reshape(1, -1, 1), i2), shape)
+
+    return (flat(cell_idx, geo.shape_t), flat(face_idx, geo.shape_f_t),
+            flat([0, geo.shape_f_t[1] - 1], geo.shape_f_t))
+
+
+def _on_bc(value, geo):
+    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``."""
+    return np.broadcast_to(value, geo.shape_bc).reshape(geo.shape_bc_d)
+
+
+def _wall_alphas(x_f, x_c):
+    """Wall-stencil weights ``(alpha_1, alpha_2)`` of the left and the right boundary."""
+    left = ((x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0])),
+            (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0])))
+    right = (-(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1])),
+             -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1])))
+    return left, right
+
+
+def _diagonal_sources(values_bc):
+    """Sources per face and boundary when each boundary face depends on its own data only."""
+    n0, _, n2 = values_bc.shape
+    sources = np.zeros((n0, 2, 2, n2))
+    sources[:, 0, 0, :] = values_bc[:, 0, :]
+    sources[:, 1, 1, :] = values_bc[:, 1, :]
+    return sources
+
+
+def _bc_operators_by_boundary(terms, shapes_d, geo, format):
+    """Operators and sources per boundary, for inhomogeneous terms on external vectors."""
+    n0, n1, n2 = geo.shape_t
+    n_faces = math.prod(geo.shape_f_t)
+    values = terms.values.reshape((n0, -1, n2))
+    bc_sources = []
+    for i in range(2):
+        shape_d = (1,) * len(geo.shape_bc) if shapes_d[i] is None else shapes_d[i]
+        num_cols = math.prod(shape_d)
+        i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
+        i_cols_bc = np.broadcast_to(i_cols_bc, geo.shape_bc).reshape(n0, 1, n2)
+        faces = [0, 1] if n1 == 1 else [i]
+        bc_sources.append(csc_array(
+            (
+                terms.values_bc_src[:, faces, i, :].ravel(),
+                (
+                    terms.i_f_bc[:, faces, :].ravel(),
+                    np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                ),
+            ),
+            shape=(n_faces, num_cols),
+        ))
+    sides = (slice(0, 1), slice(-1, None)) if n1 == 1 else (slice(None, 2), slice(-2, None))
+    matrices = [
+        _sparse_array(
+            (values[:, s, :].ravel(), (terms.i_f[:, s, :].ravel(), terms.i_c[:, s, :].ravel())),
+            shape=(n_faces, math.prod(geo.shape_t)),
+            format=format,
+        )
+        for s in sides
+    ]
+    return matrices[0], bc_sources[0], matrices[1], bc_sources[1]
+
+
 def _stagger_shape(shape, axis):
     """``shape`` with the length along ``axis`` increased by one (face-centred length)."""
     return tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
