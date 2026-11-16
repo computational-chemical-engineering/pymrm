@@ -121,6 +121,55 @@ def _overwrite_outflow_faces(face, delta, cell_centered_values, outflow, axis):
     return np.moveaxis(face, 0, ax), np.moveaxis(delta, 0, ax)
 
 
+def _interp_single_cell(
+    cell_centered_values, x_f, x_c, bc, shape, axis, staggered_values, shape_f, shape_bc, shape_bc_d
+):
+    """Face values of a single-cell domain from the two boundary conditions."""
+    a, b, d = [
+        [
+            (
+                unwrap_bc_coeff(shape, bc_elem[key], axis=axis)
+                if bc_elem
+                else np.zeros((1,) * len(shape))
+            )
+            for bc_elem in bc
+        ]
+        for key in ["a", "b", "d"]
+    ]
+    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_0_left = alpha_1 - alpha_2_left
+    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
+    alpha_0_right = alpha_1 - alpha_2_right
+    fctr = (b[0] + alpha_0_left * a[0]) * (
+        b[1] + alpha_0_right * a[1]
+    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    fctr_m = alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr
+    fctr_m = fctr_m + np.zeros(shape_bc)
+    fctr_m = np.reshape(fctr_m, shape_bc_d)
+    staggered_values[:, 0, :] = fctr_m * cell_centered_values[:, 0, :]
+    fctr_m = alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr
+    fctr_m = fctr_m + np.zeros(shape_bc)
+    fctr_m = np.reshape(fctr_m, shape_bc_d)
+    staggered_values[:, 1, :] = fctr_m * cell_centered_values[:, 0, :]
+    fctr_m = (
+        (a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]
+    ) * fctr
+    fctr_m = fctr_m + np.zeros(shape_bc)
+    fctr_m = np.reshape(fctr_m, shape_bc_d)
+    staggered_values[:, 0, :] += fctr_m
+    fctr_m = (
+        (a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]
+    ) * fctr
+    fctr_m = fctr_m + np.zeros(shape_bc)
+    fctr_m = np.reshape(fctr_m, shape_bc_d)
+    staggered_values[:, 1, :] += fctr_m
+    staggered_values = staggered_values.reshape(shape_f)
+    delta_staggered_values = np.zeros(shape_f)
+    return staggered_values, delta_staggered_values
+
+
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
@@ -185,48 +234,9 @@ def interp_cntr_to_stagg_tvd(
     staggered_values = np.empty(shape_f_t)
 
     if shape_t[1] == 1:
-        a, b, d = [
-            [
-                (
-                    unwrap_bc_coeff(shape, bc_elem[key], axis=axis)
-                    if bc_elem
-                    else np.zeros((1,) * len(shape))
-                )
-                for bc_elem in bc
-            ]
-            for key in ["a", "b", "d"]
-        ]
-        alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_0_left = alpha_1 - alpha_2_left
-        alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-        alpha_0_right = alpha_1 - alpha_2_right
-        fctr = (b[0] + alpha_0_left * a[0]) * (
-            b[1] + alpha_0_right * a[1]
-        ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        fctr_m = alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr
-        fctr_m = fctr_m + np.zeros(shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        staggered_values[:, 0, :] = fctr_m * cell_centered_values[:, 0, :]
-        fctr_m = alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr
-        fctr_m = fctr_m + np.zeros(shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        staggered_values[:, 1, :] = fctr_m * cell_centered_values[:, 0, :]
-        fctr_m = (
-            (a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]
-        ) * fctr
-        fctr_m = fctr_m + np.zeros(shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        staggered_values[:, 0, :] += fctr_m
-        fctr_m = (
-            (a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]
-        ) * fctr
-        fctr_m = fctr_m + np.zeros(shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        staggered_values[:, 1, :] += fctr_m
-        staggered_values = staggered_values.reshape(shape_f)
-        delta_staggered_values = np.zeros(shape_f)
+        staggered_values, delta_staggered_values = _interp_single_cell(
+            cell_centered_values, x_f, x_c, bc, shape, axis, staggered_values, shape_f,
+            shape_bc, shape_bc_d)
     else:
         # bc 0
         a, b, d = [
