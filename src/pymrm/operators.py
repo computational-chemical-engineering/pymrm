@@ -296,6 +296,31 @@ def construct_grad_bc(
         return _bc_operators_by_boundary(terms, shapes_d, geo, format)
 
 
+def _div_metrics(x_f, nu, n_faces):
+    """Face areas and inverse cell volumes of the geometry ``nu`` on the faces ``x_f``."""
+    if callable(nu):
+        area = nu(x_f).ravel()
+        inv_sqrt3 = 1 / np.sqrt(3)
+        x_f_r = x_f.ravel()
+        dx_f = x_f_r[1:] - x_f_r[:-1]
+        dvol_inv = 1 / (
+            (
+                nu(x_f_r[:-1] + (0.5 - 0.5 * inv_sqrt3) * dx_f)
+                + nu(x_f_r[:-1] + (0.5 + 0.5 * inv_sqrt3) * dx_f)
+            )
+            * 0.5
+            * dx_f
+        )
+    elif nu == 0:
+        area = np.ones(n_faces)
+        dvol_inv = 1 / (x_f[1:] - x_f[:-1])
+    else:
+        area = np.power(x_f.ravel(), nu)
+        vol = area * x_f.ravel() / (nu + 1)
+        dvol_inv = 1 / (vol[1:] - vol[:-1])
+    return area, dvol_inv
+
+
 def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     """Construct a divergence matrix that maps face fluxes to cell balances.
 
@@ -324,10 +349,8 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
         shape = tuple(shape)
     x_f = generate_grid(shape[axis], x_f)
 
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-
+    geo = _field_geometry(shape, axis)
+    shape_t, shape_f_t = geo.shape_t, geo.shape_f_t
     n0, n1, n2 = shape_t
     # Each cell references its left face [j] and right face [j+1]
     i0 = np.arange(n0).reshape(-1, 1, 1, 1)
@@ -336,27 +359,7 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     face_pair = np.array([0, 1]).reshape(1, 1, 1, -1)
     i_f = np.ravel_multi_index((i0, i1 + face_pair, i2), shape_f_t)
 
-    if callable(nu):
-        area = nu(x_f).ravel()
-        inv_sqrt3 = 1 / np.sqrt(3)
-        x_f_r = x_f.ravel()
-        dx_f = x_f_r[1:] - x_f_r[:-1]
-        dvol_inv = 1 / (
-            (
-                nu(x_f_r[:-1] + (0.5 - 0.5 * inv_sqrt3) * dx_f)
-                + nu(x_f_r[:-1] + (0.5 + 0.5 * inv_sqrt3) * dx_f)
-            )
-            * 0.5
-            * dx_f
-        )
-    elif nu == 0:
-        area = np.ones(shape_f_t[1])
-        dvol_inv = 1 / (x_f[1:] - x_f[:-1])
-    else:
-        area = np.power(x_f.ravel(), nu)
-        vol = area * x_f.ravel() / (nu + 1)
-        dvol_inv = 1 / (vol[1:] - vol[:-1])
-
+    area, dvol_inv = _div_metrics(x_f, nu, shape_f_t[1])
     values = np.empty((shape_t[1], 2))
     values[:, 0] = -area[:-1] * dvol_inv
     values[:, 1] = area[1:] * dvol_inv
