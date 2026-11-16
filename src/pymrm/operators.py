@@ -5,6 +5,7 @@ import numpy as np
 from scipy.sparse import csc_array, csr_array
 from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 from pymrm.grid import generate_grid
+from pymrm.convect import _convflux_bc_by_boundary
 
 
 def construct_grad(
@@ -355,59 +356,9 @@ def construct_grad_bc(
         )
         return grad_matrix, grad_bc
     else:
-        grad_bc = [None] * 2
-        for i in range(2):
-            if shapes_d[i] is None:
-                shape_d = (1,) * len(shape_bc)
-                num_cols = 1
-            else:
-                shape_d = shapes_d[i]
-                num_cols = math.prod(shape_d)
-            i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
-            faces = [0, 1] if n1 == 1 else [i]
-            grad_bc[i] = csc_array(
-                (
-                    values_bc_src[:, faces, i, :].ravel(),
-                    (
-                        i_f_bc[:, faces, :].ravel(),
-                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
-                    ),
-                ),
-                shape=(math.prod(shape_f_t), num_cols),
-            )
-        if shape_t[1] == 1:
-            grad_matrix_0 = _sparse_array(
-                (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            grad_matrix_1 = _sparse_array(
-                (
-                    values[:, -1, :].ravel(),
-                    (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        else:
-            grad_matrix_0 = _sparse_array(
-                (
-                    values[:, :2, :].ravel(),
-                    (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            grad_matrix_1 = _sparse_array(
-                (
-                    values[:, -2:, :].ravel(),
-                    (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        return grad_matrix_0, grad_bc[0], grad_matrix_1, grad_bc[1]
+        return _convflux_bc_by_boundary(
+            values, values_bc_src, i_f, i_c, i_f_bc, shapes_d, shape_bc, shape_t,
+            math.prod(shape_f_t), format)
 
 
 def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
