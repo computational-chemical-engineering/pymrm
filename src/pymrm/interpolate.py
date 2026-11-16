@@ -170,6 +170,28 @@ def _interp_single_cell(
     return staggered_values, delta_staggered_values
 
 
+def _wall_face_value(bc_i, shape, axis, alpha_1, alpha_2, c_near, c_far, shape_bc, shape_bc_d):
+    """Face value at a boundary from the two adjacent cells and its boundary condition."""
+    a, b, d = [
+        (
+            unwrap_bc_coeff(shape, bc_i[key], axis=axis)
+            if bc_i
+            else np.zeros((1,) * len(shape))
+        )
+        for key in ["a", "b", "d"]
+    ]
+    alpha_0 = alpha_1 - alpha_2
+    fctr = alpha_0 * a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a_fctr = a * fctr
+    a_fctr = a_fctr + np.zeros(shape_bc)
+    a_fctr = np.reshape(a_fctr, shape_bc_d)
+    d_fctr = d * fctr
+    d_fctr = d_fctr + np.zeros(shape_bc)
+    d_fctr = np.reshape(d_fctr, shape_bc_d)
+    return d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
+
+
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
@@ -239,53 +261,17 @@ def interp_cntr_to_stagg_tvd(
             shape_bc, shape_bc_d)
     else:
         # bc 0
-        a, b, d = [
-            (
-                unwrap_bc_coeff(shape, bc[0][key], axis=axis)
-                if bc[0]
-                else np.zeros((1,) * len(shape))
-            )
-            for key in ["a", "b", "d"]
-        ]
         alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
         alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
-        alpha_0 = alpha_1 - alpha_2
-        fctr = alpha_0 * a + b
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        a_fctr = a * fctr
-        a_fctr = a_fctr + np.zeros(shape_bc)
-        a_fctr = np.reshape(a_fctr, shape_bc_d)
-        d_fctr = d * fctr
-        d_fctr = d_fctr + np.zeros(shape_bc)
-        d_fctr = np.reshape(d_fctr, shape_bc_d)
-        staggered_values[:, 0, :] = d_fctr + a_fctr * (
-            alpha_1 * cell_centered_values[:, 0, :]
-            - alpha_2 * cell_centered_values[:, 1, :]
-        )
+        staggered_values[:, 0, :] = _wall_face_value(
+            bc[0], shape, axis, alpha_1, alpha_2,
+            cell_centered_values[:, 0, :], cell_centered_values[:, 1, :], shape_bc, shape_bc_d)
         # bc 1
-        a, b, d = [
-            (
-                unwrap_bc_coeff(shape, bc[1][key], axis=axis)
-                if bc[1]
-                else np.zeros((1,) * len(shape))
-            )
-            for key in ["a", "b", "d"]
-        ]
         alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
         alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-        alpha_0 = alpha_1 - alpha_2
-        fctr = alpha_0 * a + b
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        a_fctr = a * fctr
-        a_fctr = a_fctr + np.zeros(shape_bc)
-        a_fctr = np.reshape(a_fctr, shape_bc_d)
-        d_fctr = d * fctr
-        d_fctr = d_fctr + np.zeros(shape_bc)
-        d_fctr = np.reshape(d_fctr, shape_bc_d)
-        staggered_values[:, -1, :] = d_fctr + a_fctr * (
-            alpha_1 * cell_centered_values[:, -1, :]
-            - alpha_2 * cell_centered_values[:, -2, :]
-        )
+        staggered_values[:, -1, :] = _wall_face_value(
+            bc[1], shape, axis, alpha_1, alpha_2,
+            cell_centered_values[:, -1, :], cell_centered_values[:, -2, :], shape_bc, shape_bc_d)
 
         v = np.broadcast_to(np.asarray(v), shape_f)
         v_t = v.reshape(shape_f_t)
