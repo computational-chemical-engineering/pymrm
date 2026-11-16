@@ -1146,6 +1146,100 @@ def _attempt(function, x, args, options):
         return exc.result
 
 
+@dataclass(eq=False)
+class _PseudoTransient:
+    """One :func:`pseudo_transient` march: settings, state and the steady attempts."""
+
+    function: object
+    args: tuple
+    x: np.ndarray
+    mass_matrix: object
+    inner: dict
+    steady: dict
+    dt: float
+    dt_max: float
+    max_steps: object
+    growth: float
+    steady_ratio: float
+    steady_every: object
+    verbose: object
+    history: list = field(default_factory=list)
+    steady_result: object = None
+    g_prev: object = None
+    g_attempt: object = None
+
+    def result(self, success, message, nsteps):
+        steady_result = self.steady_result
+        xr = steady_result.x if (success and steady_result is not None) else self.x
+        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps,
+                              history=self.history, steady=steady_result)
+
+    def march(self):
+        """Pseudo-time steps with steady Newton attempts; the result of :func:`pseudo_transient`."""
+        for step in range(int(self.max_steps) + 1):
+            out = self._steady_check(step)
+            if out is not None:
+                return out
+            if step == self.max_steps:
+                break
+            out = self._time_step(step)
+            if out is not None:
+                return out
+        return self.result(False, "max_steps reached without a converged steady solve", int(self.max_steps))
+
+    def _steady_due(self, step, g_norm):
+        """Whether to try the steady Newton solve at this step."""
+        if self.g_attempt is None or g_norm <= self.steady_ratio * self.g_attempt:
+            return True
+        return step == self.max_steps or (self.steady_every and step % self.steady_every == 0)
+
+    def _steady_check(self, step):
+        """Residual norm at ``x`` and, when due, a steady solve; the result if the march ends."""
+        g_now, _ = self.function(self.x, *self.args)
+        self.g_norm = g_norm = float(np.linalg.norm(np.asarray(g_now, dtype=float).ravel()))
+        if not np.isfinite(g_norm):
+            return self.result(False, "non-finite residual during the pseudo-time march", step)
+        if self._steady_due(step, g_norm):
+            self.g_attempt = g_norm
+            self.steady_result = _attempt(self.function, self.x, self.args, self.steady)
+            if self.steady_result.success:
+                return self.result(True, f"Converged by the steady Newton solve after {step} "
+                                   "pseudo-time steps", step)
+        return None
+
+    def _time_step(self, step):
+        """One implicit pseudo-time step, shortening ``dt`` on failure; the result if it fails."""
+        g_norm, g_prev, history = self.g_norm, self.g_prev, self.history
+        easy = bool(history) and history[-1]["nit"] <= 3     # the last step took few iterations
+        if g_prev is not None and g_norm > 0.0 and easy:
+            self.dt = min(self.dt_max, self.dt * min(self.growth, max(2.0, g_prev / g_norm)))
+        self.g_prev = g_norm
+        x_old = self.x.ravel().copy()
+        for _ in range(20):
+            transient = _transient_residual(self.function, self.mass_matrix, x_old, self.dt)
+            step_result = _attempt(transient, self.x, self.args, self.inner)
+            if step_result.success:
+                break
+            self.dt *= 0.25
+        else:
+            return self.result(False, f"pseudo-time step {step} failed down to dt = {self.dt:.2e}", step)
+        self.x = step_result.x
+        history.append({"dt": self.dt, "residual_norm": g_norm, "nit": step_result.nit})
+        if self.verbose:
+            print(f"pseudo_transient step {step}: dt={self.dt:.2e} |g|={g_norm:.2e} "
+                  f"nit={step_result.nit}")
+        return None
+
+
+def _transient_residual(function, mass_matrix, x_old, dt):
+    """``function`` with the implicit pseudo-time term of a step ``dt`` from ``x_old``."""
+    def transient(xv, *a, _dt=dt):
+        g, jac = function(xv, *a)
+        g = np.asarray(g, dtype=float).ravel() + mass_matrix @ (xv.ravel() - x_old) / _dt
+        return g, jac + mass_matrix / _dt
+    return transient
+
+
 def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_max=np.inf,
                      max_steps=200, growth=10.0, steady_ratio=0.1, steady_every=10,
                      newton_kwargs=None, steady_kwargs=None, verbose=0):
@@ -1219,51 +1313,10 @@ def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_
     mass_matrix = _mass_matrix(mass, shape)
     inner = {"maxfev": 10, "damping": "guarded", **(newton_kwargs or {})}
     steady = {"maxfev": 30, "damping": "guarded", **(steady_kwargs or {})}
-    history = []
-    steady_result = None
-    g_prev = None
-    g_attempt = None
-
-    def result(success, message, nsteps):
-        xr = steady_result.x if (success and steady_result is not None) else x
-        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps,
-                              history=history, steady=steady_result)
-
-    for step in range(int(max_steps) + 1):
-        g_now, _ = function(x, *args)
-        g_norm = float(np.linalg.norm(np.asarray(g_now, dtype=float).ravel()))
-        if not np.isfinite(g_norm):
-            return result(False, "non-finite residual during the pseudo-time march", step)
-        if (g_attempt is None or g_norm <= steady_ratio * g_attempt or step == max_steps
-                or (steady_every and step % steady_every == 0)):
-            g_attempt = g_norm
-            steady_result = _attempt(function, x, args, steady)
-            if steady_result.success:
-                return result(True, f"Converged by the steady Newton solve after {step} "
-                              "pseudo-time steps", step)
-            if step == max_steps:
-                break
-        if g_prev is not None and g_norm > 0.0 and history and history[-1]["nit"] <= 3:
-            dt = min(dt_max, dt * min(growth, max(2.0, g_prev / g_norm)))
-        g_prev = g_norm
-        x_old = x.ravel().copy()
-        for _ in range(20):
-            def transient(xv, *a, _dt=dt):
-                g, jac = function(xv, *a)
-                g = np.asarray(g, dtype=float).ravel() + mass_matrix @ (xv.ravel() - x_old) / _dt
-                return g, jac + mass_matrix / _dt
-            step_result = _attempt(transient, x, args, inner)
-            if step_result.success:
-                break
-            dt *= 0.25
-        else:
-            return result(False, f"pseudo-time step {step} failed down to dt = {dt:.2e}", step)
-        x = step_result.x
-        history.append({"dt": dt, "residual_norm": g_norm, "nit": step_result.nit})
-        if verbose:
-            print(f"pseudo_transient step {step}: dt={dt:.2e} |g|={g_norm:.2e} "
-                  f"nit={step_result.nit}")
-    return result(False, "max_steps reached without a converged steady solve", int(max_steps))
+    run = _PseudoTransient(function=function, args=args, x=x, mass_matrix=mass_matrix, inner=inner,
+                           steady=steady, dt=dt, dt_max=dt_max, max_steps=max_steps, growth=growth,
+                           steady_ratio=steady_ratio, steady_every=steady_every, verbose=verbose)
+    return run.march()
 
 
 _MAX_SECANT_RATIO = 4.0
