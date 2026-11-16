@@ -544,6 +544,30 @@ def _boundary_values_two_cell_side(
     return value, grad
 
 
+def _normalize_boundary_bc(bc, bound_id, single_cell):
+    """Return ``bc`` as a pair of boundary dictionaries (``None`` for an unused side)."""
+    both_sides = bound_id is None or single_cell
+    if both_sides:
+        if bc is None:
+            bc = ({"a": 0, "b": 0, "d": 0}, {"a": 0, "b": 0, "d": 0})
+        elif not isinstance(bc, tuple) and len(bc) != 2:
+            raise ValueError(
+                "Boundary conditions must be a tuple of 2 dictionaries when 2 boundary conditions are required."
+            )
+        if bc[0] is None:
+            bc[0] = {"a": 0, "b": 0, "d": 0}
+        if bc[1] is None:
+            bc[1] = {"a": 0, "b": 0, "d": 0}
+    else:
+        if bc is None:
+            bc = {"a": 0, "b": 0, "d": 0}
+        if bound_id == 0:
+            bc = (bc, None)
+        else:
+            bc = (None, bc)
+    return bc
+
+
 def compute_boundary_values(
     cell_centered_values, x_f, x_c=None, bc=None, axis=0, bound_id=None
 ):
@@ -604,24 +628,7 @@ def compute_boundary_values(
     else:
         bounds = [bound_id]
 
-    if bound_id is None or shape_t[1] == 1:
-        if bc is None:
-            bc = ({"a": 0, "b": 0, "d": 0}, {"a": 0, "b": 0, "d": 0})
-        elif not isinstance(bc, tuple) and len(bc) != 2:
-            raise ValueError(
-                "Boundary conditions must be a tuple of 2 dictionaries when 2 boundary conditions are required."
-            )
-        if bc[0] is None:
-            bc[0] = {"a": 0, "b": 0, "d": 0}
-        if bc[1] is None:
-            bc[1] = {"a": 0, "b": 0, "d": 0}
-    else:
-        if bc is None:
-            bc = {"a": 0, "b": 0, "d": 0}
-        if bound_id == 0:
-            bc = (bc, None)
-        else:
-            bc = (None, bc)
+    bc = _normalize_boundary_bc(bc, bound_id, shape_t[1] == 1)
 
     boundary_values = [None, None]
     boundary_grads = [None, None]
