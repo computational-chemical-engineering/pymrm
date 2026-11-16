@@ -378,7 +378,7 @@ def _sdf_theta_fn(sdf, strides):
     def theta_fn(cells, axis, direction):
         sdf_c = flat_sdf[cells]
         sdf_g = flat_sdf[cells + direction * strides[axis]]
-        return np.clip(sdf_c / (sdf_c - sdf_g), _THETA_MIN, _THETA_MAX)
+        return np.minimum(np.maximum(sdf_c / (sdf_c - sdf_g), _THETA_MIN), _THETA_MAX)
 
     return theta_fn
 
