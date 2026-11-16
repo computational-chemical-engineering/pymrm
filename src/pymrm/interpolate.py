@@ -3,7 +3,7 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from .helpers import unwrap_bc_coeff, substitute_outflow_bc, is_outflow_bc
+from .helpers import substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair
 
 
 def interp_stagg_to_cntr(staggered_values, x_f, x_c=None, axis=0):
@@ -125,17 +125,7 @@ def _interp_single_cell(
     cell_centered_values, x_f, x_c, bc, shape, axis, staggered_values, shape_f, shape_bc, shape_bc_d
 ):
     """Face values of a single-cell domain from the two boundary conditions."""
-    a, b, d = [
-        [
-            (
-                unwrap_bc_coeff(shape, bc_elem[key], axis=axis)
-                if bc_elem
-                else np.zeros((1,) * len(shape))
-            )
-            for bc_elem in bc
-        ]
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_pair(shape, bc, axis)
     alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
     alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
     alpha_0_left = alpha_1 - alpha_2_left
@@ -172,14 +162,7 @@ def _interp_single_cell(
 
 def _wall_face_value(bc_i, shape, axis, alpha_1, alpha_2, c_near, c_far, shape_bc, shape_bc_d):
     """Face value at a boundary from the two adjacent cells and its boundary condition."""
-    a, b, d = [
-        (
-            unwrap_bc_coeff(shape, bc_i[key], axis=axis)
-            if bc_i
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_side(shape, bc_i, axis)
     alpha_0 = alpha_1 - alpha_2
     fctr = alpha_0 * a + b
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
@@ -416,17 +399,7 @@ def _boundary_values_single_cell(
     boundary_grads = [None, None]
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
-    a, b, d = [
-        [
-            (
-                unwrap_bc_coeff(shape, bc_elem[key], axis=axis)
-                if bc_elem
-                else np.zeros((1,) * len(shape))
-            )
-            for bc_elem in bc
-        ]
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_pair(shape, bc, axis)
     alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
     alpha_2 = [
         (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0])),
@@ -491,14 +464,7 @@ def _boundary_values_two_cell_side(
         idx_0 = -1
         idx_1 = -2
 
-    a, b, d = [
-        (
-            unwrap_bc_coeff(shape, bc_i[key], axis=axis)
-            if bc_i
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_side(shape, bc_i, axis)
     alpha_1 = (x_c[idx_1] - x_f[idx_0]) / (
         (x_c[idx_0] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])
     )
@@ -778,14 +744,7 @@ def construct_boundary_value_matrices(
     values = np.empty((shape_t[0], 2, shape_t[2]))
 
     # Get a, b, and d from dictionary
-    a, b, d = [
-        (
-            unwrap_bc_coeff(shape, bc[key], axis=axis)
-            if bc
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    a, b, d = _unwrap_bc_side(shape, bc, axis)
     a *= sgn
     alpha_1 = (x_c[idx_1] - x_f[idx_0]) / (
         (x_c[idx_0] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])

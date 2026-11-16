@@ -222,7 +222,7 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
         coeff_matrix = _pairwise_coefficient_matrix(coefficients, shape, axis, fmt)
     else:
         if axis is not None:
-            shape = tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
+            shape = _stagger_shape(shape, axis)
         coefficients_copy = np.array(coefficients)
         shape_coeff = (1,) * (
             len(shape) - coefficients_copy.ndim
