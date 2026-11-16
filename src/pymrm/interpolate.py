@@ -164,41 +164,46 @@ def _wall_faces(cells, x_f, x_c, bc, geo):
     return faces
 
 
-def _upwind_positions(fltr_v_pos, x_f, x_c):
-    """Normalised coordinates of the interior faces and their upwind cells."""
+def _upwind_positions(upwind, x_f, x_c):
+    """Normalised coordinates of the interior faces and their upwind cells.
+
+    ``upwind`` holds the interior-face masks of ``v > 0`` and of its negation.
+    """
+    pos, neg = upwind
     x_f = x_f.reshape((1, -1, 1))
     x_c = x_c.reshape((1, -1, 1))
     x_d = x_f[:, 1:-1, :]
     x_C = (
-        fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
-        + ~fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
+        pos * x_c[:, :-1, :]
+        + neg * x_c[:, 1:, :]
     )
-    x_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
+    x_U = pos * np.concatenate(
         (x_f[:, 0:1, :], x_c[:, 0:-2, :]), axis=1
-    ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
+    ) + neg * np.concatenate(
         (x_c[:, 2:, :], x_f[:, -1:, :]), axis=1
     )
     x_D = (
-        fltr_v_pos[:, 1:-1, :] * x_c[:, 1:, :]
-        + ~fltr_v_pos[:, 1:-1, :] * x_c[:, :-1, :]
+        pos * x_c[:, 1:, :]
+        + neg * x_c[:, :-1, :]
     )
     return (x_C - x_U) / (x_D - x_U), (x_d - x_U) / (x_D - x_U)
 
 
-def _upwind_values(fltr_v_pos, cells, faces):
+def _upwind_values(upwind, cells, faces):
     """Upwind-cell values, normalised values and downwind-upwind jumps at interior faces."""
+    pos, neg = upwind
     c_C = (
-        fltr_v_pos[:, 1:-1, :] * cells[:, :-1, :]
-        + ~fltr_v_pos[:, 1:-1, :] * cells[:, 1:, :]
+        pos * cells[:, :-1, :]
+        + neg * cells[:, 1:, :]
     )
-    c_U = fltr_v_pos[:, 1:-1, :] * np.concatenate(
+    c_U = pos * np.concatenate(
         (faces[:, 0:1, :], cells[:, 0:-2, :]), axis=1
-    ) + ~fltr_v_pos[:, 1:-1, :] * np.concatenate(
+    ) + neg * np.concatenate(
         (cells[:, 2:, :], faces[:, -1:, :]), axis=1
     )
     c_D = (
-        fltr_v_pos[:, 1:-1, :] * cells[:, 1:, :]
-        + ~fltr_v_pos[:, 1:-1, :] * cells[:, :-1, :]
+        pos * cells[:, 1:, :]
+        + neg * cells[:, :-1, :]
     )
     c_norm_C = np.zeros_like(c_C)
     dc_DU = c_D - c_U
@@ -258,9 +263,10 @@ def interp_cntr_to_stagg_tvd(
 
     faces = _wall_faces(cells, x_f, x_c, bc, geo)
     v = np.broadcast_to(np.asarray(v), geo.shape_f)
-    fltr_v_pos = v.reshape(geo.shape_f_t) > 0
-    x_norm_C, x_norm_d = _upwind_positions(fltr_v_pos, x_f, x_c)
-    c_C, c_norm_C, dc_DU = _upwind_values(fltr_v_pos, cells, faces)
+    pos = v.reshape(geo.shape_f_t)[:, 1:-1, :] > 0
+    upwind = (pos, ~pos)
+    x_norm_C, x_norm_d = _upwind_positions(upwind, x_f, x_c)
+    c_C, c_norm_C, dc_DU = _upwind_values(upwind, cells, faces)
     faces = np.concatenate((faces[:, 0:1, :], c_C, faces[:, -1:, :]), axis=1)
     if tvd_limiter is None:
         return faces.reshape(geo.shape_f), np.zeros(geo.shape_f)
