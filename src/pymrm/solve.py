@@ -401,7 +401,7 @@ def _scale_vector(scale, shape):
     return d_user
 
 
-@dataclass(eq=False)
+@dataclass(eq=False, slots=True)
 class _NewtonRun:
     """One :func:`newton` solve: the problem, its settings and the iteration counters."""
 
@@ -434,6 +434,36 @@ class _NewtonRun:
     history: list = field(default_factory=list)
     state: dict = field(default_factory=lambda: {"last": False, "ev": None, "step": float("nan"),
                                                  "bad": None})
+
+    # Iteration state, set by ``iterate`` and the phases of an iteration.
+    ev: tuple = field(init=False)
+    lam_next: float = field(init=False)
+    window: list = field(init=False)
+    step_inf: float = field(init=False)
+    be: float = field(init=False)
+    gate_failed: bool = field(init=False)
+    clipped: int = field(init=False)
+    stopped: bool = field(init=False)
+    g_raw: object = field(init=False)
+    g: np.ndarray = field(init=False)
+    jac: object = field(init=False)
+    last_it: bool = field(init=False)
+    lin_solve: object = field(init=False)
+    r: object = field(init=False)
+    dx: np.ndarray = field(init=False)
+    dy: np.ndarray = field(init=False)
+    theta: float = field(init=False)
+    converged: bool = field(init=False)
+    near: bool = field(init=False)
+    at_floor: bool = field(init=False)
+    gate: bool = field(init=False)
+    stagnant: bool = field(init=False)
+    lam: float = field(init=False)
+    dy_rms: float = field(init=False)
+    row: object = field(init=False)
+    phi0: float = field(init=False)
+    best: tuple = field(init=False)
+    lam_min: float = field(init=False)
 
     def _call(self, xv, guard):
         """``function(xv, *args)`` as ``(g_raw, jac)``; None if guarded and recoverable."""
