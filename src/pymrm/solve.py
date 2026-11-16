@@ -144,24 +144,30 @@ class _LinearSolver:
     def _direct(self, jac):
         options = {"permc_spec": "COLAMD", **self.splu_kwargs}
         if sparse.issparse(jac):
-            if self.legacy and jac.format == "csr":
-                # spsolve factors the transpose of a CSR matrix and solves with it
-                try:
-                    lu = linalg.splu(sparse.csc_array(jac.T), **options)
-                except RuntimeError as exc:
-                    raise _SingularJacobian(str(exc)) from exc
-                return (lambda rhs: lu.solve(np.asarray(rhs, dtype=float), trans="T")), None
-            a = sparse.csc_array(jac)
-            r = _row_scale(a) if self.row_scaling else None
-            if r is not None:
-                a = sparse.csc_array(sparse.diags_array(r) @ a)
+            return self._direct_sparse(jac, options)
+        return self._direct_dense(jac)
+
+    def _direct_sparse(self, jac, options):
+        if self.legacy and jac.format == "csr":
+            # spsolve factors the transpose of a CSR matrix and solves with it
             try:
-                lu = linalg.splu(a, **options)
+                lu = linalg.splu(sparse.csc_array(jac.T), **options)
             except RuntimeError as exc:
                 raise _SingularJacobian(str(exc)) from exc
-            if r is None:
-                return lu.solve, None
-            return (lambda rhs: lu.solve(r * rhs)), r
+            return (lambda rhs: lu.solve(np.asarray(rhs, dtype=float), trans="T")), None
+        a = sparse.csc_array(jac)
+        r = _row_scale(a) if self.row_scaling else None
+        if r is not None:
+            a = sparse.csc_array(sparse.diags_array(r) @ a)
+        try:
+            lu = linalg.splu(a, **options)
+        except RuntimeError as exc:
+            raise _SingularJacobian(str(exc)) from exc
+        if r is None:
+            return lu.solve, None
+        return (lambda rhs: lu.solve(r * rhs)), r
+
+    def _direct_dense(self, jac):
         if self.legacy:
             # scipy.linalg.solve detects structure (symmetric, triangular), as before
             a = np.asarray(jac)
