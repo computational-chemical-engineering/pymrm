@@ -89,6 +89,21 @@ def _row_scale(jac):
     return 1.0 / s
 
 
+def _solver_kind(solver):
+    """The kind of linear solver ``solver`` names or is."""
+    if solver is None or (isinstance(solver, str) and solver in ("spsolve", "lu")):
+        return "direct"
+    if isinstance(solver, str) and solver in ("cg", "bicgstab"):
+        return solver
+    if isinstance(solver, str) and solver == "splu":
+        return "splu"
+    if hasattr(solver, "factorize"):
+        return "factorize"
+    if callable(solver):
+        return "callable"
+    raise ValueError("Unsupported solver method.")
+
+
 class _LinearSolver:
     """Builds, per Newton iteration, a ``solve(rhs)`` for the Jacobian."""
 
@@ -100,19 +115,7 @@ class _LinearSolver:
         self.row_scaling = row_scaling
         # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit
         self.legacy = legacy and not row_scaling
-        self.kind = None
-        if solver is None or (isinstance(solver, str) and solver in ("spsolve", "lu")):
-            self.kind = "direct"
-        elif isinstance(solver, str) and solver in ("cg", "bicgstab"):
-            self.kind = solver
-        elif isinstance(solver, str) and solver == "splu":
-            self.kind = "splu"
-        elif hasattr(solver, "factorize"):
-            self.kind = "factorize"
-        elif callable(solver):
-            self.kind = "callable"
-        else:
-            raise ValueError("Unsupported solver method.")
+        self.kind = _solver_kind(solver)
         self.solver = solver
         self.splu_kwargs = {}
         if self.kind == "direct":
