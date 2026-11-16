@@ -726,6 +726,22 @@ def _interface_coefficients(ic, shape, shape_i, axis):
     return a, b, d
 
 
+class _InterfaceAlphas(NamedTuple):
+    """One-sided gradient weights ``alpha_0``, ``alpha_1``, ``alpha_2`` of the two subdomains."""
+
+    alpha_0: list
+    alpha_1: list
+    alpha_2: list
+
+
+class _InterfaceBcGeometry(NamedTuple):
+    """Shapes and row indices of the interface source matrices."""
+
+    shape_i: tuple
+    shape_t: list
+    row_indices_bc: np.ndarray
+
+
 def _interface_alphas(x_cs, x_fs):
     """One-sided gradient weights of the two subdomains at the interface."""
     alpha_1 = [None, None]
@@ -743,15 +759,14 @@ def _interface_alphas(x_cs, x_fs):
         (x_cs[1][1] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
     )
     alpha_0 = [alpha_1[0] - alpha_2[0], alpha_1[1] - alpha_2[1]]
-    return alpha_0, alpha_1, alpha_2
+    return _InterfaceAlphas(alpha_0, alpha_1, alpha_2)
 
 
-def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
-    """Inverse of the interface system and the stencil weights of the two interface values."""
+def _interface_system(a, b, alphas):
+    """Matrix ``m`` of the interface conditions in the two interface values, and their stencil terms ``v``."""
+    alpha_0, alpha_1, alpha_2 = alphas
     m = [[None for _ in range(2)] for _ in range(2)]
     v = [[None for _ in range(4)] for _ in range(2)]
-    m_inv = [[None for _ in range(2)] for _ in range(2)]
-    values = [[None for _ in range(4)] for _ in range(2)]
     for i in range(2):  # loop over the two conditions
         m[i][0] = a[i][0] * alpha_0[0] + b[i][0]
         m[i][1] = a[i][1] * alpha_0[1] + b[i][1]
@@ -759,12 +774,24 @@ def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
         v[i][1] = a[i][0] * alpha_1[0]
         v[i][2] = a[i][1] * alpha_1[1]
         v[i][3] = -a[i][1] * alpha_2[1]
+    return m, v
+
+
+def _inverse_2x2(m):
+    """Inverse of a 2 x 2 matrix of arrays (zero where the determinant is zero)."""
     det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
     det_inv = np.where(det != 0.0, 1.0 / det, 0.0)
-    m_inv[0][0] = m[1][1] * det_inv
-    m_inv[0][1] = -m[0][1] * det_inv
-    m_inv[1][0] = -m[1][0] * det_inv
-    m_inv[1][1] = m[0][0] * det_inv
+    return [
+        [m[1][1] * det_inv, -m[0][1] * det_inv],
+        [-m[1][0] * det_inv, m[0][0] * det_inv],
+    ]
+
+
+def _interface_stencil_values(a, b, alphas, shape_i, axis):
+    """Inverse of the interface system and the stencil weights of the two interface values."""
+    m, v = _interface_system(a, b, alphas)
+    m_inv = _inverse_2x2(m)
+    values = [[None for _ in range(4)] for _ in range(2)]
     for j in range(2):
         for i in range(4):
             values[j][i] = m_inv[j][0] * v[0][i] + m_inv[j][1] * v[1][i]
@@ -773,35 +800,34 @@ def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
     return m_inv, values
 
 
-def _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t):
+def _interface_bc_matrix(values_bc, shape_d, geo):
+    """Sparse source matrix of one interface value; ``shape_d`` is ``None`` without an external vector."""
+    values_bc = np.broadcast_to(values_bc, geo.shape_i)
+    fltr = values_bc.ravel() != 0
+    values_filtered = values_bc.ravel()[fltr]
+    row_indices_filtered = geo.row_indices_bc.ravel()[fltr]
+    n_rows = geo.shape_t[0] * geo.shape_t[2]
+    if shape_d is None:
+        return csc_array(
+            (values_filtered, row_indices_filtered, np.array([0, row_indices_filtered.size])),
+            shape=(n_rows, 1),
+        )
+    num_cols = math.prod(shape_d)
+    col_indices_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
+    col_indices_bc = np.broadcast_to(col_indices_bc, geo.shape_i)
+    col_indices_filtered = col_indices_bc.ravel()[fltr]
+    return csc_array(
+        (values_filtered, (row_indices_filtered, col_indices_filtered)),
+        shape=(n_rows, num_cols),
+    )
+
+
+def _interface_bc_by_source(m_inv, d, shapes_d, geo):
     """Interface source matrices per interface condition and per boundary vector."""
-    interface_bc = [[None for _ in range(2)] for _ in range(2)]
-    for j in range(2):
-        for i in range(2):
-            values_bc = m_inv[j][i] * d[i]
-            values_bc = np.broadcast_to(values_bc, shape_i)
-            fltr = values_bc.ravel() != 0
-            values_filtered = values_bc.ravel()[fltr]
-            row_indices_filtered = row_indices_bc.ravel()[fltr]
-            if shapes_d[j] is None:
-                interface_bc[j][i] = csc_array(
-                    (
-                        values_filtered,
-                        row_indices_filtered,
-                        np.array([0, row_indices_filtered.size]),
-                    ),
-                    shape=(shape_t[0] * shape_t[2], 1),
-                )
-            else:
-                num_cols = math.prod(shapes_d[j])
-                col_indices_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[j])
-                col_indices_bc = np.broadcast_to(col_indices_bc, shape_i)
-                col_indices_filtered = col_indices_bc.ravel()[fltr]
-                interface_bc[j][i] = csc_array(
-                    (values_filtered, (row_indices_filtered, col_indices_filtered)),
-                    shape=(shape_t[0] * shape_t[2], num_cols),
-                )
-    return interface_bc
+    return [
+        [_interface_bc_matrix(m_inv[j][i] * d[i], shapes_d[j], geo) for i in range(2)]
+        for j in range(2)
+    ]
 
 
 def _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format):
@@ -878,14 +904,14 @@ def construct_interface_matrices(
 
     a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
 
-    alpha_0, alpha_1, alpha_2 = _interface_alphas(x_cs, x_fs)
+    alphas = _interface_alphas(x_cs, x_fs)
 
     # reminder of notation
     # dc/dn[0] = alpha_0[0] c_i - alpha_1[0] c[-1] + alpha_2[0] c[-2]
     # dc/dn[1] = -alpha_0[1] c_i + alpha_1[1] c[0] - alpha_2[1] c[1]
     # interface conditions of the form:
 
-    m_inv, values = _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis)
+    m_inv, values = _interface_stencil_values(a, b, alphas, shape_i, axis)
 
     shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
     n0, n1, n2 = shape_t
@@ -902,21 +928,14 @@ def construct_interface_matrices(
     # Create the sparse matrix representing the interface
     interface_matrix = _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format)
 
-    row_indices_bc = np.ravel_multi_index(
+    geo = _InterfaceBcGeometry(shape_i, shape_t, np.ravel_multi_index(
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
-    )
+    ))
     if shapes_d[0] is None and shapes_d[1] is None:
-        interface_bc = [None] * 2
-        for j in range(2):
-            values_bc = m_inv[j][0] * d[0] + m_inv[j][1] * d[1]
-            values_bc = np.broadcast_to(values_bc, shape_i)
-            fltr = values_bc.ravel() != 0
-            values_filtered = values_bc.ravel()[fltr]
-            row_indices_filtered = row_indices_bc.ravel()[fltr]
-            interface_bc[j] = csc_array(
-                (values_filtered, row_indices_filtered, np.array([0, row_indices_filtered.size])),
-                shape=(shape_t[0] * shape_t[2], 1),
-            )
+        interface_bc = [
+            _interface_bc_matrix(m_inv[j][0] * d[0] + m_inv[j][1] * d[1], None, geo)
+            for j in range(2)
+        ]
         return (
             interface_matrix[0],
             interface_bc[0],
@@ -924,7 +943,7 @@ def construct_interface_matrices(
             interface_bc[1],
         )
     else:
-        interface_bc = _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t)
+        interface_bc = _interface_bc_by_source(m_inv, d, shapes_d, geo)
         return (
             interface_matrix[0],
             interface_bc[0][0],
