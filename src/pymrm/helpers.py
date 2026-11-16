@@ -88,6 +88,46 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
+def _pairwise_coefficient_matrix(coefficients, shape, axis, fmt):
+    """Coefficient matrix coupling two fields of shapes ``shape = (shape_rows, shape_cols)``."""
+    shape_rows = shape[0]
+    shape_cols = shape[1]
+    working_shape = tuple(max(s1, s2) for s1, s2 in zip(shape_rows, shape_cols))
+    if axis is not None:
+        working_shape = tuple(
+            s if i != axis else s + 1 for i, s in enumerate(working_shape)
+        )
+        if shape_rows[axis] + 1 == working_shape[axis]:
+            shape_rows = tuple(
+                s if i != axis else s + 1 for i, s in enumerate(shape_rows)
+            )
+        if shape_cols[axis] + 1 == working_shape[axis]:
+            shape_cols = tuple(
+                s if i != axis else s + 1 for i, s in enumerate(shape_cols)
+            )
+    if coefficients.shape == working_shape:
+        coefficients_copy = coefficients
+    else:
+        coefficients_copy = np.array(coefficients)
+        shape_coeff = (1,) * (
+            len(working_shape) - coefficients_copy.ndim
+        ) + coefficients_copy.shape
+        coefficients_copy = coefficients_copy.reshape(shape_coeff)
+        coefficients_copy = np.broadcast_to(coefficients_copy, working_shape)
+    num_rows = math.prod(shape_rows)
+    rows = np.arange(num_rows).reshape(shape_rows)
+    rows = np.broadcast_to(rows, working_shape).ravel()
+    num_cols = math.prod(shape_cols)
+    cols = np.arange(num_cols).reshape(shape_cols)
+    cols = np.broadcast_to(cols, working_shape).ravel()
+    coeff_matrix = _sparse_array(
+        (coefficients_copy.ravel(), (rows, cols)),
+        shape=(num_rows, num_cols),
+        format=fmt,
+    )
+    return coeff_matrix
+
+
 def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="csc"):
     """
     Build a sparse coefficient matrix with optional broadcasting and (row, col) coupling.
@@ -153,41 +193,7 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
     if shape is None:
         coeff_matrix = cls(diags(coefficients.ravel(), format=fmt))
     elif all(isinstance(t, tuple) for t in shape):
-        shape_rows = shape[0]
-        shape_cols = shape[1]
-        working_shape = tuple(max(s1, s2) for s1, s2 in zip(shape_rows, shape_cols))
-        if axis is not None:
-            working_shape = tuple(
-                s if i != axis else s + 1 for i, s in enumerate(working_shape)
-            )
-            if shape_rows[axis] + 1 == working_shape[axis]:
-                shape_rows = tuple(
-                    s if i != axis else s + 1 for i, s in enumerate(shape_rows)
-                )
-            if shape_cols[axis] + 1 == working_shape[axis]:
-                shape_cols = tuple(
-                    s if i != axis else s + 1 for i, s in enumerate(shape_cols)
-                )
-        if coefficients.shape == working_shape:
-            coefficients_copy = coefficients
-        else:
-            coefficients_copy = np.array(coefficients)
-            shape_coeff = (1,) * (
-                len(working_shape) - coefficients_copy.ndim
-            ) + coefficients_copy.shape
-            coefficients_copy = coefficients_copy.reshape(shape_coeff)
-            coefficients_copy = np.broadcast_to(coefficients_copy, working_shape)
-        num_rows = math.prod(shape_rows)
-        rows = np.arange(num_rows).reshape(shape_rows)
-        rows = np.broadcast_to(rows, working_shape).ravel()
-        num_cols = math.prod(shape_cols)
-        cols = np.arange(num_cols).reshape(shape_cols)
-        cols = np.broadcast_to(cols, working_shape).ravel()
-        coeff_matrix = _sparse_array(
-            (coefficients_copy.ravel(), (rows, cols)),
-            shape=(num_rows, num_cols),
-            format=fmt,
-        )
+        coeff_matrix = _pairwise_coefficient_matrix(coefficients, shape, axis, fmt)
     else:
         if axis is not None:
             shape = tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
