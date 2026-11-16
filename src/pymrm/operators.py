@@ -3,9 +3,11 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from pymrm.helpers import _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair
+from pymrm.helpers import (
+    _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _field_geometry,
+    _BoundaryFaceTerms, _boundary_face_indices, _on_bc, _wall_alphas, _diagonal_sources,
+    _bc_operators_by_boundary, _single_cell_system)
 from pymrm.grid import generate_grid
-from pymrm.convect import _convflux_bc_by_boundary, _convflux_geometry
 
 
 def construct_grad(
@@ -52,8 +54,7 @@ def construct_grad(
     bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
     if bc == (None, None):
-        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-        grad_bc = csc_array((math.prod(shape_f), 1))
+        grad_bc = csc_array((math.prod(_field_geometry(shape, axis).shape_f), 1))
         return grad_matrix, grad_bc
     else:
         if shapes_d is None or shapes_d == (None, None):
@@ -95,13 +96,7 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     """
     if axis < 0:
         axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]
-
-    n0, n1, n2 = shape_t
+    n0, n1, n2 = _field_geometry(shape, axis).shape_t
     # Open grids for each dimension; the 4th axis selects the face-pair [j, j+1]
     i0 = np.arange(n0).reshape(-1, 1, 1, 1)
     i1 = np.arange(n1).reshape(1, -1, 1, 1)
@@ -160,129 +155,81 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     return grad_matrix
 
 
-def _grad_bc_single_cell(shape, x_f, x_c, bc, axis):
+def _grad_bc_single_cell(geo, x_f, x_c, bc):
     """Boundary-face gradient values and sources for a single cell along ``axis``."""
-    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
-    n0, n1, n2 = shape_t
-    if x_c is None:
-        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    n0, _, n2 = geo.shape_t
+    a, b, d, alpha_1, alpha_2, alpha_0, fctr = _single_cell_system(geo, x_f, x_c, bc)
     # Both faces reference cell 0
-    i_c = np.ravel_multi_index(
-        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, n1, n2)
-    )
-    i_f = np.ravel_multi_index(
-        (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
-    )
-    values = np.empty(shape_f_t)
-    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_0_left = alpha_1 - alpha_2_left
-    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-    alpha_0_right = alpha_1 - alpha_2_right
-    a, b, d = _unwrap_bc_pair(shape, bc, axis)
-    fctr = (b[0] + alpha_0_left * a[0]) * (
-        b[1] + alpha_0_right * a[1]
-    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    i_c, i_f, i_f_bc = _boundary_face_indices(geo, [0, 0], [0, 1])
+    values = np.empty((n0, 2, n2))
     value = np.broadcast_to(
-        alpha_1 * b[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
-        shape,
+        alpha_1 * b[0] * (a[1] * (alpha_0[1] - alpha_2[0]) + b[1]) * fctr,
+        geo.shape,
     )
-    values[:, 0, :] = np.reshape(value, shape_bc_d)
+    values[:, 0, :] = np.reshape(value, geo.shape_bc_d)
     value = np.broadcast_to(
-        alpha_1 * b[1] * (a[0] * (-alpha_0_left + alpha_2_right) - b[0]) * fctr,
-        shape,
+        alpha_1 * b[1] * (a[0] * (-alpha_0[0] + alpha_2[1]) - b[0]) * fctr,
+        geo.shape,
     )
-    values[:, 1, :] = np.reshape(value, shape_bc_d)
-
-    i_f_bc = np.ravel_multi_index(
-        (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
-    )
-
-    def on_bc(value):
-        return np.reshape(np.broadcast_to(value, shape_bc), shape_bc_d)
-
+    values[:, 1, :] = np.reshape(value, geo.shape_bc_d)
     # values_bc_src[:, face, source]: with one cell, each face value depends
     # on the data of both boundaries
     values_bc_src = np.zeros((n0, 2, 2, n2))
-    values_bc_src[:, 0, 0, :] = on_bc(
+    values_bc_src[:, 0, 0, :] = _on_bc(
         (
-            a[1] * (-alpha_0_left * alpha_0_right + alpha_2_left * alpha_2_right)
-            - alpha_0_left * b[1]
+            a[1] * (-alpha_0[0] * alpha_0[1] + alpha_2[0] * alpha_2[1])
+            - alpha_0[0] * b[1]
         )
         * d[0]
-        * fctr
+        * fctr,
+        geo,
     )
-    values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * b[0] * d[1] * fctr)
-    values_bc_src[:, 1, 1, :] = on_bc(
+    values_bc_src[:, 0, 1, :] = _on_bc(-alpha_2[0] * b[0] * d[1] * fctr, geo)
+    values_bc_src[:, 1, 1, :] = _on_bc(
         (
-            a[0] * (+alpha_0_left * alpha_0_right - alpha_2_left * alpha_2_right)
-            + alpha_0_right * b[0]
+            a[0] * (+alpha_0[0] * alpha_0[1] - alpha_2[0] * alpha_2[1])
+            + alpha_0[1] * b[0]
         )
         * d[1]
-        * fctr
+        * fctr,
+        geo,
     )
-    values_bc_src[:, 1, 0, :] = on_bc(alpha_2_right * b[1] * d[0] * fctr)
-    values_bc = values_bc_src.sum(axis=2)
-    return values, values_bc, values_bc_src, i_c, i_f, i_f_bc
+    values_bc_src[:, 1, 0, :] = _on_bc(alpha_2[1] * b[1] * d[0] * fctr, geo)
+    return _BoundaryFaceTerms(values, values_bc_src.sum(axis=2), values_bc_src, i_c, i_f, i_f_bc)
 
 
-def _grad_bc_two_cell(shape, x_f, x_c, bc, axis):
+def _grad_wall_factors(bc_side, geo, alphas):
+    """Factors ``b / alpha_0 / (a + b / alpha_0)`` and ``d / (a + b / alpha_0)`` of one boundary face."""
+    alpha_0 = alphas[0] - alphas[1]
+    a, b, d = _unwrap_bc_side(geo.shape, bc_side, geo.axis)
+    b = b / alpha_0
+    fctr = a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    return _on_bc(b * fctr, geo), _on_bc(d * fctr, geo)
+
+
+def _grad_bc_two_cell(geo, x_f, x_c, bc):
     """Boundary-face gradient values and sources for two or more cells along ``axis``."""
-    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
-    n0, n1, n2 = shape_t
-    # Cell indices: 2 near left boundary + 2 near right boundary
-    cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
-    i_c = np.ravel_multi_index((i0, cell_axis_idx, i2), shape_t)
-    # Face indices: left face (0) twice, right face (n1) twice
-    nf = shape_f_t[1]
-    face_axis_idx = np.array([0, 0, nf - 1, nf - 1]).reshape(1, -1, 1)
-    i_f = np.ravel_multi_index((i0, face_axis_idx, i2), shape_f_t)
-    i_f_bc = np.ravel_multi_index(
-        (i0, np.array([0, nf - 1]).reshape(1, -1, 1), i2), shape_f_t
-    )
+    n0, n1, n2 = geo.shape_t
+    # Cell indices: 2 near left + 2 near right boundary; each boundary face twice
+    nf = geo.shape_f_t[1]
+    i_c, i_f, i_f_bc = _boundary_face_indices(geo, [0, 1, n1 - 2, n1 - 1], [0, 0, nf - 1, nf - 1])
     values_bc = np.empty((n0, 2, n2))
     values = np.empty((n0, 4, n2))
     if x_c is None:
         x_c = 0.5 * np.array(
             [x_f[0] + x_f[1], x_f[1] + x_f[2], x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]]
         )
-
-    # Get a, b, and d for left bc from dictionary
-    alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
-    alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
-    alpha_0 = alpha_1 - alpha_2
-    a, b, d = _unwrap_bc_side(shape, bc[0], axis)
-    b = b / alpha_0
-    fctr = a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    b_fctr = b * fctr
-    b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
-    d_fctr = d * fctr
-    d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
-    values[:, 0, :] = b_fctr * alpha_1
-    values[:, 1, :] = -b_fctr * alpha_2
+    left, right = _wall_alphas(x_f, x_c)
+    b_fctr, d_fctr = _grad_wall_factors(bc[0], geo, left)
+    values[:, 0, :] = b_fctr * left[0]
+    values[:, 1, :] = -b_fctr * left[1]
     values_bc[:, 0, :] = -d_fctr
-
-    # Get a, b, and d for right bc from dictionary
-    a, b, d = _unwrap_bc_side(shape, bc[1], axis)
-    alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-    alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-    alpha_0 = alpha_1 - alpha_2
-    b = b / alpha_0
-    fctr = a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    b_fctr = b * fctr
-    b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
-    d_fctr = d * fctr
-    d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
-    values[:, -2, :] = b_fctr * alpha_2
-    values[:, -1, :] = -b_fctr * alpha_1
+    b_fctr, d_fctr = _grad_wall_factors(bc[1], geo, right)
+    values[:, -2, :] = b_fctr * right[1]
+    values[:, -1, :] = -b_fctr * right[0]
     values_bc[:, -1, :] = d_fctr
-    values_bc_src = np.zeros((n0, 2, 2, n2))
-    values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
-    values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
-    return values, values_bc, values_bc_src, i_c, i_f, i_f_bc
+    return _BoundaryFaceTerms(values, values_bc, _diagonal_sources(values_bc), i_c, i_f, i_f_bc)
 
 
 def construct_grad_bc(
@@ -318,35 +265,53 @@ def construct_grad_bc(
         otherwise.
     """
     bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
-    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
-
+    geo = _field_geometry(shape, axis)
     # Handle special case with one cell in the dimension axis.
     # This is convenient e.g. for flexibility where you can choose not to
     # spatially discretize a direction, but still use a BC, e.g. with a mass transfer coefficient
     # It is a bit subtle because in this case the two opposite faces influence each other
-    n0, n1, n2 = shape_t
-
-    if n1 == 1:
-        values, values_bc, values_bc_src, i_c, i_f, i_f_bc = _grad_bc_single_cell(
-            shape, x_f, x_c, bc, axis)
+    if geo.shape_t[1] == 1:
+        terms = _grad_bc_single_cell(geo, x_f, x_c, bc)
     else:
-        values, values_bc, values_bc_src, i_c, i_f, i_f_bc = _grad_bc_two_cell(
-            shape, x_f, x_c, bc, axis)
+        terms = _grad_bc_two_cell(geo, x_f, x_c, bc)
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         grad_bc = csc_array(
-            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
-            shape=(math.prod(shape_f_t), 1),
+            (terms.values_bc.ravel(), terms.i_f_bc.ravel(), np.array([0, terms.i_f_bc.size])),
+            shape=(math.prod(geo.shape_f_t), 1),
         )
         grad_matrix = _sparse_array(
-            (values.ravel(), (i_f.ravel(), i_c.ravel())),
-            shape=(math.prod(shape_f_t), math.prod(shape_t)),
+            (terms.values.ravel(), (terms.i_f.ravel(), terms.i_c.ravel())),
+            shape=(math.prod(geo.shape_f_t), math.prod(geo.shape_t)),
             format=format,
         )
         return grad_matrix, grad_bc
     else:
-        return _convflux_bc_by_boundary(
-            values, values_bc_src, i_f, i_c, i_f_bc, shapes_d, shape_bc, shape_t,
-            math.prod(shape_f_t), format)
+        return _bc_operators_by_boundary(terms, shapes_d, geo, format)
+
+
+def _div_metrics(x_f, nu, n_faces):
+    """Face areas and inverse cell volumes of the geometry ``nu`` on the faces ``x_f``."""
+    if callable(nu):
+        area = nu(x_f).ravel()
+        inv_sqrt3 = 1 / np.sqrt(3)
+        x_f_r = x_f.ravel()
+        dx_f = x_f_r[1:] - x_f_r[:-1]
+        dvol_inv = 1 / (
+            (
+                nu(x_f_r[:-1] + (0.5 - 0.5 * inv_sqrt3) * dx_f)
+                + nu(x_f_r[:-1] + (0.5 + 0.5 * inv_sqrt3) * dx_f)
+            )
+            * 0.5
+            * dx_f
+        )
+    elif nu == 0:
+        area = np.ones(n_faces)
+        dvol_inv = 1 / (x_f[1:] - x_f[:-1])
+    else:
+        area = np.power(x_f.ravel(), nu)
+        vol = area * x_f.ravel() / (nu + 1)
+        dvol_inv = 1 / (vol[1:] - vol[:-1])
+    return area, dvol_inv
 
 
 def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
@@ -377,10 +342,8 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
         shape = tuple(shape)
     x_f = generate_grid(shape[axis], x_f)
 
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-
+    geo = _field_geometry(shape, axis)
+    shape_t, shape_f_t = geo.shape_t, geo.shape_f_t
     n0, n1, n2 = shape_t
     # Each cell references its left face [j] and right face [j+1]
     i0 = np.arange(n0).reshape(-1, 1, 1, 1)
@@ -389,27 +352,7 @@ def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
     face_pair = np.array([0, 1]).reshape(1, 1, 1, -1)
     i_f = np.ravel_multi_index((i0, i1 + face_pair, i2), shape_f_t)
 
-    if callable(nu):
-        area = nu(x_f).ravel()
-        inv_sqrt3 = 1 / np.sqrt(3)
-        x_f_r = x_f.ravel()
-        dx_f = x_f_r[1:] - x_f_r[:-1]
-        dvol_inv = 1 / (
-            (
-                nu(x_f_r[:-1] + (0.5 - 0.5 * inv_sqrt3) * dx_f)
-                + nu(x_f_r[:-1] + (0.5 + 0.5 * inv_sqrt3) * dx_f)
-            )
-            * 0.5
-            * dx_f
-        )
-    elif nu == 0:
-        area = np.ones(shape_f_t[1])
-        dvol_inv = 1 / (x_f[1:] - x_f[:-1])
-    else:
-        area = np.power(x_f.ravel(), nu)
-        vol = area * x_f.ravel() / (nu + 1)
-        dvol_inv = 1 / (vol[1:] - vol[:-1])
-
+    area, dvol_inv = _div_metrics(x_f, nu, shape_f_t[1])
     values = np.empty((shape_t[1], 2))
     values[:, 0] = -area[:-1] * dvol_inv
     values[:, 1] = area[1:] * dvol_inv

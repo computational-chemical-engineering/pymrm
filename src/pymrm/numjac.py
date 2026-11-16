@@ -76,6 +76,26 @@ def _expand_index(idx, shape):
     return list(product(*expanded_dims))
 
 
+def _check_periodic_axes(periodic_axes, fixed_axes, shape_in, shape_out):
+    """Raise ValueError for a periodic axis that is fixed or differs in size."""
+    for d in periodic_axes:
+        if d in fixed_axes:
+            raise ValueError("Axis cannot be both fixed and periodic.")
+        if shape_in[d] != shape_out[d]:
+            raise ValueError(
+                "Periodic axes must have the same size in input and output shapes."
+            )
+
+
+def _axes_list(axes, message):
+    """``axes`` as a list: ``None`` gives an empty list, anything but a list raises."""
+    if axes is None:
+        return []
+    if not isinstance(axes, list):
+        raise ValueError(message)
+    return axes
+
+
 def _normalize_dependency(dep, shape_in, shape_out):
     """Bring one dependency to the form ``(index_in, index_out, fixed_axes, periodic_axes)``."""
     if not isinstance(dep, tuple):
@@ -88,13 +108,7 @@ def _normalize_dependency(dep, shape_in, shape_out):
     elif len(dep) == 4 and isinstance(dep[0], tuple):
         # Already in full form
         index_in, index_out, fixed_axes, periodic_axes = dep
-        for d in periodic_axes:
-            if d in fixed_axes:
-                raise ValueError("Axis cannot be both fixed and periodic.")
-            if shape_in[d] != shape_out[d]:
-                raise ValueError(
-                    "Periodic axes must have the same size in input and output shapes."
-                )
+        _check_periodic_axes(periodic_axes, fixed_axes, shape_in, shape_out)
     else:
         # Shorthand form (e.g., (0,1,0))
         index_in = dep
@@ -102,17 +116,8 @@ def _normalize_dependency(dep, shape_in, shape_out):
         fixed_axes = []
         periodic_axes = []
 
-    # Ensure fixed_axes is a list
-    if fixed_axes is None:
-        fixed_axes = []
-    elif not isinstance(fixed_axes, list):
-        raise ValueError("fixed_axes_list must be a list or None.")
-
-    # Ensure periodic_axes is a list
-    if periodic_axes is None:
-        periodic_axes = []
-    elif not isinstance(periodic_axes, list):
-        raise ValueError("periodic_axes_list must be a list or None.")
+    fixed_axes = _axes_list(fixed_axes, "fixed_axes_list must be a list or None.")
+    periodic_axes = _axes_list(periodic_axes, "periodic_axes_list must be a list or None.")
     return index_in, index_out, fixed_axes, periodic_axes
 
 
@@ -587,6 +592,27 @@ def compute_df2(f, f_value, c_values, num_gr):
     return df
 
 
+def _resolve_shapes(shape, shape_in, shape_out):
+    """Input and output shape of a ``NumJac`` from its ``shape`` or ``shape_in``/``shape_out``."""
+    if shape is not None and (shape_in is not None or shape_out is not None):
+        raise ValueError(
+            "Specify either 'shape' or both 'shape_in' and 'shape_out', but not both."
+        )
+    if shape is not None:
+        # Default case: shape_in == shape_out
+        return shape, shape
+    if shape_in is not None and shape_out is not None:
+        # General case: shape_in != shape_out
+        if len(shape_in) != len(shape_out):
+            raise ValueError(
+                "Input and output shapes must have the same number of dimensions."
+            )
+        return shape_in, shape_out
+    raise ValueError(
+        "You must specify either 'shape' or both 'shape_in' and 'shape_out'."
+    )
+
+
 class NumJac:
     """Numerical Jacobian evaluator based on grouped finite differences.
 
@@ -645,27 +671,7 @@ class NumJac:
         **kwargs
             Additional options passed to the stencil callable.
         """
-        if shape is not None and (shape_in is not None or shape_out is not None):
-            raise ValueError(
-                "Specify either 'shape' or both 'shape_in' and 'shape_out', but not both."
-            )
-
-        if shape is not None:
-            # Default case: shape_in == shape_out
-            self.shape_in = shape
-            self.shape_out = shape
-        elif shape_in is not None and shape_out is not None:
-            # General case: shape_in != shape_out
-            if len(shape_in) != len(shape_out):
-                raise ValueError(
-                    "Input and output shapes must have the same number of dimensions."
-                )
-            self.shape_in = shape_in
-            self.shape_out = shape_out
-        else:
-            raise ValueError(
-                "You must specify either 'shape' or both 'shape_in' and 'shape_out'."
-            )
+        self.shape_in, self.shape_out = _resolve_shapes(shape, shape_in, shape_out)
 
         self.eps_jac = eps_jac
         self.format = format
