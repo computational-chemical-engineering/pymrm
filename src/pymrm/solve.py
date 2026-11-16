@@ -578,26 +578,22 @@ class _NewtonRun:
         self.gate_failed = False
         self.clipped = 0
         self.stopped = False      # a plain step ended the last iteration without evaluating
-        for it in range(int(self.maxfev)):
-            result = self._iteration(it)
+        maxfev = int(self.maxfev)
+        for it in range(maxfev):
+            ev = self.ev
+            self.g_raw, self.g, self.jac = ev
+            self.state["ev"] = ev
+            self.last_it = it == maxfev - 1
+            self.lin_solve, self.r, self.dx = self._newton_step(ev, self.step_inf)
+            self._measure()
+            self.theta = float("nan")
+            result = self._plain_step() if self.mode == "none" else self._damped_step(it)
             if result is not None:
                 return result
             if self.stopped:
                 break
             self._track(it)
         return self._exhausted()
-
-    def _iteration(self, it):
-        """One Newton iteration; the result if the run ends in it, else None."""
-        self.g_raw, self.g, self.jac = self.ev
-        self.state["ev"] = self.ev
-        self.last_it = it == int(self.maxfev) - 1
-        self.lin_solve, self.r, self.dx = self._newton_step(self.ev, self.step_inf)
-        self._measure()
-        self.theta = float("nan")
-        if self.mode == "none":
-            return self._plain_step()
-        return self._damped_step(it)
 
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
