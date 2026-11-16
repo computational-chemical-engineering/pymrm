@@ -89,31 +89,21 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
+def _bc_coeff(shape, bc_side, key, axis):
+    """Coefficient ``key`` of one boundary condition expanded to ``shape`` (zeros if it is ``None``)."""
+    if bc_side:
+        return unwrap_bc_coeff(shape, bc_side[key], axis=axis)
+    return np.zeros((1,) * len(shape))
+
+
 def _unwrap_bc_side(shape, bc_side, axis):
     """Coefficients ``a``, ``b``, ``d`` of one boundary condition (zeros if it is ``None``)."""
-    return [
-        (
-            unwrap_bc_coeff(shape, bc_side[key], axis=axis)
-            if bc_side
-            else np.zeros((1,) * len(shape))
-        )
-        for key in ["a", "b", "d"]
-    ]
+    return [_bc_coeff(shape, bc_side, key, axis) for key in ["a", "b", "d"]]
 
 
 def _unwrap_bc_pair(shape, bc, axis):
     """Coefficients ``a``, ``b``, ``d`` of two boundary conditions, each a list over the sides."""
-    return [
-        [
-            (
-                unwrap_bc_coeff(shape, bc_side[key], axis=axis)
-                if bc_side
-                else np.zeros((1,) * len(shape))
-            )
-            for bc_side in bc
-        ]
-        for key in ["a", "b", "d"]
-    ]
+    return [[_bc_coeff(shape, bc_side, key, axis) for bc_side in bc] for key in ["a", "b", "d"]]
 
 
 class _FieldGeometry(NamedTuple):
