@@ -395,6 +395,18 @@ def interface_normals(ibm, sdf, x_c):
 # Stencil selection and per-side reconstruction
 # ---------------------------------------------------------------------------
 
+def _face_neighbours(c, i, multi, spatial_shape, strides):
+    """Flat indices of the grid cells face-adjacent to cell *c* (candidate *i*)."""
+    nbs = []
+    for a in range(len(spatial_shape)):
+        ia = multi[a][i]
+        if ia + 1 < spatial_shape[a]:
+            nbs.append(c + int(strides[a]))
+        if ia > 0:
+            nbs.append(c - int(strides[a]))
+    return nbs
+
+
 def _flood_filter(cand, seed, spatial_shape, strides):
     """Keep the candidates flood-fill connected to *seed* within the set.
 
@@ -407,72 +419,112 @@ def _flood_filter(cand, seed, spatial_shape, strides):
     keep = np.zeros(cand.size, dtype=bool)
     stack = [int(seed)]
     keep[pos[int(seed)]] = True
-    ndim_s = len(spatial_shape)
     while stack:
         c = stack.pop()
-        i = pos[c]
-        for a in range(ndim_s):
-            ia = multi[a][i]
-            if ia + 1 < spatial_shape[a]:
-                nb = c + int(strides[a])
-                j = pos.get(nb)
-                if j is not None and not keep[j]:
-                    keep[j] = True
-                    stack.append(nb)
-            if ia > 0:
-                nb = c - int(strides[a])
-                j = pos.get(nb)
-                if j is not None and not keep[j]:
-                    keep[j] = True
-                    stack.append(nb)
+        for nb in _face_neighbours(c, pos[c], multi, spatial_shape, strides):
+            j = pos.get(nb)
+            if j is not None and not keep[j]:
+                keep[j] = True
+                stack.append(nb)
     return cand[keep]
 
 
-def _build_recon_side(ibm, region_flat, seeds, u_dir, x_c, hax, h_ref, *,
-                      degree_target, length_scale, rings, radius_factor,
-                      length_scale_factor, enlarge_factor, min_points_factor,
-                      weight_power, interface_penalty, cond_max, moment_tol,
-                      weight_norm_max, connectivity, side_name):
-    """Select stencils and compute GFD weights for one side of the interface."""
-    npnt = ibm.n_crossings
-    spatial_shape = ibm.spatial_shape
-    ndim_s = len(spatial_shape)
-    strides = np.array(
-        [math.prod(spatial_shape[a + 1:]) for a in range(ndim_s)], dtype=np.intp
-    )
-    x_gamma = ibm.coords                                  # (npnt, ndim_s)
+@dataclass
+class _ReconSide:
+    """One side of the interface: region mask, cut-cell seeds, outward directions."""
 
-    # --- same-side cells, connected components, KD-tree (physical coords) ---
-    side_idx = np.flatnonzero(region_flat)
-    side_multi = np.unravel_index(side_idx, spatial_shape)
-    side_pts = np.column_stack([x_c[a][side_multi[a]] for a in range(ndim_s)])
-    labels, _ = _cc_label(region_flat.reshape(spatial_shape))
-    labels_flat = labels.ravel()
-    tree = cKDTree(side_pts)
+    region_flat: np.ndarray
+    seeds: np.ndarray
+    u_dir: np.ndarray
+    name: str
 
-    # --- per-crossing local cell size and search radii ---
-    seed_multi = np.unravel_index(seeds, spatial_shape)
-    hvec = np.column_stack([hax[a][seed_multi[a]] for a in range(ndim_s)])
-    h_char = hvec.max(axis=1)                             # (npnt,)
-    cap1 = radius_factor * rings * h_char
-    cap2 = length_scale_factor * length_scale             # (npnt,) possibly inf
-    r0 = np.minimum(cap1, cap2)
 
-    def gather(k, radius):
+@dataclass
+class _ReconGrid:
+    """Cell-centre coordinates and axis spacings of the structured grid."""
+
+    x_c: list
+    hax: list
+
+
+@dataclass
+class _ReconOptions:
+    """Stencil-selection and acceptance parameters of the reconstruction."""
+
+    degree_target: np.ndarray
+    length_scale: np.ndarray
+    rings: float
+    radius_factor: float
+    length_scale_factor: float
+    enlarge_factor: float
+    min_points_factor: float
+    weight_power: float
+    interface_penalty: float
+    cond_max: float
+    moment_tol: float
+    weight_norm_max: float
+    connectivity: str
+
+
+@dataclass
+class _Fit:
+    """Result of one batched GFD fit for a group of crossings of one degree."""
+
+    a: np.ndarray
+    cnd: np.ndarray
+    mres: np.ndarray
+    radii: np.ndarray
+    p: int
+
+
+@dataclass
+class _SideGeometry:
+    """Geometry of one side: same-side cells, search tree and local cell sizes."""
+
+    spatial_shape: tuple
+    strides: np.ndarray
+    x_c: list
+    x_gamma: np.ndarray
+    u_dir: np.ndarray
+    seeds: np.ndarray
+    seed_multi: tuple
+    hvec: np.ndarray
+    h_char: np.ndarray
+    tree: cKDTree
+    side_idx: np.ndarray
+    labels_flat: np.ndarray
+    connectivity: str
+    axis: np.ndarray
+
+    @property
+    def ndim_s(self):
+        return len(self.spatial_shape)
+
+    def cell_points(self, cand):
+        """Physical coordinates of the spatial flat cell indices *cand*."""
+        cm = np.unravel_index(cand, self.spatial_shape)
+        return np.column_stack([self.x_c[a][cm[a]] for a in range(self.ndim_s)])
+
+    def gather(self, k, radius):
         """Filtered candidate spatial flat indices for crossing k."""
-        local = tree.query_ball_point(x_gamma[k], radius)
-        cand = side_idx[np.asarray(local, dtype=np.intp)]
+        seeds = self.seeds
+        local = self.tree.query_ball_point(self.x_gamma[k], radius)
+        cand = self.side_idx[np.asarray(local, dtype=np.intp)]
         if seeds[k] not in cand:
             cand = np.append(cand, seeds[k])
-        cand = cand[labels_flat[cand] == labels_flat[seeds[k]]]
+        cand = cand[self.labels_flat[cand] == self.labels_flat[seeds[k]]]
+        return self._filter_connectivity(k, cand)
+
+    def _filter_connectivity(self, k, cand):
+        connectivity = self.connectivity
         if connectivity == "flood":
-            cand = _flood_filter(cand, seeds[k], spatial_shape, strides)
+            cand = _flood_filter(cand, self.seeds[k], self.spatial_shape,
+                                 self.strides)
         elif connectivity == "halfspace":
-            cm = np.unravel_index(cand, spatial_shape)
-            pts = np.column_stack([x_c[a][cm[a]] for a in range(ndim_s)])
-            proj = (pts - x_gamma[k]) @ u_dir[k]
-            keep = proj <= 0.5 * h_char[k]
-            keep[cand == seeds[k]] = True
+            pts = self.cell_points(cand)
+            proj = (pts - self.x_gamma[k]) @ self.u_dir[k]
+            keep = proj <= 0.5 * self.h_char[k]
+            keep[cand == self.seeds[k]] = True
             cand = cand[keep]
         elif connectivity != "none":
             raise ValueError(
@@ -481,156 +533,254 @@ def _build_recon_side(ibm, region_flat, seeds, u_dir, x_c, hax, h_ref, *,
             )
         return cand
 
-    cand0 = [gather(k, r0[k]) for k in range(npnt)]
 
-    # --- result arrays ---
-    alpha = np.zeros(npnt)
-    stencil = [None] * npnt
-    weights = [None] * npnt
-    degree_used = np.full(npnt, -2, dtype=np.intp)
-    cond = np.zeros(npnt)
-    moment_res = np.zeros(npnt)
-    radius_used = r0.copy()
-    unresolved = np.zeros(npnt, dtype=bool)
+def _side_geometry(ibm, side, grid, connectivity):
+    """Same-side cells, connected components, KD-tree and per-crossing cell size."""
+    spatial_shape = ibm.spatial_shape
+    ndim_s = len(spatial_shape)
+    x_c = grid.x_c
+    strides = np.array(
+        [math.prod(spatial_shape[a + 1:]) for a in range(ndim_s)], dtype=np.intp
+    )
+    side_idx = np.flatnonzero(side.region_flat)
+    side_multi = np.unravel_index(side_idx, spatial_shape)
+    side_pts = np.column_stack([x_c[a][side_multi[a]] for a in range(ndim_s)])
+    labels, _ = _cc_label(side.region_flat.reshape(spatial_shape))
+    labels_flat = labels.ravel()
+    tree = cKDTree(side_pts)
+    seed_multi = np.unravel_index(side.seeds, spatial_shape)
+    hvec = np.column_stack([grid.hax[a][seed_multi[a]] for a in range(ndim_s)])
+    h_char = hvec.max(axis=1)                             # (npnt,)
+    return _SideGeometry(
+        spatial_shape=spatial_shape, strides=strides, x_c=x_c,
+        x_gamma=ibm.coords, u_dir=side.u_dir, seeds=side.seeds,
+        seed_multi=seed_multi, hvec=hvec, h_char=h_char, tree=tree,
+        side_idx=side_idx, labels_flat=labels_flat, connectivity=connectivity,
+        axis=ibm.axis,
+    )
 
-    def attempt(active, cands, radii, p_arr):
+
+class _Reconstructor:
+    """Stencil selection and GFD weights for the crossings of one side."""
+
+    def __init__(self, geo, opts):
+        npnt = len(geo.seeds)
+        self.geo = geo
+        self.opts = opts
+        self.npnt = npnt
+        cap1 = opts.radius_factor * opts.rings * geo.h_char
+        self.cap2 = opts.length_scale_factor * opts.length_scale  # possibly inf
+        self.r0 = np.minimum(cap1, self.cap2)
+        self.alpha = np.zeros(npnt)
+        self.stencil = [None] * npnt
+        self.weights = [None] * npnt
+        self.degree_used = np.full(npnt, -2, dtype=np.intp)
+        self.cond = np.zeros(npnt)
+        self.moment_res = np.zeros(npnt)
+        self.radius_used = self.r0.copy()
+        self.unresolved = np.zeros(npnt, dtype=bool)
+
+    def _truncate(self, group, cands, n_max):
+        """Truncate each candidate set to its n_max nearest cells."""
+        trunc = []
+        for k in group:
+            c = cands[k]
+            if c.size > n_max:
+                pts = self.geo.cell_points(c)
+                r = np.linalg.norm(pts - self.geo.x_gamma[k], axis=1)
+                c = c[np.argsort(r, kind="stable")[:n_max]]
+            trunc.append(c)
+        return trunc
+
+    def _pack_batch(self, group, trunc):
+        """Scaled offsets, inverse weights and scaled directions of a batch."""
+        geo = self.geo
+        n1 = 1 + max(c.size for c in trunc)
+        nb = len(group)
+        Y = np.zeros((nb, n1, geo.ndim_s))
+        qinv = np.zeros((nb, n1))
+        u_scaled = np.empty((nb, geo.ndim_s))
+        for i, (k, c) in enumerate(zip(group, trunc)):
+            pts = geo.cell_points(c)
+            Yk = (pts - geo.x_gamma[k]) / geo.hvec[k]
+            Y[i, 1:1 + c.size] = Yk
+            r = np.linalg.norm(Yk, axis=1)
+            qinv[i, 1:1 + c.size] = 1.0 / (1.0 + r ** self.opts.weight_power)
+            qinv[i, 0] = 1.0 / self.opts.interface_penalty
+            u_scaled[i] = geo.u_dir[k] / geo.hvec[k]
+        return Y, qinv, u_scaled
+
+    def _record(self, group, trunc, fit, ok):
+        """Store the accepted fits of a batch; return the accepted crossings."""
+        accepted = []
+        for i, k in enumerate(group):
+            if not ok[i]:
+                continue
+            c = trunc[i]
+            self.alpha[k] = fit.a[i, 0]
+            self.stencil[k] = c
+            self.weights[k] = fit.a[i, 1:1 + c.size].copy()
+            self.degree_used[k] = fit.p
+            self.cond[k] = fit.cnd[i]
+            self.moment_res[k] = fit.mres[i]
+            self.radius_used[k] = fit.radii[k]
+            accepted.append(k)
+        return accepted
+
+    def _solve_group(self, p, group, cands, radii):
+        """Fit and accept the crossings of *group* at degree *p*."""
+        opts = self.opts
+        n_max = 4 * _n_monomials(self.geo.ndim_s, int(p))
+        trunc = self._truncate(group, cands, n_max)
+        Y, qinv, u_scaled = self._pack_batch(group, trunc)
+        a, cnd, mres = _gfd_weights_batched(Y, qinv, u_scaled, int(p))
+        wnorm = self.geo.h_char[np.array(group)] * np.abs(a).sum(axis=1)
+        ok = (cnd <= opts.cond_max) & (mres <= opts.moment_tol) & \
+             (wnorm <= opts.weight_norm_max)
+        return self._record(group, trunc, _Fit(a, cnd, mres, radii, p), ok)
+
+    def attempt(self, active, cands, radii, p_arr):
         """Batched GFD attempt; returns indices accepted (and records them)."""
         accepted = []
         for p in np.unique(p_arr[active]):
             if p < 1:
                 continue
-            M = _n_monomials(ndim_s, int(p))
-            min_pts = math.ceil(min_points_factor * (M - 1))
-            n_max = 4 * M
+            M = _n_monomials(self.geo.ndim_s, int(p))
+            min_pts = math.ceil(self.opts.min_points_factor * (M - 1))
             group = [k for k in active
                      if p_arr[k] == p and cands[k].size >= min_pts]
             if not group:
                 continue
-            # Truncate to the n_max nearest candidates.
-            trunc = []
-            for k in group:
-                c = cands[k]
-                if c.size > n_max:
-                    cm = np.unravel_index(c, spatial_shape)
-                    pts = np.column_stack(
-                        [x_c[a][cm[a]] for a in range(ndim_s)])
-                    r = np.linalg.norm(pts - x_gamma[k], axis=1)
-                    c = c[np.argsort(r, kind="stable")[:n_max]]
-                trunc.append(c)
-            n1 = 1 + max(c.size for c in trunc)
-            nb = len(group)
-            Y = np.zeros((nb, n1, ndim_s))
-            qinv = np.zeros((nb, n1))
-            u_scaled = np.empty((nb, ndim_s))
-            for i, (k, c) in enumerate(zip(group, trunc)):
-                cm = np.unravel_index(c, spatial_shape)
-                pts = np.column_stack([x_c[a][cm[a]] for a in range(ndim_s)])
-                Yk = (pts - x_gamma[k]) / hvec[k]
-                Y[i, 1:1 + c.size] = Yk
-                r = np.linalg.norm(Yk, axis=1)
-                qinv[i, 1:1 + c.size] = 1.0 / (1.0 + r ** weight_power)
-                qinv[i, 0] = 1.0 / interface_penalty
-                u_scaled[i] = u_dir[k] / hvec[k]
-            a, cnd, mres = _gfd_weights_batched(Y, qinv, u_scaled, int(p))
-            wnorm = h_char[np.array(group)] * np.abs(a).sum(axis=1)
-            ok = (cnd <= cond_max) & (mres <= moment_tol) & \
-                 (wnorm <= weight_norm_max)
-            for i, k in enumerate(group):
-                if not ok[i]:
-                    continue
-                c = trunc[i]
-                alpha[k] = a[i, 0]
-                stencil[k] = c
-                weights[k] = a[i, 1:1 + c.size].copy()
-                degree_used[k] = p
-                cond[k] = cnd[i]
-                moment_res[k] = mres[i]
-                radius_used[k] = radii[k]
-                accepted.append(k)
+            accepted.extend(self._solve_group(p, group, cands, radii))
         return accepted
 
-    active = set(range(npnt))
-
-    # Stage 1: target degree at the initial radius.
-    p_target = degree_target.astype(np.intp)
-    for k in attempt(sorted(active), cand0, r0, p_target):
-        active.discard(k)
-
-    # Stage 2: enlarge once (never beyond the length-scale cap), retry target.
-    if active:
-        r1 = np.minimum(enlarge_factor * r0, cap2)
+    def _enlarge(self, active, cand0, p_target):
+        """Stage 2: enlarge once (never beyond the length-scale cap), retry target."""
+        r0 = self.r0
+        r1 = np.minimum(self.opts.enlarge_factor * r0, self.cap2)
         grow = [k for k in sorted(active)
                 if p_target[k] >= 1 and r1[k] > r0[k] * (1 + 1e-12)]
         if grow:
             cand1 = list(cand0)
             for k in grow:
-                cand1[k] = gather(k, r1[k])
-            for k in attempt(grow, cand1, r1, p_target):
+                cand1[k] = self.geo.gather(k, r1[k])
+            for k in self.attempt(grow, cand1, r1, p_target):
                 active.discard(k)
 
-    # Stage 3: demote the degree step by step at the original radius.
-    p_cur = p_target.copy()
-    while active and np.any(p_cur[sorted(active)] > 1):
-        p_cur = np.maximum(p_cur - 1, 1)
-        sub = [k for k in sorted(active) if p_target[k] >= 1]
-        for k in attempt(sub, cand0, r0, p_cur):
-            active.discard(k)
+    def _demote(self, active, cand0, p_target):
+        """Stage 3: demote the degree step by step at the original radius."""
+        p_cur = p_target.copy()
+        while active and np.any(p_cur[sorted(active)] > 1):
+            p_cur = np.maximum(p_cur - 1, 1)
+            sub = [k for k in sorted(active) if p_target[k] >= 1]
+            for k in self.attempt(sub, cand0, self.r0, p_cur):
+                active.discard(k)
 
-    # Final stage: two-point normal formula from the cut cell.
-    n_axis_fallback = 0
-    for k in sorted(active):
-        x_cut = np.array([x_c[a][seed_multi[a][k]] for a in range(ndim_s)])
-        s = float((x_cut - x_gamma[k]) @ u_dir[k])
+    def select(self):
+        """Stages 1 to 3; return the set of crossings still unresolved."""
+        geo = self.geo
+        cand0 = [geo.gather(k, self.r0[k]) for k in range(self.npnt)]
+        active = set(range(self.npnt))
+
+        # Stage 1: target degree at the initial radius.
+        p_target = self.opts.degree_target.astype(np.intp)
+        for k in self.attempt(sorted(active), cand0, self.r0, p_target):
+            active.discard(k)
+        if active:
+            self._enlarge(active, cand0, p_target)
+        self._demote(active, cand0, p_target)
+        return active
+
+    def _two_point(self, k):
+        """Two-point normal formula for crossing k; True on axis fallback."""
+        geo = self.geo
+        ndim_s = geo.ndim_s
+        x_cut = np.array([geo.x_c[a][geo.seed_multi[a][k]]
+                          for a in range(ndim_s)])
+        u_dir = geo.u_dir
+        s = float((x_cut - geo.x_gamma[k]) @ u_dir[k])
         deg = 0
-        if abs(s) < _DEGENERATE_PROJ * h_char[k]:
+        fallback = abs(s) < _DEGENERATE_PROJ * geo.h_char[k]
+        if fallback:
             u_ax = np.zeros(ndim_s)
-            u_ax[ibm.axis[k]] = u_dir[k][ibm.axis[k]]
+            u_ax[geo.axis[k]] = u_dir[k][geo.axis[k]]
             nrm = np.linalg.norm(u_ax)
             if nrm == 0.0:
-                u_ax[ibm.axis[k]] = 1.0
+                u_ax[geo.axis[k]] = 1.0
                 nrm = 1.0
-            s = float((x_cut - x_gamma[k]) @ (u_ax / nrm))
+            s = float((x_cut - geo.x_gamma[k]) @ (u_ax / nrm))
             deg = -1
-            unresolved[k] = True
-            n_axis_fallback += 1
-        alpha[k] = -1.0 / s
-        stencil[k] = np.array([seeds[k]], dtype=np.intp)
-        weights[k] = np.array([1.0 / s])
-        degree_used[k] = deg
-        cond[k] = 1.0
-        moment_res[k] = 0.0
+            self.unresolved[k] = True
+        self.alpha[k] = -1.0 / s
+        self.stencil[k] = np.array([geo.seeds[k]], dtype=np.intp)
+        self.weights[k] = np.array([1.0 / s])
+        self.degree_used[k] = deg
+        self.cond[k] = 1.0
+        self.moment_res[k] = 0.0
+        return fallback
+
+    def finalize(self, active):
+        """Final stage: two-point normal formula from the cut cell.
+
+        Returns the number of crossings that fell back to the axis direction.
+        """
+        n_axis_fallback = 0
+        for k in sorted(active):
+            if self._two_point(k):
+                n_axis_fallback += 1
+        return n_axis_fallback
+
+    def sparse_operator(self, n_spatial_cells):
+        """Assemble the sparse reconstruction matrix D."""
+        npnt = self.npnt
+        if npnt:
+            rows = np.concatenate(
+                [np.full(self.stencil[k].size, k, dtype=np.intp)
+                 for k in range(npnt)])
+            cols = np.concatenate(self.stencil)
+            data = np.concatenate(self.weights)
+        else:
+            rows = cols = np.empty(0, dtype=np.intp)
+            data = np.empty(0)
+        return coo_array((data, (rows, cols)),
+                         shape=(npnt, n_spatial_cells)).tocsr()
+
+    def diagnostics(self, n_spatial_cells):
+        """Operator and per-crossing diagnostics of the side."""
+        npnt = self.npnt
+        stencil, weights = self.stencil, self.weights
+        D = self.sparse_operator(n_spatial_cells)
+        n_stencil = np.array([0 if stencil[k] is None else stencil[k].size
+                              for k in range(npnt)], dtype=np.intp)
+        weight_norm = self.geo.h_char * (
+            np.abs(self.alpha)
+            + np.array([np.abs(weights[k]).sum() if npnt else 0.0
+                        for k in range(npnt)]))
+        return {
+            "alpha": self.alpha, "D": D, "degree": self.degree_used,
+            "n_stencil": n_stencil, "radius": self.radius_used,
+            "cond": self.cond, "moment_residual": self.moment_res,
+            "weight_norm": weight_norm, "unresolved": self.unresolved,
+        }
+
+
+def _build_recon_side(ibm, side, grid, opts):
+    """Select stencils and compute GFD weights for one side of the interface."""
+    geo = _side_geometry(ibm, side, grid, opts.connectivity)
+    recon = _Reconstructor(geo, opts)
+    active = recon.select()
+    n_axis_fallback = recon.finalize(active)
 
     if n_axis_fallback:
         warnings.warn(
-            f"IBM reconstruction ({side_name}): {n_axis_fallback} crossing(s) "
+            f"IBM reconstruction ({side.name}): {n_axis_fallback} crossing(s) "
             "fell back to the degenerate axis-direction two-point formula "
             "(normal nearly tangent to the offset vector); flagged as "
             "unresolved.",
             RuntimeWarning, stacklevel=3,
         )
 
-    # --- assemble sparse D and diagnostics ---
-    if npnt:
-        rows = np.concatenate(
-            [np.full(stencil[k].size, k, dtype=np.intp) for k in range(npnt)])
-        cols = np.concatenate(stencil)
-        data = np.concatenate(weights)
-    else:
-        rows = cols = np.empty(0, dtype=np.intp)
-        data = np.empty(0)
-    D = coo_array((data, (rows, cols)),
-                  shape=(npnt, ibm.n_spatial_cells)).tocsr()
-
-    n_stencil = np.array([0 if stencil[k] is None else stencil[k].size
-                          for k in range(npnt)], dtype=np.intp)
-    weight_norm = h_char * (np.abs(alpha)
-                            + np.array([np.abs(weights[k]).sum() if npnt else 0.0
-                                        for k in range(npnt)]))
-    return {
-        "alpha": alpha, "D": D, "degree": degree_used, "n_stencil": n_stencil,
-        "radius": radius_used, "cond": cond, "moment_residual": moment_res,
-        "weight_norm": weight_norm, "unresolved": unresolved,
-    }
+    return recon.diagnostics(ibm.n_spatial_cells)
 
 
 def construct_ibm_normal_derivative(ibm, sdf, x_c, *, degree=2,
@@ -722,7 +872,7 @@ def construct_ibm_normal_derivative(ibm, sdf, x_c, *, degree=2,
     h_ref = np.array([np.median(h) for h in hax])
 
     region_fluid = sdf.ravel() >= 0.0
-    common = dict(
+    opts = _ReconOptions(
         degree_target=degree_arr, length_scale=ls, rings=rings,
         radius_factor=radius_factor, length_scale_factor=length_scale_factor,
         enlarge_factor=enlarge_factor, min_points_factor=min_points_factor,
@@ -730,11 +880,14 @@ def construct_ibm_normal_derivative(ibm, sdf, x_c, *, degree=2,
         cond_max=cond_max, moment_tol=moment_tol,
         weight_norm_max=weight_norm_max, connectivity=connectivity,
     )
+    grid = _ReconGrid(x_c, hax)
     # Outward per side: q_out along -n (out of the fluid), q_in along +n.
-    out = _build_recon_side(ibm, region_fluid, ibm.row_out, -normals,
-                            x_c, hax, h_ref, side_name="outside", **common)
-    inn = _build_recon_side(ibm, ~region_fluid, ibm.row_in, +normals,
-                            x_c, hax, h_ref, side_name="inside", **common)
+    out = _build_recon_side(
+        ibm, _ReconSide(region_fluid, ibm.row_out, -normals, "outside"),
+        grid, opts)
+    inn = _build_recon_side(
+        ibm, _ReconSide(~region_fluid, ibm.row_in, +normals, "inside"),
+        grid, opts)
 
     return IBMNormalDerivative(
         normals=normals,
