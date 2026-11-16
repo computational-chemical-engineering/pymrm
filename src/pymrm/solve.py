@@ -589,7 +589,18 @@ class _NewtonRun:
                 return result
             if self.stopped:
                 break
-            self._track(it)
+            # Report the iteration and update the stagnation window.
+            if self.verbose:
+                print(f"newton it={it:3d} |dx|={self.step_inf:.3e} lam={self.lam:.3g} "
+                      f"theta={self.theta:.3g} clipped={self.clipped} nfev={self.nfev}")
+            if self.stagnant:
+                self.window.clear()      # the backward error did not pass: keep iterating
+            elif self.use_stagnation and self.at_floor:
+                # The Newton step norm, damped or not: near the floor the damping
+                # test fails on round-off, and a damped step must not reset the window.
+                self.window.append(self.step_inf)
+            else:
+                self.window.clear()
         return self._exhausted()
 
     def _step_test(self, dy, step_inf):
@@ -851,20 +862,6 @@ class _NewtonRun:
                                    "after the callback or refresh")
             self.ev = ev_new
         return None
-
-    def _track(self, it):
-        """Report the iteration and update the stagnation window."""
-        if self.verbose:
-            print(f"newton it={it:3d} |dx|={self.step_inf:.3e} lam={self.lam:.3g} "
-                  f"theta={self.theta:.3g} clipped={self.clipped} nfev={self.nfev}")
-        if self.stagnant:
-            self.window.clear()      # the backward error did not pass: keep iterating
-        elif self.use_stagnation and self.at_floor:
-            # The Newton step norm, damped or not: near the floor the damping
-            # test fails on round-off, and a damped step must not reset the window.
-            self.window.append(self.step_inf)
-        else:
-            self.window.clear()
 
     def _exhausted(self):
         """The result after ``maxfev`` iterations without convergence."""
