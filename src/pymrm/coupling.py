@@ -740,6 +740,37 @@ def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
     return m_inv, values
 
 
+def _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t):
+    """Interface source matrices per interface condition and per boundary vector."""
+    interface_bc = [[None for _ in range(2)] for _ in range(2)]
+    for j in range(2):
+        for i in range(2):
+            values_bc = m_inv[j][i] * d[i]
+            values_bc = np.broadcast_to(values_bc, shape_i)
+            fltr = values_bc.ravel() != 0
+            values_filtered = values_bc.ravel()[fltr]
+            row_indices_filtered = row_indices_bc.ravel()[fltr]
+            if shapes_d[j] is None:
+                interface_bc[j][i] = csc_array(
+                    (
+                        values_filtered,
+                        row_indices_filtered,
+                        np.array([0, row_indices_filtered.size]),
+                    ),
+                    shape=(shape_t[0] * shape_t[2], 1),
+                )
+            else:
+                num_cols = math.prod(shapes_d[j])
+                col_indices_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[j])
+                col_indices_bc = np.broadcast_to(col_indices_bc, shape_i)
+                col_indices_filtered = col_indices_bc.ravel()[fltr]
+                interface_bc[j][i] = csc_array(
+                    (values_filtered, (row_indices_filtered, col_indices_filtered)),
+                    shape=(shape_t[0] * shape_t[2], num_cols),
+                )
+    return interface_bc
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -854,32 +885,7 @@ def construct_interface_matrices(
             interface_bc[1],
         )
     else:
-        interface_bc = [[None for _ in range(2)] for _ in range(2)]
-        for j in range(2):
-            for i in range(2):
-                values_bc = m_inv[j][i] * d[i]
-                values_bc = np.broadcast_to(values_bc, shape_i)
-                fltr = values_bc.ravel() != 0
-                values_filtered = values_bc.ravel()[fltr]
-                row_indices_filtered = row_indices_bc.ravel()[fltr]
-                if shapes_d[j] is None:
-                    interface_bc[j][i] = csc_array(
-                        (
-                            values_filtered,
-                            row_indices_filtered,
-                            np.array([0, row_indices_filtered.size]),
-                        ),
-                        shape=(shape_t[0] * shape_t[2], 1),
-                    )
-                else:
-                    num_cols = math.prod(shapes_d[j])
-                    col_indices_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[j])
-                    col_indices_bc = np.broadcast_to(col_indices_bc, shape_i)
-                    col_indices_filtered = col_indices_bc.ravel()[fltr]
-                    interface_bc[j][i] = csc_array(
-                        (values_filtered, (row_indices_filtered, col_indices_filtered)),
-                        shape=(shape_t[0] * shape_t[2], num_cols),
-                    )
+        interface_bc = _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t)
         return (
             interface_matrix[0],
             interface_bc[0][0],
