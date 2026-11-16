@@ -521,6 +521,205 @@ def _cell_coords(cells, x_c, spatial_shape):
     return np.column_stack([x_c[a][multi[a]] for a in range(len(x_c))])
 
 
+class _ParticleGrid:
+    """Cell-centre coordinates of the structured grid and its flat-index strides."""
+
+    def __init__(self, x_c):
+        self.x_c = x_c
+        self.spatial_shape = tuple(x.size for x in x_c)
+        self.ndim = len(self.spatial_shape)
+        self.n_spatial = math.prod(self.spatial_shape)
+        self.strides = np.array(
+            [math.prod(self.spatial_shape[a + 1:]) for a in range(self.ndim)],
+            dtype=np.intp)
+
+
+@dataclass
+class _Classification:
+    """Owner (deepest level) and union level field of every spatial cell."""
+
+    owner: np.ndarray
+    solid_flat: np.ndarray
+    pseudo: np.ndarray
+    solid_grid: np.ndarray
+    owner_grid: np.ndarray
+
+
+def _classify_cells(particles, grid, halo, fill_value):
+    """Owner (deepest level) and pseudo union level of every spatial cell."""
+    x_c, spatial_shape = grid.x_c, grid.spatial_shape
+    owner = np.full(grid.n_spatial, -1, dtype=np.intp)
+    depth = np.full(grid.n_spatial, np.inf)
+    pseudo = np.full(grid.n_spatial, float(fill_value))
+    for i, p in enumerate(particles):
+        sl = _window(p, x_c, halo)
+        if sl is None:
+            continue
+        widx = _window_flat(sl, spatial_shape, grid.strides).ravel()
+        lv = np.asarray(p.level(_window_coords(sl, x_c)), dtype=float).ravel()
+        np.minimum.at(pseudo, widx, lv)
+        better = lv < np.minimum(depth[widx], 0.0)
+        bidx = widx[better]
+        owner[bidx] = i
+        depth[bidx] = lv[better]
+    solid_flat = owner >= 0
+    pseudo = np.where(solid_flat, depth, pseudo)
+    return _Classification(
+        owner=owner, solid_flat=solid_flat, pseudo=pseudo,
+        solid_grid=solid_flat.reshape(spatial_shape),
+        owner_grid=owner.reshape(spatial_shape))
+
+
+class _FaceScanner:
+    """Directed face thetas and contact faces found by scanning the grid faces."""
+
+    def __init__(self, particles, grid, cls, contact):
+        self.particles = particles
+        self.grid = grid
+        self.cls = cls
+        self.contact = contact
+        self.keys, self.thetas = [], []         # directed theta registry
+        self.contact_cols = {k: [] for k in ("lo", "hi", "i", "j", "s_i", "s_j")}
+
+    def scan_axis(self, a):
+        """Register the fluid-solid and contact faces along axis *a*."""
+        cls = self.cls
+        nb_solid, valid = _neighbor(cls.solid_grid, a, +1)
+        nb_owner, _ = _neighbor(cls.owner_grid, a, +1)
+        lo = np.flatnonzero((valid & (cls.solid_grid != nb_solid)).ravel())
+        if lo.size:
+            self._fluid_solid_faces(a, lo)
+        # solid–solid faces between different particles
+        cc = np.flatnonzero((valid & cls.solid_grid & nb_solid
+                             & (cls.owner_grid != nb_owner)).ravel())
+        if cc.size:
+            self._contact_faces(a, cc)
+
+    def _fluid_solid_faces(self, a, lo):
+        grid, cls = self.grid, self.cls
+        owner = cls.owner
+        hi = lo + grid.strides[a]
+        # fluid–solid crossing faces: owner of the solid cell intersects
+        lo_solid = cls.solid_flat[lo]
+        own = np.where(lo_solid, owner[lo], owner[hi])
+        p_lo = _cell_coords(lo, grid.x_c, grid.spatial_shape)
+        p_hi = _cell_coords(hi, grid.x_c, grid.spatial_shape)
+        s = np.empty(lo.size)
+        for i in np.unique(own):
+            m = own == i
+            s[m] = self.particles[i].intersect(p_lo[m], p_hi[m])
+        self.keys.append(_FaceThetaMap.pack(lo, a, +1, grid.ndim))
+        self.thetas.append(s)
+        self.keys.append(_FaceThetaMap.pack(hi, a, -1, grid.ndim))
+        self.thetas.append(1.0 - s)
+
+    def _outside_flags(self, i_arr, j_arr, p_lo, p_hi):
+        """Gap test: cell strictly outside the *other* particle."""
+        out_j = np.empty(i_arr.size, dtype=bool)   # level_j(p_lo) > 0
+        out_i = np.empty(i_arr.size, dtype=bool)   # level_i(p_hi) > 0
+        for i in np.unique(np.concatenate([i_arr, j_arr])):
+            m = j_arr == i
+            if m.any():
+                out_j[m] = self.particles[i].level(p_lo[m]) > 0.0
+            m = i_arr == i
+            if m.any():
+                out_i[m] = self.particles[i].level(p_hi[m]) > 0.0
+        return out_i, out_j
+
+    def _gap_thetas(self, gap, i_arr, j_arr, p_lo, p_hi):
+        """Surface positions of both particles on the gap faces."""
+        s_i = np.full(gap.size, np.nan)
+        s_j = np.full(gap.size, np.nan)
+        if gap.any():
+            for i in np.unique(i_arr[gap]):
+                m = gap & (i_arr == i)
+                s_i[m] = self.particles[i].intersect(p_lo[m], p_hi[m])
+            for j in np.unique(j_arr[gap]):
+                m = gap & (j_arr == j)
+                s_j[m] = self.particles[j].intersect(p_lo[m], p_hi[m])
+        return s_i, s_j
+
+    def _contact_faces(self, a, cc):
+        grid, owner = self.grid, self.cls.owner
+        hi = cc + grid.strides[a]
+        i_arr, j_arr = owner[cc], owner[hi]
+        p_lo = _cell_coords(cc, grid.x_c, grid.spatial_shape)
+        p_hi = _cell_coords(hi, grid.x_c, grid.spatial_shape)
+        out_i, out_j = self._outside_flags(i_arr, j_arr, p_lo, p_hi)
+        gap = out_i & out_j
+        s_i, s_j = self._gap_thetas(gap, i_arr, j_arr, p_lo, p_hi)
+        if gap.any():
+            gap &= s_i < s_j            # disjoint surface intervals
+        if gap.any():
+            if self.contact == "error":
+                raise RuntimeError(
+                    f"particle IBM: {int(gap.sum())} contact face(s) "
+                    "between different particles (contact='error')")
+            if self.contact == "no_flux":
+                for key, arr in zip(("lo", "hi", "i", "j", "s_i", "s_j"),
+                                    (cc, hi, i_arr, j_arr, s_i, s_j)):
+                    self.contact_cols[key].append(arr[gap])
+            # 'merge': nothing to do
+
+    def theta_map(self):
+        """Lookup of the registered directed face thetas."""
+        ndim = self.grid.ndim
+        if self.keys:
+            return _FaceThetaMap(np.concatenate(self.keys),
+                                 np.concatenate(self.thetas), ndim)
+        return _FaceThetaMap(np.empty(0, dtype=np.intp), np.empty(0), ndim)
+
+
+def _append_contact_crossings(out_s, in_s, scanner, rescale):
+    """Append the contact crossings of the no_flux policy to both sides."""
+    cols, grid, owner = scanner.contact_cols, scanner.grid, scanner.cls.owner
+    lo = np.concatenate(cols["lo"])
+    hi = np.concatenate(cols["hi"])
+    s_i = np.concatenate(cols["s_i"])
+    s_j = np.concatenate(cols["s_j"])
+    ax_of = np.empty(lo.size, dtype=np.intp)
+    for a in range(grid.ndim):
+        ax_of[(hi - lo) == grid.strides[a]] = a
+    theta_mid = 0.5 * (s_i + s_j)
+    out_s = _append_contact_side(
+        out_s, _ContactSpec(lo, hi, ax_of, +1, s_i, theta_mid), owner, grid,
+        rescale)
+    in_s = _append_contact_side(
+        in_s, _ContactSpec(hi, lo, ax_of, -1, 1.0 - s_j, theta_mid), owner,
+        grid, rescale)
+    return out_s, in_s
+
+
+def _particle_info(particles, ibm, cls, grid):
+    """Per-crossing bookkeeping, exact normals and segmentation."""
+    owner, solid_flat = cls.owner, cls.solid_flat
+    crossing_particle = owner[ibm.row_in]
+    # A regular crossing has a fluid out cell; a contact crossing's out cell
+    # is solid (it belongs to the partner particle).
+    contact_mask = solid_flat[ibm.row_out]
+    contact_partner = np.where(contact_mask, owner[ibm.row_out], -1)
+
+    # The in-side particle's outward normal serves both crossing types: it
+    # points solid -> fluid on regular crossings, and towards the partner
+    # (the out side) on contact crossings.
+    normals = np.empty((ibm.n_crossings, grid.ndim))
+    for i in np.unique(crossing_particle):
+        m = crossing_particle == i
+        normals[m] = particles[i].normal(ibm.coords[m])
+
+    labels = np.where(solid_flat, owner + 1, 0).reshape(grid.spatial_shape)
+    sizes = np.bincount(labels.ravel(),
+                        minlength=len(particles) + 1)[1:].astype(np.intp)
+    seg = Segmentation(labels=labels, n_segments=len(particles),
+                       region="negative", connectivity=1, sizes=sizes)
+
+    return ParticleIBMInfo(
+        owner=cls.owner_grid, crossing_particle=crossing_particle,
+        contact=contact_mask, contact_partner=contact_partner,
+        normals=normals, pseudo_sdf=cls.pseudo.reshape(grid.spatial_shape),
+        segmentation=seg)
+
+
 def construct_ibm_particles(particles, x_c, *, axes=None, shape=None,
                             rescale=True, contact="no_flux", halo=2,
                             fill_value=None):
@@ -553,11 +752,8 @@ def construct_ibm_particles(particles, x_c, *, axes=None, shape=None,
         per-particle :class:`~pymrm.segmentation.Segmentation`.
     """
     x_c = _normalize_x_c(x_c)
-    spatial_shape = tuple(x.size for x in x_c)
-    ndim = len(spatial_shape)
-    n_spatial = math.prod(spatial_shape)
-    strides = np.array([math.prod(spatial_shape[a + 1:]) for a in range(ndim)],
-                       dtype=np.intp)
+    grid = _ParticleGrid(x_c)
+    ndim = grid.ndim
     if contact not in ("no_flux", "merge", "error"):
         raise ValueError(
             f"contact must be 'no_flux', 'merge' or 'error', got {contact!r}")
@@ -570,186 +766,90 @@ def construct_ibm_particles(particles, x_c, *, axes=None, shape=None,
                                for x in x_c)
 
     # --- classification: owner (deepest level) + pseudo union level --------
-    owner = np.full(n_spatial, -1, dtype=np.intp)
-    depth = np.full(n_spatial, np.inf)
-    pseudo = np.full(n_spatial, float(fill_value))
-    for i, p in enumerate(particles):
-        sl = _window(p, x_c, halo)
-        if sl is None:
-            continue
-        widx = _window_flat(sl, spatial_shape, strides).ravel()
-        lv = np.asarray(p.level(_window_coords(sl, x_c)), dtype=float).ravel()
-        np.minimum.at(pseudo, widx, lv)
-        better = lv < np.minimum(depth[widx], 0.0)
-        bidx = widx[better]
-        owner[bidx] = i
-        depth[bidx] = lv[better]
-    solid_flat = owner >= 0
-    pseudo = np.where(solid_flat, depth, pseudo)
+    cls = _classify_cells(particles, grid, halo, fill_value)
 
     # --- face scan ----------------------------------------------------------
-    solid_grid = solid_flat.reshape(spatial_shape)
-    owner_grid = owner.reshape(spatial_shape)
-
-    keys, thetas = [], []                       # directed theta registry
-    contact_cols = {k: [] for k in ("lo", "hi", "i", "j", "s_i", "s_j")}
+    scanner = _FaceScanner(particles, grid, cls, contact)
     for a in range(ndim):
-        nb_solid, valid = _neighbor(solid_grid, a, +1)
-        nb_owner, _ = _neighbor(owner_grid, a, +1)
-        lo = np.flatnonzero((valid & (solid_grid != nb_solid)).ravel())
-        if lo.size:
-            hi = lo + strides[a]
-            # fluid–solid crossing faces: owner of the solid cell intersects
-            lo_solid = solid_flat[lo]
-            own = np.where(lo_solid, owner[lo], owner[hi])
-            p_lo = _cell_coords(lo, x_c, spatial_shape)
-            p_hi = _cell_coords(hi, x_c, spatial_shape)
-            s = np.empty(lo.size)
-            for i in np.unique(own):
-                m = own == i
-                s[m] = particles[i].intersect(p_lo[m], p_hi[m])
-            keys.append(_FaceThetaMap.pack(lo, a, +1, ndim))
-            thetas.append(s)
-            keys.append(_FaceThetaMap.pack(hi, a, -1, ndim))
-            thetas.append(1.0 - s)
-        # solid–solid faces between different particles
-        cc = np.flatnonzero((valid & solid_grid & nb_solid
-                             & (owner_grid != nb_owner)).ravel())
-        if cc.size:
-            hi = cc + strides[a]
-            i_arr, j_arr = owner[cc], owner[hi]
-            p_lo = _cell_coords(cc, x_c, spatial_shape)
-            p_hi = _cell_coords(hi, x_c, spatial_shape)
-            # gap test: cell strictly outside the *other* particle
-            out_j = np.empty(cc.size, dtype=bool)   # level_j(p_lo) > 0
-            out_i = np.empty(cc.size, dtype=bool)   # level_i(p_hi) > 0
-            s_i = np.full(cc.size, np.nan)
-            s_j = np.full(cc.size, np.nan)
-            for i in np.unique(np.concatenate([i_arr, j_arr])):
-                m = j_arr == i
-                if m.any():
-                    out_j[m] = particles[i].level(p_lo[m]) > 0.0
-                m = i_arr == i
-                if m.any():
-                    out_i[m] = particles[i].level(p_hi[m]) > 0.0
-            gap = out_i & out_j
-            if gap.any():
-                for i in np.unique(i_arr[gap]):
-                    m = gap & (i_arr == i)
-                    s_i[m] = particles[i].intersect(p_lo[m], p_hi[m])
-                for j in np.unique(j_arr[gap]):
-                    m = gap & (j_arr == j)
-                    s_j[m] = particles[j].intersect(p_lo[m], p_hi[m])
-                gap &= s_i < s_j            # disjoint surface intervals
-            if gap.any():
-                if contact == "error":
-                    raise RuntimeError(
-                        f"particle IBM: {int(gap.sum())} contact face(s) "
-                        "between different particles (contact='error')")
-                if contact == "no_flux":
-                    contact_cols["lo"].append(cc[gap])
-                    contact_cols["hi"].append(hi[gap])
-                    contact_cols["i"].append(i_arr[gap])
-                    contact_cols["j"].append(j_arr[gap])
-                    contact_cols["s_i"].append(s_i[gap])
-                    contact_cols["s_j"].append(s_j[gap])
-                # 'merge': nothing to do
-
-    if keys:
-        theta_map = _FaceThetaMap(np.concatenate(keys), np.concatenate(thetas),
-                                  ndim)
-    else:
-        theta_map = _FaceThetaMap(np.empty(0, dtype=np.intp), np.empty(0), ndim)
+        scanner.scan_axis(a)
+    theta_map = scanner.theta_map()
 
     # --- fluid–solid crossings through the shared IBM core ------------------
     out_s, in_s, meta = _construct_ibm_core(
-        solid_grid, theta_map, x_c, axes, shape, rescale, pair=False)
+        cls.solid_grid, theta_map, x_c, axes, shape, rescale, pair=False)
 
     # --- contact crossings (no_flux policy) ---------------------------------
-    if contact_cols["lo"]:
-        lo = np.concatenate(contact_cols["lo"])
-        hi = np.concatenate(contact_cols["hi"])
-        s_i = np.concatenate(contact_cols["s_i"])
-        s_j = np.concatenate(contact_cols["s_j"])
-        ax_of = np.empty(lo.size, dtype=np.intp)
-        for a in range(ndim):
-            ax_of[(hi - lo) == strides[a]] = a
-        out_s = _append_contact_side(out_s, lo, hi, ax_of, +1, s_i,
-                                     0.5 * (s_i + s_j), owner, x_c,
-                                     spatial_shape, strides, ndim, rescale)
-        in_s = _append_contact_side(in_s, hi, lo, ax_of, -1, 1.0 - s_j,
-                                    0.5 * (s_i + s_j), owner, x_c,
-                                    spatial_shape, strides, ndim, rescale)
+    if scanner.contact_cols["lo"]:
+        out_s, in_s = _append_contact_crossings(out_s, in_s, scanner, rescale)
 
     ibm = _pair_sides_to_ibm(out_s, in_s, **meta)
 
     # --- normals + per-crossing bookkeeping ---------------------------------
-    crossing_particle = owner[ibm.row_in]
-    # A regular crossing has a fluid out cell; a contact crossing's out cell
-    # is solid (it belongs to the partner particle).
-    contact_mask = solid_flat[ibm.row_out]
-    contact_partner = np.where(contact_mask, owner[ibm.row_out], -1)
-
-    # The in-side particle's outward normal serves both crossing types: it
-    # points solid -> fluid on regular crossings, and towards the partner
-    # (the out side) on contact crossings.
-    normals = np.empty((ibm.n_crossings, ndim))
-    for i in np.unique(crossing_particle):
-        m = crossing_particle == i
-        normals[m] = particles[i].normal(ibm.coords[m])
-
-    labels = np.where(solid_flat, owner + 1, 0).reshape(spatial_shape)
-    sizes = np.bincount(labels.ravel(),
-                        minlength=len(particles) + 1)[1:].astype(np.intp)
-    seg = Segmentation(labels=labels, n_segments=len(particles),
-                       region="negative", connectivity=1, sizes=sizes)
-
-    info = ParticleIBMInfo(
-        owner=owner_grid, crossing_particle=crossing_particle,
-        contact=contact_mask, contact_partner=contact_partner,
-        normals=normals, pseudo_sdf=pseudo.reshape(spatial_shape),
-        segmentation=seg)
-    return ibm, info
+    return ibm, _particle_info(particles, ibm, cls, grid)
 
 
-def _append_contact_side(side, cells, ghosts, ax_of, direction, theta_own,
-                         theta_mid, owner, x_c, spatial_shape, strides, ndim,
-                         rescale):
-    """Append contact-crossing entries to one :class:`_IBMSide`.
+@dataclass
+class _ContactSpec:
+    """Contact faces seen from one side: own cells, ghosts and wall positions."""
 
-    ``theta_own`` anchors the Lagrange reconstruction at this side's own
-    particle surface; ``theta_mid`` (the mid-gap point measured from the
-    *lo* cell) defines the shared crossing coordinates.
-    """
+    cells: np.ndarray
+    ghosts: np.ndarray
+    ax_of: np.ndarray
+    direction: int
+    theta_own: np.ndarray
+    theta_mid: np.ndarray
+
+
+@dataclass
+class _ContactGeometry:
+    """Coordinates along the contact axis and the opposite-cell flags."""
+
+    xc: np.ndarray
+    xg: np.ndarray
+    xw: np.ndarray
+    xo: np.ndarray
+    opp_ok: np.ndarray
+
+
+def _contact_geometry(spec, owner, grid):
+    """Own, ghost, wall and opposite cell coordinates along the contact axis."""
+    cells, ax_of, direction = spec.cells, spec.ax_of, spec.direction
+    x_c, spatial_shape = grid.x_c, grid.spatial_shape
     multi = np.unravel_index(cells, spatial_shape)
     n = cells.size
-    coef_c = np.zeros(n)
-    coef_o = np.zeros(n)
-    coef_w = np.zeros(n)
-    opp = np.full(n, -1, dtype=np.intp)
-
     xc = np.empty(n)
     xg = np.empty(n)
     xw = np.empty(n)
     xo = np.empty(n)
     opp_ok = np.zeros(n, dtype=bool)
-    for a in range(ndim):
+    for a in range(grid.ndim):
         m = ax_of == a
         if not m.any():
             continue
         ia = multi[a][m]
         xc[m] = x_c[a][ia]
         xg[m] = x_c[a][ia + direction]
-        xw[m] = xc[m] + theta_own[m] * (xg[m] - xc[m])
+        xw[m] = xc[m] + spec.theta_own[m] * (xg[m] - xc[m])
         io = ia - direction
         ok = (io >= 0) & (io < spatial_shape[a])
-        cand = cells[m] - direction * strides[a]
+        cand = cells[m] - direction * grid.strides[a]
         same = np.zeros(ia.size, dtype=bool)
         same[ok] = owner[cand[ok]] == owner[cells[m][ok]]
         opp_ok[m] = same
         xo[m] = x_c[a][np.clip(io, 0, spatial_shape[a] - 1)]
+    return _ContactGeometry(xc, xg, xw, xo, opp_ok)
 
-    nrm = opp_ok
+
+def _contact_coefficients(spec, geom, strides):
+    """Lagrange coefficients (c, o, w) and opposite cells of the contact rows."""
+    cells, ax_of, direction = spec.cells, spec.ax_of, spec.direction
+    xc, xg, xw, xo = geom.xc, geom.xg, geom.xw, geom.xo
+    n = cells.size
+    coef_c = np.zeros(n)
+    coef_o = np.zeros(n)
+    coef_w = np.zeros(n)
+    opp = np.full(n, -1, dtype=np.intp)
+    nrm = geom.opp_ok
     if np.any(nrm):
         l0, l1, l2 = _lagrange3(xo[nrm], xc[nrm], xw[nrm], xg[nrm])
         coef_o[nrm] = l0
@@ -760,32 +860,57 @@ def _append_contact_side(side, cells, ghosts, ax_of, direction, theta_own,
     if np.any(fb):
         coef_c[fb] = (xg[fb] - xw[fb]) / (xc[fb] - xw[fb])
         coef_w[fb] = (xg[fb] - xc[fb]) / (xw[fb] - xc[fb])
+    return coef_c, coef_o, coef_w, opp
 
-    lower = np.minimum(cells, ghosts)
-    key = lower * ndim + ax_of
 
-    coords = np.column_stack([x_c[a][multi[a]] for a in range(ndim)])
+def _contact_coords(spec, geom, grid):
+    """Crossing coordinates: shared wall point at the mid-gap position."""
+    multi = np.unravel_index(spec.cells, grid.spatial_shape)
+    coords = np.column_stack([grid.x_c[a][multi[a]] for a in range(grid.ndim)])
     # shared wall coordinate at the mid-gap point (measured from the lo cell)
-    t_from_cell = theta_mid if direction == +1 else 1.0 - theta_mid
-    for a in range(ndim):
-        m = ax_of == a
-        coords[m, a] = xc[m] + t_from_cell[m] * (xg[m] - xc[m])
+    t_from_cell = (spec.theta_mid if spec.direction == +1
+                   else 1.0 - spec.theta_mid)
+    for a in range(grid.ndim):
+        m = spec.ax_of == a
+        coords[m, a] = geom.xc[m] + t_from_cell[m] * (geom.xg[m] - geom.xc[m])
+    return coords
+
+
+def _contact_row_scale(n_cells, row, coefs, rescale):
+    """Row scaling that caps the largest coefficient of each cell at one."""
+    row_scale = np.ones(n_cells)
+    if rescale and row.size:
+        max_coef = np.maximum.reduce([np.abs(c) for c in coefs])
+        per_cell = np.zeros(n_cells)
+        np.maximum.at(per_cell, row, max_coef)
+        cut = per_cell > 1.0
+        row_scale[cut] = 1.0 / per_cell[cut]
+    return row_scale
+
+
+def _append_contact_side(side, spec, owner, grid, rescale):
+    """Append contact-crossing entries to one :class:`_IBMSide`.
+
+    ``spec.theta_own`` anchors the Lagrange reconstruction at this side's own
+    particle surface; ``spec.theta_mid`` (the mid-gap point measured from the
+    *lo* cell) defines the shared crossing coordinates.
+    """
+    cells, ghosts, ax_of, direction = (spec.cells, spec.ghosts, spec.ax_of,
+                                       spec.direction)
+    n = cells.size
+    geom = _contact_geometry(spec, owner, grid)
+    coef_c, coef_o, coef_w, opp = _contact_coefficients(spec, geom, grid.strides)
+    key = np.minimum(cells, ghosts) * grid.ndim + ax_of
+    coords = _contact_coords(spec, geom, grid)
 
     row = np.concatenate([side.row, cells.astype(np.intp)])
     coef_c_all = np.concatenate([side.coef_c, coef_c])
     coef_o_all = np.concatenate([side.coef_o, coef_o])
     coef_w_all = np.concatenate([side.coef_w_self, coef_w])
     coef_ws_all = np.concatenate([side.coef_w_sib, np.zeros(n)])
-
-    row_scale = np.ones(side.n_cells)
-    if rescale and row.size:
-        max_coef = np.maximum.reduce(
-            [np.abs(coef_c_all), np.abs(coef_o_all),
-             np.abs(coef_w_all), np.abs(coef_ws_all)])
-        per_cell = np.zeros(side.n_cells)
-        np.maximum.at(per_cell, row, max_coef)
-        cut = per_cell > 1.0
-        row_scale[cut] = 1.0 / per_cell[cut]
+    row_scale = _contact_row_scale(
+        side.n_cells, row, (coef_c_all, coef_o_all, coef_w_all, coef_ws_all),
+        rescale)
 
     return _IBMSide(
         row=row,
