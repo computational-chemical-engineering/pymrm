@@ -542,13 +542,11 @@ def _axis_entries(theta_fn, grid, regions, a):
     other_p, valid_p = _neighbor(regions.other, a, +1)
     other_m, valid_m = _neighbor(regions.other, a, -1)
     region = regions.region
-    for direction in (+1, -1):
-        if direction == +1:
-            fwd, bwd = (valid_p, other_p), (valid_m, other_m)
-        else:
-            fwd, bwd = (valid_m, other_m), (valid_p, other_p)
-        masks = _CutMasks(region & fwd[0] & fwd[1], region & bwd[0] & bwd[1],
-                          bwd[0])
+    # The cut cells towards +a are the sandwich candidates towards -a and back.
+    cut_p = region & valid_p & other_p
+    cut_m = region & valid_m & other_m
+    for direction, masks in ((+1, _CutMasks(cut_p, cut_m, valid_m)),
+                             (-1, _CutMasks(cut_m, cut_p, valid_p))):
         entries = _cut_cell_entries(theta_fn, grid, a, direction, masks)
         if entries is not None:
             yield entries
