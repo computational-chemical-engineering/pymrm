@@ -693,6 +693,26 @@ def _interface_coefficients(ic, shape, shape_i, axis):
     return a, b, d
 
 
+def _interface_alphas(x_cs, x_fs):
+    """One-sided gradient weights of the two subdomains at the interface."""
+    alpha_1 = [None, None]
+    alpha_1[0] = -(x_cs[0][-2] - x_fs[0][-1]) / (
+        (x_cs[0][-1] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
+    )
+    alpha_1[1] = (x_cs[1][1] - x_fs[1][0]) / (
+        (x_cs[1][0] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
+    )
+    alpha_2 = [None, None]
+    alpha_2[0] = -(x_cs[0][-1] - x_fs[0][-1]) / (
+        (x_cs[0][-2] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
+    )
+    alpha_2[1] = (x_cs[1][0] - x_fs[1][0]) / (
+        (x_cs[1][1] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
+    )
+    alpha_0 = [alpha_1[0] - alpha_2[0], alpha_1[1] - alpha_2[1]]
+    return alpha_0, alpha_1, alpha_2
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -751,21 +771,7 @@ def construct_interface_matrices(
 
     a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
 
-    alpha_1 = [None, None]
-    alpha_1[0] = -(x_cs[0][-2] - x_fs[0][-1]) / (
-        (x_cs[0][-1] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
-    )
-    alpha_1[1] = (x_cs[1][1] - x_fs[1][0]) / (
-        (x_cs[1][0] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
-    )
-    alpha_2 = [None, None]
-    alpha_2[0] = -(x_cs[0][-1] - x_fs[0][-1]) / (
-        (x_cs[0][-2] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
-    )
-    alpha_2[1] = (x_cs[1][0] - x_fs[1][0]) / (
-        (x_cs[1][1] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
-    )
-    alpha_0 = [alpha_1[0] - alpha_2[0], alpha_1[1] - alpha_2[1]]
+    alpha_0, alpha_1, alpha_2 = _interface_alphas(x_cs, x_fs)
 
     # reminder of notation
     # dc/dn[0] = alpha_0[0] c_i - alpha_1[0] c[-1] + alpha_2[0] c[-2]
