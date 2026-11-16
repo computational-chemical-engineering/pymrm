@@ -242,6 +242,86 @@ def _convflux_geometry(shape, axis):
     return shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2
 
 
+def _convflux_bc_single_cell(shape, x_f, x_c, bc, v, axis, outflow):
+    """Boundary-face values and sources for a single cell along ``axis``."""
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
+    n0, n1, n2 = shape_t
+    a, b, d = [
+        [
+            (
+                unwrap_bc_coeff(shape, bc_element[key], axis=axis)
+                if bc_element
+                else np.zeros((1,) * len(shape))
+            )
+            for bc_element in bc
+        ]
+        for key in ["a", "b", "d"]
+    ]
+    if x_c is None:
+        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    # Both faces reference cell 0
+    i_c = np.ravel_multi_index(
+        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), shape_t
+    )
+    i_f = np.ravel_multi_index(
+        (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
+    )
+    values = np.empty(shape_f_t)
+    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_0_left = alpha_1 - alpha_2_left
+    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
+    alpha_0_right = alpha_1 - alpha_2_right
+    fctr = (b[0] + alpha_0_left * a[0]) * (
+        b[1] + alpha_0_right * a[1]
+    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    values = np.empty((shape_t[0], 2, shape_t[2]))
+    values[:, 0, :] = np.broadcast_to(
+        alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
+        shape,
+    ).reshape(shape_bc_d)
+    values[:, 1, :] = np.broadcast_to(
+        alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr,
+        shape,
+    ).reshape(shape_bc_d)
+
+    i_f_bc = np.ravel_multi_index(
+        (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
+    )
+
+    def on_bc(value):
+        return np.broadcast_to(value, shape_bc).reshape(shape_bc_d)
+
+    # values_bc_src[:, face, source]: with one cell, each face value depends
+    # on the data of both boundaries
+    values_bc_src = np.zeros((n0, 2, 2, n2))
+    values_bc_src[:, 0, 0, :] = on_bc((a[1] * alpha_0_right + b[1]) * d[0] * fctr)
+    values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * a[0] * d[1] * fctr)
+    values_bc_src[:, 1, 1, :] = on_bc((a[0] * alpha_0_left + b[0]) * d[1] * fctr)
+    values_bc_src[:, 1, 0, :] = on_bc(-alpha_2_right * a[1] * d[0] * fctr)
+    for side in (0, 1):
+        if outflow[side]:
+            values[:, side, :], values_bc_src[:, side, :, :] = 1.0, 0.0
+    values_bc = values_bc_src.sum(axis=2)
+
+    if isinstance(v, (float, int)):
+        values *= v
+        values_bc *= v
+        values_bc_src *= v
+    else:
+        slicer = [slice(None)] * len(shape)
+        slicer[axis] = [0, -1]
+        shape_f_b = list(shape_f)
+        shape_f_b[axis] = 2
+        values = values.reshape(shape_f_b)
+        values *= v[tuple(slicer)]
+        values_bc = values_bc.reshape(shape_f_b)
+        values_bc *= v[tuple(slicer)]
+        values_bc_src *= v[tuple(slicer)].reshape((n0, 2, 1, n2))
+    return values, values_bc, values_bc_src, i_c, i_f, i_f_bc
+
+
 def construct_convflux_bc(
     shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
     format="csc"
@@ -288,84 +368,8 @@ def construct_convflux_bc(
 
     # Handle special case with one cell in the dimension axis
     if n1 == 1:
-        a, b, d = [
-            [
-                (
-                    unwrap_bc_coeff(shape, bc_element[key], axis=axis)
-                    if bc_element
-                    else np.zeros((1,) * len(shape))
-                )
-                for bc_element in bc
-            ]
-            for key in ["a", "b", "d"]
-        ]
-        if x_c is None:
-            x_c = 0.5 * (x_f[0:-1] + x_f[1:])
-        # Both faces reference cell 0
-        i_c = np.ravel_multi_index(
-            (i0, np.array([0, 0]).reshape(1, -1, 1), i2), shape_t
-        )
-        i_f = np.ravel_multi_index(
-            (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
-        )
-        values = np.empty(shape_f_t)
-        alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_0_left = alpha_1 - alpha_2_left
-        alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-        alpha_0_right = alpha_1 - alpha_2_right
-        fctr = (b[0] + alpha_0_left * a[0]) * (
-            b[1] + alpha_0_right * a[1]
-        ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        values = np.empty((shape_t[0], 2, shape_t[2]))
-        values[:, 0, :] = np.broadcast_to(
-            alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
-            shape,
-        ).reshape(shape_bc_d)
-        values[:, 1, :] = np.broadcast_to(
-            alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr,
-            shape,
-        ).reshape(shape_bc_d)
-
-        i_f_bc = np.ravel_multi_index(
-            (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
-        )
-
-        def on_bc(value):
-            return np.broadcast_to(value, shape_bc).reshape(shape_bc_d)
-
-        # values_bc_src[:, face, source]: with one cell, each face value depends
-        # on the data of both boundaries
-        values_bc_src = np.zeros((n0, 2, 2, n2))
-        values_bc_src[:, 0, 0, :] = on_bc((a[1] * alpha_0_right + b[1]) * d[0] * fctr)
-        values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * a[0] * d[1] * fctr)
-        values_bc_src[:, 1, 1, :] = on_bc((a[0] * alpha_0_left + b[0]) * d[1] * fctr)
-        values_bc_src[:, 1, 0, :] = on_bc(-alpha_2_right * a[1] * d[0] * fctr)
-        for side in (0, 1):
-            if outflow[side]:
-                values[:, side, :], values_bc_src[:, side, :, :] = 1.0, 0.0
-        values_bc = values_bc_src.sum(axis=2)
-
-        if isinstance(v, (float, int)):
-            values *= v
-            values_bc *= v
-            values_bc_src *= v
-        else:
-            slicer = [slice(None)] * len(shape)
-            slicer[axis] = [0, -1]
-            shape_f_b = list(shape_f)
-            shape_f_b[axis] = 2
-            values = values.reshape(shape_f_b)
-            values *= v[tuple(slicer)]
-            values_bc = values_bc.reshape(shape_f_b)
-            values_bc *= v[tuple(slicer)]
-            values_bc_src *= v[tuple(slicer)].reshape((n0, 2, 1, n2))
-        conv_matrix = _sparse_array(
-            (values.ravel(), (i_f.ravel(), i_c.ravel())),
-            shape=(math.prod(shape_f_t), math.prod(shape_t)),
-            format=format,
-        )
+        values, values_bc, values_bc_src, i_c, i_f, i_f_bc = _convflux_bc_single_cell(
+            shape, x_f, x_c, bc, v, axis, outflow)
     else:
         # Cell indices: 2 near left + 2 near right boundary
         cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
