@@ -187,6 +187,53 @@ def update_array_indices(sparse_mat, shape, new_shape, offset=None):
     return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
 
 
+def _validated_shapes(domains):
+    """Shapes of the domains as tuples of ints; raise ValueError for an invalid shape."""
+    shapes = {}
+    for name, shape in domains.items():
+        shape = tuple(shape)
+        if len(shape) == 0 or not all(
+            isinstance(dim, numbers.Integral) and dim > 0 for dim in shape
+        ):
+            raise ValueError(
+                f"domain {name!r}: shape {shape} must be a non-empty tuple of positive ints"
+            )
+        shapes[name] = tuple(int(dim) for dim in shape)
+    return shapes
+
+
+def _check_shared_axes(shapes, first, axis):
+    """Raise ValueError unless all domains match ``first`` on every axis but ``axis``."""
+    for name, shape in shapes.items():
+        if any(s != f for i, (s, f) in enumerate(zip(shape, first)) if i != axis):
+            raise ValueError(
+                f"domain {name!r} has shape {shape}; with axis={axis} all domains must "
+                f"match {first} on every other axis (the np.concatenate rule). For "
+                "different trailing sizes use axis=None (region-major), or stack fields "
+                "along axis=-1"
+            )
+
+
+def _box_extent(index, parent, parent_shape):
+    """Start and shape of the unit-step box ``index`` in a domain of shape ``parent_shape``."""
+    starts, shape = [], []
+    for ix, dim in zip(index, parent_shape):
+        if isinstance(ix, numbers.Integral):
+            ix = int(ix) + (dim if ix < 0 else 0)
+            if not 0 <= ix < dim:
+                raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
+            ix = slice(ix, ix + 1)
+        if not isinstance(ix, slice):
+            raise ValueError("a subdomain index holds integers and slices only")
+        start, stop, step = ix.indices(dim)
+        if step != 1 or stop <= start:
+            raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
+        starts.append(start)
+        shape.append(stop - start)
+    shape = tuple(shape)
+    return starts, shape
+
+
 class BlockLayout:
     """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
 
@@ -275,16 +322,7 @@ class BlockLayout:
     def __init__(self, domains, *, axis):
         if not isinstance(domains, dict) or len(domains) == 0:
             raise ValueError("domains must be a non-empty dict of name -> shape")
-        shapes = {}
-        for name, shape in domains.items():
-            shape = tuple(shape)
-            if len(shape) == 0 or not all(
-                isinstance(dim, numbers.Integral) and dim > 0 for dim in shape
-            ):
-                raise ValueError(
-                    f"domain {name!r}: shape {shape} must be a non-empty tuple of positive ints"
-                )
-            shapes[name] = tuple(int(dim) for dim in shape)
+        shapes = _validated_shapes(domains)
         self.shapes = shapes
         self._domains = list(shapes)          # storage domains; subdomains are only added to shapes
         self._sizes = {name: math.prod(shape) for name, shape in shapes.items()}
@@ -303,6 +341,10 @@ class BlockLayout:
                 start += n
             return
 
+        self._set_axis_layout(shapes, axis)
+
+    def _set_axis_layout(self, shapes, axis):
+        """Place the domains one after another along ``axis`` (all other axes shared)."""
         ndims = {len(shape) for shape in shapes.values()}
         if len(ndims) != 1:
             raise ValueError(
@@ -314,14 +356,7 @@ class BlockLayout:
             raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
         axis = int(axis) % ndim
         first = next(iter(shapes.values()))
-        for name, shape in shapes.items():
-            if any(s != f for i, (s, f) in enumerate(zip(shape, first)) if i != axis):
-                raise ValueError(
-                    f"domain {name!r} has shape {shape}; with axis={axis} all domains must "
-                    f"match {first} on every other axis (the np.concatenate rule). For "
-                    "different trailing sizes use axis=None (region-major), or stack fields "
-                    "along axis=-1"
-                )
+        _check_shared_axes(shapes, first, axis)
         self.axis = axis
         self._local = dict(shapes)
         self._offset, self._box = {}, {}
@@ -393,21 +428,7 @@ class BlockLayout:
         if len(index) > len(parent_shape):
             raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
         index = index + (slice(None),) * (len(parent_shape) - len(index))
-        starts, shape = [], []
-        for ix, dim in zip(index, parent_shape):
-            if isinstance(ix, numbers.Integral):
-                ix = int(ix) + (dim if ix < 0 else 0)
-                if not 0 <= ix < dim:
-                    raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
-                ix = slice(ix, ix + 1)
-            if not isinstance(ix, slice):
-                raise ValueError("a subdomain index holds integers and slices only")
-            start, stop, step = ix.indices(dim)
-            if step != 1 or stop <= start:
-                raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
-            starts.append(start)
-            shape.append(stop - start)
-        shape = tuple(shape)
+        starts, shape = _box_extent(index, parent, parent_shape)
         if self.axis is None:
             box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
             flat = self.index(parent)[box].ravel()
@@ -665,6 +686,128 @@ class BlockLayout:
         return jac
 
 
+def _interface_coefficients(ic, shape, shape_i, axis):
+    """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
+    a, b = [
+        [
+            tuple(
+                (
+                    unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis)
+                    if ic_elem and key in ic_elem
+                    else np.zeros((1,) * len(shape_i))
+                )
+                for j in range(2)
+            )
+            for ic_elem in ic
+        ]
+        for key in ["a", "b"]
+    ]
+
+    d = [
+        (
+            unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
+            if ic_elem and "d" in ic_elem
+            else np.zeros((1,) * len(shape_i))
+        )
+        for ic_elem in ic
+    ]
+    return a, b, d
+
+
+def _interface_alphas(x_cs, x_fs):
+    """One-sided gradient weights of the two subdomains at the interface."""
+    alpha_1 = [None, None]
+    alpha_1[0] = -(x_cs[0][-2] - x_fs[0][-1]) / (
+        (x_cs[0][-1] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
+    )
+    alpha_1[1] = (x_cs[1][1] - x_fs[1][0]) / (
+        (x_cs[1][0] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
+    )
+    alpha_2 = [None, None]
+    alpha_2[0] = -(x_cs[0][-1] - x_fs[0][-1]) / (
+        (x_cs[0][-2] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
+    )
+    alpha_2[1] = (x_cs[1][0] - x_fs[1][0]) / (
+        (x_cs[1][1] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
+    )
+    alpha_0 = [alpha_1[0] - alpha_2[0], alpha_1[1] - alpha_2[1]]
+    return alpha_0, alpha_1, alpha_2
+
+
+def _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis):
+    """Inverse of the interface system and the stencil weights of the two interface values."""
+    m = [[None for _ in range(2)] for _ in range(2)]
+    v = [[None for _ in range(4)] for _ in range(2)]
+    m_inv = [[None for _ in range(2)] for _ in range(2)]
+    values = [[None for _ in range(4)] for _ in range(2)]
+    for i in range(2):  # loop over the two conditions
+        m[i][0] = a[i][0] * alpha_0[0] + b[i][0]
+        m[i][1] = a[i][1] * alpha_0[1] + b[i][1]
+        v[i][0] = -a[i][0] * alpha_2[0]
+        v[i][1] = a[i][0] * alpha_1[0]
+        v[i][2] = a[i][1] * alpha_1[1]
+        v[i][3] = -a[i][1] * alpha_2[1]
+    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+    det_inv = np.where(det != 0.0, 1.0 / det, 0.0)
+    m_inv[0][0] = m[1][1] * det_inv
+    m_inv[0][1] = -m[0][1] * det_inv
+    m_inv[1][0] = -m[1][0] * det_inv
+    m_inv[1][1] = m[0][0] * det_inv
+    for j in range(2):
+        for i in range(4):
+            values[j][i] = m_inv[j][0] * v[0][i] + m_inv[j][1] * v[1][i]
+            values[j][i] = np.broadcast_to(values[j][i], shape_i)
+        values[j] = np.concatenate(values[j], axis=axis)
+    return m_inv, values
+
+
+def _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t):
+    """Interface source matrices per interface condition and per boundary vector."""
+    interface_bc = [[None for _ in range(2)] for _ in range(2)]
+    for j in range(2):
+        for i in range(2):
+            values_bc = m_inv[j][i] * d[i]
+            values_bc = np.broadcast_to(values_bc, shape_i)
+            fltr = values_bc.ravel() != 0
+            values_filtered = values_bc.ravel()[fltr]
+            row_indices_filtered = row_indices_bc.ravel()[fltr]
+            if shapes_d[j] is None:
+                interface_bc[j][i] = csc_array(
+                    (
+                        values_filtered,
+                        row_indices_filtered,
+                        np.array([0, row_indices_filtered.size]),
+                    ),
+                    shape=(shape_t[0] * shape_t[2], 1),
+                )
+            else:
+                num_cols = math.prod(shapes_d[j])
+                col_indices_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[j])
+                col_indices_bc = np.broadcast_to(col_indices_bc, shape_i)
+                col_indices_filtered = col_indices_bc.ravel()[fltr]
+                interface_bc[j][i] = csc_array(
+                    (values_filtered, (row_indices_filtered, col_indices_filtered)),
+                    shape=(shape_t[0] * shape_t[2], num_cols),
+                )
+    return interface_bc
+
+
+def _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format):
+    """Sparse matrices mapping the cells around the interface to the two interface values."""
+    interface_matrix = [None] * 2
+    for j in range(2):
+        fltr = values[j].ravel() != 0
+        values_filtered = values[j].ravel()[fltr]
+        row_indices_filtered = row_indices.ravel()[fltr]
+        col_indices_filtered = col_indices.ravel()[fltr]
+        interface_matrix[j] = _sparse_array(
+            (values_filtered, (row_indices_filtered, col_indices_filtered)),
+            shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
+            format=format,
+        )
+    return interface_matrix
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -721,73 +864,16 @@ def construct_interface_matrices(
             x_cs = list(x_cs)
             x_cs[i] = 0.5 * (x_fs[i][1:] + x_fs[i][:-1])
 
-    a, b = [
-        [
-            tuple(
-                (
-                    unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis)
-                    if ic_elem and key in ic_elem
-                    else np.zeros((1,) * len(shape_i))
-                )
-                for j in range(2)
-            )
-            for ic_elem in ic
-        ]
-        for key in ["a", "b"]
-    ]
+    a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
 
-    d = [
-        (
-            unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
-            if ic_elem and "d" in ic_elem
-            else np.zeros((1,) * len(shape_i))
-        )
-        for ic_elem in ic
-    ]
-
-    alpha_1 = [None, None]
-    alpha_1[0] = -(x_cs[0][-2] - x_fs[0][-1]) / (
-        (x_cs[0][-1] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
-    )
-    alpha_1[1] = (x_cs[1][1] - x_fs[1][0]) / (
-        (x_cs[1][0] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
-    )
-    alpha_2 = [None, None]
-    alpha_2[0] = -(x_cs[0][-1] - x_fs[0][-1]) / (
-        (x_cs[0][-2] - x_fs[0][-1]) * (x_cs[0][-2] - x_cs[0][-1])
-    )
-    alpha_2[1] = (x_cs[1][0] - x_fs[1][0]) / (
-        (x_cs[1][1] - x_fs[1][0]) * (x_cs[1][1] - x_cs[1][0])
-    )
-    alpha_0 = [alpha_1[0] - alpha_2[0], alpha_1[1] - alpha_2[1]]
+    alpha_0, alpha_1, alpha_2 = _interface_alphas(x_cs, x_fs)
 
     # reminder of notation
     # dc/dn[0] = alpha_0[0] c_i - alpha_1[0] c[-1] + alpha_2[0] c[-2]
     # dc/dn[1] = -alpha_0[1] c_i + alpha_1[1] c[0] - alpha_2[1] c[1]
     # interface conditions of the form:
 
-    m = [[None for _ in range(2)] for _ in range(2)]
-    v = [[None for _ in range(4)] for _ in range(2)]
-    m_inv = [[None for _ in range(2)] for _ in range(2)]
-    values = [[None for _ in range(4)] for _ in range(2)]
-    for i in range(2):  # loop over the two conditions
-        m[i][0] = a[i][0] * alpha_0[0] + b[i][0]
-        m[i][1] = a[i][1] * alpha_0[1] + b[i][1]
-        v[i][0] = -a[i][0] * alpha_2[0]
-        v[i][1] = a[i][0] * alpha_1[0]
-        v[i][2] = a[i][1] * alpha_1[1]
-        v[i][3] = -a[i][1] * alpha_2[1]
-    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
-    det_inv = np.where(det != 0.0, 1.0 / det, 0.0)
-    m_inv[0][0] = m[1][1] * det_inv
-    m_inv[0][1] = -m[0][1] * det_inv
-    m_inv[1][0] = -m[1][0] * det_inv
-    m_inv[1][1] = m[0][0] * det_inv
-    for j in range(2):
-        for i in range(4):
-            values[j][i] = m_inv[j][0] * v[0][i] + m_inv[j][1] * v[1][i]
-            values[j][i] = np.broadcast_to(values[j][i], shape_i)
-        values[j] = np.concatenate(values[j], axis=axis)
+    m_inv, values = _interface_stencil_values(a, b, alpha_0, alpha_1, alpha_2, shape_i, axis)
 
     shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
     n0, n1, n2 = shape_t
@@ -802,17 +888,7 @@ def construct_interface_matrices(
     col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
 
     # Create the sparse matrix representing the interface
-    interface_matrix = [None] * 2
-    for j in range(2):
-        fltr = values[j].ravel() != 0
-        values_filtered = values[j].ravel()[fltr]
-        row_indices_filtered = row_indices.ravel()[fltr]
-        col_indices_filtered = col_indices.ravel()[fltr]
-        interface_matrix[j] = _sparse_array(
-            (values_filtered, (row_indices_filtered, col_indices_filtered)),
-            shape=(shape_t[0] * shape_t[2], math.prod(shape_t)),
-            format=format,
-        )
+    interface_matrix = _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format)
 
     row_indices_bc = np.ravel_multi_index(
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
@@ -836,32 +912,7 @@ def construct_interface_matrices(
             interface_bc[1],
         )
     else:
-        interface_bc = [[None for _ in range(2)] for _ in range(2)]
-        for j in range(2):
-            for i in range(2):
-                values_bc = m_inv[j][i] * d[i]
-                values_bc = np.broadcast_to(values_bc, shape_i)
-                fltr = values_bc.ravel() != 0
-                values_filtered = values_bc.ravel()[fltr]
-                row_indices_filtered = row_indices_bc.ravel()[fltr]
-                if shapes_d[j] is None:
-                    interface_bc[j][i] = csc_array(
-                        (
-                            values_filtered,
-                            row_indices_filtered,
-                            np.array([0, row_indices_filtered.size]),
-                        ),
-                        shape=(shape_t[0] * shape_t[2], 1),
-                    )
-                else:
-                    num_cols = math.prod(shapes_d[j])
-                    col_indices_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[j])
-                    col_indices_bc = np.broadcast_to(col_indices_bc, shape_i)
-                    col_indices_filtered = col_indices_bc.ravel()[fltr]
-                    interface_bc[j][i] = csc_array(
-                        (values_filtered, (row_indices_filtered, col_indices_filtered)),
-                        shape=(shape_t[0] * shape_t[2], num_cols),
-                    )
+        interface_bc = _interface_bc_by_source(m_inv, d, shape_i, shapes_d, row_indices_bc, shape_t)
         return (
             interface_matrix[0],
             interface_bc[0][0],

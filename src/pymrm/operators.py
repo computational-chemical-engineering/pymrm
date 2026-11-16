@@ -3,8 +3,9 @@
 import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
-from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
+from pymrm.helpers import _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair
 from pymrm.grid import generate_grid
+from pymrm.convect import _convflux_bc_by_boundary, _convflux_geometry
 
 
 def construct_grad(
@@ -159,6 +160,131 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     return grad_matrix
 
 
+def _grad_bc_single_cell(shape, x_f, x_c, bc, axis):
+    """Boundary-face gradient values and sources for a single cell along ``axis``."""
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
+    n0, n1, n2 = shape_t
+    if x_c is None:
+        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    # Both faces reference cell 0
+    i_c = np.ravel_multi_index(
+        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, n1, n2)
+    )
+    i_f = np.ravel_multi_index(
+        (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
+    )
+    values = np.empty(shape_f_t)
+    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_0_left = alpha_1 - alpha_2_left
+    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
+    alpha_0_right = alpha_1 - alpha_2_right
+    a, b, d = _unwrap_bc_pair(shape, bc, axis)
+    fctr = (b[0] + alpha_0_left * a[0]) * (
+        b[1] + alpha_0_right * a[1]
+    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    value = np.broadcast_to(
+        alpha_1 * b[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
+        shape,
+    )
+    values[:, 0, :] = np.reshape(value, shape_bc_d)
+    value = np.broadcast_to(
+        alpha_1 * b[1] * (a[0] * (-alpha_0_left + alpha_2_right) - b[0]) * fctr,
+        shape,
+    )
+    values[:, 1, :] = np.reshape(value, shape_bc_d)
+
+    i_f_bc = np.ravel_multi_index(
+        (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
+    )
+
+    def on_bc(value):
+        return np.reshape(np.broadcast_to(value, shape_bc), shape_bc_d)
+
+    # values_bc_src[:, face, source]: with one cell, each face value depends
+    # on the data of both boundaries
+    values_bc_src = np.zeros((n0, 2, 2, n2))
+    values_bc_src[:, 0, 0, :] = on_bc(
+        (
+            a[1] * (-alpha_0_left * alpha_0_right + alpha_2_left * alpha_2_right)
+            - alpha_0_left * b[1]
+        )
+        * d[0]
+        * fctr
+    )
+    values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * b[0] * d[1] * fctr)
+    values_bc_src[:, 1, 1, :] = on_bc(
+        (
+            a[0] * (+alpha_0_left * alpha_0_right - alpha_2_left * alpha_2_right)
+            + alpha_0_right * b[0]
+        )
+        * d[1]
+        * fctr
+    )
+    values_bc_src[:, 1, 0, :] = on_bc(alpha_2_right * b[1] * d[0] * fctr)
+    values_bc = values_bc_src.sum(axis=2)
+    return values, values_bc, values_bc_src, i_c, i_f, i_f_bc
+
+
+def _grad_bc_two_cell(shape, x_f, x_c, bc, axis):
+    """Boundary-face gradient values and sources for two or more cells along ``axis``."""
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
+    n0, n1, n2 = shape_t
+    # Cell indices: 2 near left boundary + 2 near right boundary
+    cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
+    i_c = np.ravel_multi_index((i0, cell_axis_idx, i2), shape_t)
+    # Face indices: left face (0) twice, right face (n1) twice
+    nf = shape_f_t[1]
+    face_axis_idx = np.array([0, 0, nf - 1, nf - 1]).reshape(1, -1, 1)
+    i_f = np.ravel_multi_index((i0, face_axis_idx, i2), shape_f_t)
+    i_f_bc = np.ravel_multi_index(
+        (i0, np.array([0, nf - 1]).reshape(1, -1, 1), i2), shape_f_t
+    )
+    values_bc = np.empty((n0, 2, n2))
+    values = np.empty((n0, 4, n2))
+    if x_c is None:
+        x_c = 0.5 * np.array(
+            [x_f[0] + x_f[1], x_f[1] + x_f[2], x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]]
+        )
+
+    # Get a, b, and d for left bc from dictionary
+    alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
+    alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
+    alpha_0 = alpha_1 - alpha_2
+    a, b, d = _unwrap_bc_side(shape, bc[0], axis)
+    b = b / alpha_0
+    fctr = a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    b_fctr = b * fctr
+    b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
+    d_fctr = d * fctr
+    d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
+    values[:, 0, :] = b_fctr * alpha_1
+    values[:, 1, :] = -b_fctr * alpha_2
+    values_bc[:, 0, :] = -d_fctr
+
+    # Get a, b, and d for right bc from dictionary
+    a, b, d = _unwrap_bc_side(shape, bc[1], axis)
+    alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
+    alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
+    alpha_0 = alpha_1 - alpha_2
+    b = b / alpha_0
+    fctr = a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    b_fctr = b * fctr
+    b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
+    d_fctr = d * fctr
+    d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
+    values[:, -2, :] = b_fctr * alpha_2
+    values[:, -1, :] = -b_fctr * alpha_1
+    values_bc[:, -1, :] = d_fctr
+    values_bc_src = np.zeros((n0, 2, 2, n2))
+    values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
+    values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
+    return values, values_bc, values_bc_src, i_c, i_f, i_f_bc
+
+
 def construct_grad_bc(
     shape, x_f, x_c=None, bc=(None, None), axis=0, shapes_d=(None, None), format="csc"
 ):
@@ -192,157 +318,20 @@ def construct_grad_bc(
         otherwise.
     """
     bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
-    shape_bc_d = (shape_t[0], shape_t[2])
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
 
     # Handle special case with one cell in the dimension axis.
     # This is convenient e.g. for flexibility where you can choose not to
     # spatially discretize a direction, but still use a BC, e.g. with a mass transfer coefficient
     # It is a bit subtle because in this case the two opposite faces influence each other
     n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
 
     if n1 == 1:
-        if x_c is None:
-            x_c = 0.5 * (x_f[0:-1] + x_f[1:])
-        # Both faces reference cell 0
-        i_c = np.ravel_multi_index(
-            (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, n1, n2)
-        )
-        i_f = np.ravel_multi_index(
-            (i0, np.array([0, 1]).reshape(1, -1, 1), i2), shape_f_t
-        )
-        values = np.empty(shape_f_t)
-        alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-        alpha_0_left = alpha_1 - alpha_2_left
-        alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-        alpha_0_right = alpha_1 - alpha_2_right
-        a, b, d = [
-            [
-                (
-                    unwrap_bc_coeff(shape, bc_element[key], axis=axis)
-                    if bc_element
-                    else np.zeros((1,) * len(shape))
-                )
-                for bc_element in bc
-            ]
-            for key in ["a", "b", "d"]
-        ]
-        fctr = (b[0] + alpha_0_left * a[0]) * (
-            b[1] + alpha_0_right * a[1]
-        ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        value = np.broadcast_to(
-            alpha_1 * b[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
-            shape,
-        )
-        values[:, 0, :] = np.reshape(value, shape_bc_d)
-        value = np.broadcast_to(
-            alpha_1 * b[1] * (a[0] * (-alpha_0_left + alpha_2_right) - b[0]) * fctr,
-            shape,
-        )
-        values[:, 1, :] = np.reshape(value, shape_bc_d)
-
-        i_f_bc = np.ravel_multi_index(
-            (i0, np.array([0, shape_f_t[1] - 1]).reshape(1, -1, 1), i2), shape_f_t
-        )
-
-        def on_bc(value):
-            return np.reshape(np.broadcast_to(value, shape_bc), shape_bc_d)
-
-        # values_bc_src[:, face, source]: with one cell, each face value depends
-        # on the data of both boundaries
-        values_bc_src = np.zeros((n0, 2, 2, n2))
-        values_bc_src[:, 0, 0, :] = on_bc(
-            (
-                a[1] * (-alpha_0_left * alpha_0_right + alpha_2_left * alpha_2_right)
-                - alpha_0_left * b[1]
-            )
-            * d[0]
-            * fctr
-        )
-        values_bc_src[:, 0, 1, :] = on_bc(-alpha_2_left * b[0] * d[1] * fctr)
-        values_bc_src[:, 1, 1, :] = on_bc(
-            (
-                a[0] * (+alpha_0_left * alpha_0_right - alpha_2_left * alpha_2_right)
-                + alpha_0_right * b[0]
-            )
-            * d[1]
-            * fctr
-        )
-        values_bc_src[:, 1, 0, :] = on_bc(alpha_2_right * b[1] * d[0] * fctr)
-        values_bc = values_bc_src.sum(axis=2)
+        values, values_bc, values_bc_src, i_c, i_f, i_f_bc = _grad_bc_single_cell(
+            shape, x_f, x_c, bc, axis)
     else:
-        # Cell indices: 2 near left boundary + 2 near right boundary
-        cell_axis_idx = np.array([0, 1, n1 - 2, n1 - 1]).reshape(1, -1, 1)
-        i_c = np.ravel_multi_index((i0, cell_axis_idx, i2), shape_t)
-        # Face indices: left face (0) twice, right face (n1) twice
-        nf = shape_f_t[1]
-        face_axis_idx = np.array([0, 0, nf - 1, nf - 1]).reshape(1, -1, 1)
-        i_f = np.ravel_multi_index((i0, face_axis_idx, i2), shape_f_t)
-        i_f_bc = np.ravel_multi_index(
-            (i0, np.array([0, nf - 1]).reshape(1, -1, 1), i2), shape_f_t
-        )
-        values_bc = np.empty((n0, 2, n2))
-        values = np.empty((n0, 4, n2))
-        if x_c is None:
-            x_c = 0.5 * np.array(
-                [x_f[0] + x_f[1], x_f[1] + x_f[2], x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]]
-            )
-
-        # Get a, b, and d for left bc from dictionary
-        alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
-        alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
-        alpha_0 = alpha_1 - alpha_2
-        a, b, d = [
-            (
-                unwrap_bc_coeff(shape, bc[0][key], axis=axis)
-                if bc[0]
-                else np.zeros((1,) * len(shape))
-            )
-            for key in ["a", "b", "d"]
-        ]
-        b = b / alpha_0
-        fctr = a + b
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        b_fctr = b * fctr
-        b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
-        d_fctr = d * fctr
-        d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
-        values[:, 0, :] = b_fctr * alpha_1
-        values[:, 1, :] = -b_fctr * alpha_2
-        values_bc[:, 0, :] = -d_fctr
-
-        # Get a, b, and d for right bc from dictionary
-        a, b, d = [
-            (
-                unwrap_bc_coeff(shape, bc[1][key], axis=axis)
-                if bc[1]
-                else np.zeros((1,) * len(shape))
-            )
-            for key in ["a", "b", "d"]
-        ]
-        alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-        alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-        alpha_0 = alpha_1 - alpha_2
-        b = b / alpha_0
-        fctr = a + b
-        np.divide(1, fctr, out=fctr, where=(fctr != 0))
-        b_fctr = b * fctr
-        b_fctr = np.broadcast_to(b_fctr, shape_bc).reshape(shape_bc_d)
-        d_fctr = d * fctr
-        d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
-        values[:, -2, :] = b_fctr * alpha_2
-        values[:, -1, :] = -b_fctr * alpha_1
-        values_bc[:, -1, :] = d_fctr
-        values_bc_src = np.zeros((n0, 2, 2, n2))
-        values_bc_src[:, 0, 0, :] = values_bc[:, 0, :]
-        values_bc_src[:, 1, 1, :] = values_bc[:, 1, :]
+        values, values_bc, values_bc_src, i_c, i_f, i_f_bc = _grad_bc_two_cell(
+            shape, x_f, x_c, bc, axis)
     if (shapes_d[0] is None) and (shapes_d[1] is None):
         grad_bc = csc_array(
             (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
@@ -355,59 +344,9 @@ def construct_grad_bc(
         )
         return grad_matrix, grad_bc
     else:
-        grad_bc = [None] * 2
-        for i in range(2):
-            if shapes_d[i] is None:
-                shape_d = (1,) * len(shape_bc)
-                num_cols = 1
-            else:
-                shape_d = shapes_d[i]
-                num_cols = math.prod(shape_d)
-            i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
-            faces = [0, 1] if n1 == 1 else [i]
-            grad_bc[i] = csc_array(
-                (
-                    values_bc_src[:, faces, i, :].ravel(),
-                    (
-                        i_f_bc[:, faces, :].ravel(),
-                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
-                    ),
-                ),
-                shape=(math.prod(shape_f_t), num_cols),
-            )
-        if shape_t[1] == 1:
-            grad_matrix_0 = _sparse_array(
-                (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            grad_matrix_1 = _sparse_array(
-                (
-                    values[:, -1, :].ravel(),
-                    (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        else:
-            grad_matrix_0 = _sparse_array(
-                (
-                    values[:, :2, :].ravel(),
-                    (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            grad_matrix_1 = _sparse_array(
-                (
-                    values[:, -2:, :].ravel(),
-                    (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        return grad_matrix_0, grad_bc[0], grad_matrix_1, grad_bc[1]
+        return _convflux_bc_by_boundary(
+            values, values_bc_src, i_f, i_c, i_f_bc, shapes_d, shape_bc, shape_t,
+            math.prod(shape_f_t), format)
 
 
 def construct_div(shape, x_f, nu=0, axis=0, format="csc"):
