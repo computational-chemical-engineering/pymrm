@@ -1299,6 +1299,123 @@ def _continuation_predictions(path_p, path_x, p):
     yield path_x[-1].copy(), False
 
 
+class _Continuation:
+    """One :func:`continuation` run: the path of solutions and those at the requested values."""
+
+    def __init__(self, function, options, max_change, max_halvings, verbose):
+        self.function, self.options, self.verbose = function, options, verbose
+        self.max_change, self.max_halvings = max_change, max_halvings
+        self.done, self.xs, self.results = [], [], []
+        self.path_p, self.path_x = [], []
+
+    def start(self, p, first):
+        """Record the solution ``first`` at the first value ``p``."""
+        self.done, self.xs, self.results = [p], [first.x.copy()], [first]
+        self.path_p, self.path_x = [p], [first.x.copy()]
+
+    def repeat(self, target):
+        """A repeated value: nothing to solve."""
+        self.done.append(target)
+        self.xs.append(self.path_x[-1].copy())
+        self.results.append(self.results[-1])
+
+    def _jumped(self, res, guess):
+        """Whether the converged ``res`` moved more than ``max_change`` from its prediction."""
+        path_x = self.path_x
+        if res.success and self.max_change is not None and len(self.path_p) >= 2:
+            # no prediction to compare with before the second point
+            size = max(float(np.max(np.abs(path_x[-1]))),
+                       float(np.max(np.abs(res.x))), np.finfo(float).tiny)
+            return float(np.max(np.abs(res.x - guess))) > self.max_change * size
+        return False
+
+    def correct(self, p):
+        """Newton at ``p`` from each prediction in turn: ``(res, jumped, bounded)``."""
+        res, jumped, bounded = None, False, False
+        if p != self.path_p[-1]:            # else the sub-step is below round-off
+            function, options = self.function, self.options
+            for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
+                res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
+                jumped = self._jumped(res, guess)
+                if res.success and not jumped:
+                    break
+        return res, jumped, bounded
+
+    def _accept(self, p, res, target):
+        """Add the solution at ``p`` to the path; whether it is the one at ``target``."""
+        self.path_p.append(p)
+        self.path_x.append(res.x.copy())
+        if self.verbose:
+            print(f"continuation p={p:g} nit={res.nit}")
+        if p == target:
+            self.done.append(target)
+            self.xs.append(res.x.copy())
+            self.results.append(res)
+            return True
+        return False
+
+    def _halved(self, level, step, tried):
+        """The next sub-step level, at least one halving and short of ``tried``."""
+        level += 1
+        while level <= self.max_halvings and abs(step) * 0.5**level >= tried:
+            level += 1
+        return level
+
+    def reach(self, target):
+        """Sub-step along the path to ``target``; the failure result, None on success."""
+        # Sub-steps are the requested step divided by 2**level. A failure
+        # halves the sub-step; an accepted one doubles the next (at most to
+        # the requested step), so a stretch needing short sub-steps does not
+        # use up the halving budget while every sub-step succeeds.
+        path_p, max_halvings = self.path_p, self.max_halvings
+        step = target - path_p[-1]
+        level = 0
+        p = target
+        while True:
+            res, jumped, bounded = self.correct(p)
+            if res is not None and res.success and not jumped:
+                if self._accept(p, res, target):
+                    return None
+                level = max(level - 1, 0)
+                h = step * 0.5**level
+                p = target if abs(target - p) <= abs(h) else p + h
+                continue
+            # Halve until the sub-step is shorter than the one that failed: a
+            # failure at the capped last sub-step would otherwise be retried
+            # with the same prediction.
+            level = self._halved(level, step, abs(p - path_p[-1]))
+            if level > max_halvings or res is None:
+                why = _continuation_failure(res, jumped, bounded)
+                return OptimizeResult(
+                    x=self.path_x[-1], success=False, params=self.done, xs=self.xs,
+                    results=self.results, last_param=path_p[-1],
+                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
+            p = path_p[-1] + step * 0.5**level
+
+
+def _continuation_failure(res, jumped, bounded):
+    """Why continuation stopped after the sub-step that gave ``res``."""
+    if res is None:
+        why = "the sub-step fell below round-off"
+    elif jumped:
+        why = "the corrector jumps to another solution branch"
+        if bounded:
+            why += "; probably a turning point (fold) of the solution branch"
+    elif res.status == 4 and res.nit == 0:
+        why = (f"the residual cannot be evaluated at the prediction ({res.message}); "
+               "it lies outside the residual's domain")
+    else:
+        why = f"the corrector fails ({res.message})"
+        if bounded:
+            why += ("; a turning point (fold) of the solution branch, or a "
+                    "corrector that cannot converge here (an inexact Jacobian, "
+                    "such as NumJac's eps_jac, or a tolerance below round-off)")
+    if res is not None and not bounded:
+        why += (" from the constant predictor (no earlier solution far enough "
+                "back for a secant)")
+    return why
+
+
 def continuation(function, initial_guess, params, *, max_halvings=6, max_change=0.2,
                  newton_kwargs=None, verbose=0):
     """Solve ``function(x, p) = 0`` along a sequence of parameter values.
@@ -1366,81 +1483,17 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                               last_param=None,
                               message=f"no solution at the first value {params[0]:g}: "
                                       f"{first.message}")
-    done, xs, results = [params[0]], [first.x.copy()], [first]
-    path_p, path_x = [params[0]], [first.x.copy()]
+    run = _Continuation(function, options, max_change, max_halvings, verbose)
+    run.start(params[0], first)
     for target in params[1:]:
-        if target == path_p[-1]:            # a repeated value: nothing to solve
-            done.append(target)
-            xs.append(path_x[-1].copy())
-            results.append(results[-1])
+        if target == run.path_p[-1]:            # a repeated value: nothing to solve
+            run.repeat(target)
             continue
-        # Sub-steps are the requested step divided by 2**level. A failure
-        # halves the sub-step; an accepted one doubles the next (at most to
-        # the requested step), so a stretch needing short sub-steps does not
-        # use up the halving budget while every sub-step succeeds.
-        step = target - path_p[-1]
-        level = 0
-        p = target
-        while True:
-            res, jumped, bounded = None, False, False
-            if p != path_p[-1]:             # else the sub-step is below round-off
-                for guess, bounded in _continuation_predictions(path_p, path_x, p):
-                    res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
-                    jumped = False
-                    if res.success and max_change is not None and len(path_p) >= 2:
-                        # no prediction to compare with before the second point
-                        size = max(float(np.max(np.abs(path_x[-1]))),
-                                   float(np.max(np.abs(res.x))), np.finfo(float).tiny)
-                        jumped = float(np.max(np.abs(res.x - guess))) > max_change * size
-                    if res.success and not jumped:
-                        break
-            if res is not None and res.success and not jumped:
-                path_p.append(p)
-                path_x.append(res.x.copy())
-                if verbose:
-                    print(f"continuation p={p:g} nit={res.nit}")
-                if p == target:
-                    done.append(target)
-                    xs.append(res.x.copy())
-                    results.append(res)
-                    break
-                level = max(level - 1, 0)
-                h = step * 0.5**level
-                p = target if abs(target - p) <= abs(h) else p + h
-                continue
-            # Halve until the sub-step is shorter than the one that failed: a
-            # failure at the capped last sub-step would otherwise be retried
-            # with the same prediction.
-            tried = abs(p - path_p[-1])
-            level += 1
-            while level <= max_halvings and abs(step) * 0.5**level >= tried:
-                level += 1
-            if level > max_halvings or res is None:
-                if res is None:
-                    why = "the sub-step fell below round-off"
-                elif jumped:
-                    why = "the corrector jumps to another solution branch"
-                    if bounded:
-                        why += "; probably a turning point (fold) of the solution branch"
-                elif res.status == 4 and res.nit == 0:
-                    why = (f"the residual cannot be evaluated at the prediction ({res.message}); "
-                           "it lies outside the residual's domain")
-                else:
-                    why = f"the corrector fails ({res.message})"
-                    if bounded:
-                        why += ("; a turning point (fold) of the solution branch, or a "
-                                "corrector that cannot converge here (an inexact Jacobian, "
-                                "such as NumJac's eps_jac, or a tolerance below round-off)")
-                if res is not None and not bounded:
-                    why += (" from the constant predictor (no earlier solution far enough "
-                            "back for a secant)")
-                return OptimizeResult(
-                    x=path_x[-1], success=False, params=done, xs=xs, results=results,
-                    last_param=path_p[-1],
-                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
-            p = path_p[-1] + step * 0.5**level
-    return OptimizeResult(x=path_x[-1], success=True, params=done, xs=xs, results=results,
-                          last_param=path_p[-1], message="Reached every parameter value")
+        failed = run.reach(target)
+        if failed is not None:
+            return failed
+    return OptimizeResult(x=run.path_x[-1], success=True, params=run.done, xs=run.xs, results=run.results,
+                          last_param=run.path_p[-1], message="Reached every parameter value")
 
 
 def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
