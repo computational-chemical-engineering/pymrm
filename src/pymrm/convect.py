@@ -174,8 +174,9 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
 def _convflux_bc_single_cell(geo, x_f, x_c, bc, outflow):
     """Boundary-face values and sources for a single cell along ``axis``, before the velocity."""
     n0, _, n2 = geo.shape_t
-    sys = _single_cell_system(geo, x_f, x_c, bc)
-    a, b, d, alpha_1, alpha_2, alpha_0, fctr = sys
+    system = _single_cell_system(geo, x_f, x_c, bc)
+    a, b, d, fctr = system.a, system.b, system.d, system.fctr
+    alpha_1, alpha_2, alpha_0 = system.alpha_1, system.alpha_2, system.alpha_0
     # Both faces reference cell 0
     i_c, i_f, i_f_bc = _boundary_face_indices(geo, [0, 0], [0, 1])
     values = np.empty((n0, 2, n2))
