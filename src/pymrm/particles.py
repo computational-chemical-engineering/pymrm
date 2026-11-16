@@ -77,7 +77,8 @@ from pymrm.ibm import (
     _THETA_MIN,
     _THETA_MAX,
     _IBMSide,
-    _construct_ibm_core,
+    _FieldLayout,
+    _construct_ibm_sides,
     _lagrange3,
     _neighbor,
     _pair_sides_to_ibm,
@@ -775,14 +776,14 @@ def construct_ibm_particles(particles, x_c, *, axes=None, shape=None,
     theta_map = scanner.theta_map()
 
     # --- fluid–solid crossings through the shared IBM core ------------------
-    out_s, in_s, meta = _construct_ibm_core(
-        cls.solid_grid, theta_map, x_c, axes, shape, rescale, pair=False)
+    out_s, in_s, meta = _construct_ibm_sides(
+        cls.solid_grid, theta_map, x_c, _FieldLayout(axes, shape), rescale)
 
     # --- contact crossings (no_flux policy) ---------------------------------
     if scanner.contact_cols["lo"]:
         out_s, in_s = _append_contact_crossings(out_s, in_s, scanner, rescale)
 
-    ibm = _pair_sides_to_ibm(out_s, in_s, **meta)
+    ibm = _pair_sides_to_ibm(out_s, in_s, meta)
 
     # --- normals + per-crossing bookkeeping ---------------------------------
     return ibm, _particle_info(particles, ibm, cls, grid)

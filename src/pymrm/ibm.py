@@ -744,27 +744,30 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
         [math.prod(sdf.shape[a + 1:]) for a in range(sdf.ndim)], dtype=np.intp
     )
     return _construct_ibm_core(sdf < 0.0, _sdf_theta_fn(sdf, strides), x_c,
-                               axes, shape, rescale)
+                               _FieldLayout(axes, shape), rescale)
 
 
-def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
-    """Shared IBM construction from a solid mask and a wall-position provider.
+class _FieldLayout(NamedTuple):
+    """Spatial axes of the full field and the full field shape (either may be None)."""
 
-    ``solid`` is the boolean cell-classification on the spatial grid;
-    ``theta_fn(cells, axis, direction)`` supplies the fractional wall position
-    for directed region-switching faces (see :func:`_build_side`).  The SDF
-    entry point :func:`construct_ibm` and the particle entry point in
-    :mod:`pymrm.particles` both delegate here.
+    axes: tuple
+    shape: tuple
 
-    With ``pair=False`` the unpaired sides are returned as
-    ``(out_side, in_side, meta)`` so a caller can append extra crossings
-    (e.g. particle contact crossings) before :func:`_pair_sides_to_ibm`.
-    """
-    solid = np.asarray(solid, dtype=bool)
-    ndim_s = solid.ndim
-    spatial_shape = solid.shape
 
-    # Normalise x_c to a list of 1-D arrays.
+class _IBMMeta(NamedTuple):
+    """Grid and field-layout metadata shared by both sides of an IBM."""
+
+    spatial_shape: tuple
+    shape: tuple
+    axes: tuple
+    ns_shape: tuple
+    ns_size: int
+    n_cells: int
+    n_spatial_cells: int
+
+
+def _normalize_core_x_c(x_c, ndim_s):
+    """Normalise x_c to a list of 1-D arrays, one per spatial axis."""
     if isinstance(x_c, np.ndarray) and x_c.ndim == 1:
         x_c = [x_c]
     else:
@@ -773,10 +776,14 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
         raise ValueError(
             f"len(x_c)={len(x_c)} must equal the spatial dimension {ndim_s}"
         )
+    return x_c
 
-    # Normalise axes and shape.
+
+def _normalize_axes_shape(layout, spatial_shape):
+    """Normalise the spatial axes and the full field shape."""
+    axes, shape = layout
     if axes is None and shape is None:
-        axes = tuple(range(ndim_s))
+        axes = tuple(range(len(spatial_shape)))
         shape = spatial_shape
     elif shape is None:
         axes = tuple(int(a) for a in axes)
@@ -789,13 +796,36 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
                 f"spatial shape {spatial_shape} is inconsistent with "
                 f"shape={shape} at axes={axes}"
             )
+    return axes, shape
 
+
+def _ibm_meta(spatial_shape, shape, axes):
+    """Non-spatial shape, sizes and layout of the full field."""
     axes_set = set(axes)
     ns_axes = [a for a in range(len(shape)) if a not in axes_set]
     ns_shape = tuple(shape[a] for a in ns_axes)
     ns_size = math.prod(ns_shape) if ns_shape else 1
     n_cells = math.prod(shape)
     n_spatial_cells = math.prod(spatial_shape)
+    return _IBMMeta(spatial_shape=tuple(spatial_shape), shape=shape, axes=axes,
+                    ns_shape=ns_shape, ns_size=ns_size, n_cells=n_cells,
+                    n_spatial_cells=n_spatial_cells)
+
+
+def _construct_ibm_sides(solid, theta_fn, x_c, layout, rescale):
+    """Unpaired IBM construction: ``(out_side, in_side, meta)``.
+
+    ``solid`` is the boolean cell-classification on the spatial grid;
+    ``theta_fn(cells, axis, direction)`` supplies the fractional wall position
+    for directed region-switching faces (see :func:`_build_side`).  A caller
+    can append extra crossings (e.g. particle contact crossings) before
+    :func:`_pair_sides_to_ibm`.
+    """
+    solid = np.asarray(solid, dtype=bool)
+    ndim_s = solid.ndim
+    spatial_shape = solid.shape
+    x_c = _normalize_core_x_c(x_c, ndim_s)
+    axes, shape = _normalize_axes_shape(layout, spatial_shape)
 
     strides = np.array(
         [math.prod(spatial_shape[a + 1:]) for a in range(ndim_s)], dtype=np.intp
@@ -807,16 +837,21 @@ def _construct_ibm_core(solid, theta_fn, x_c, axes, shape, rescale, pair=True):
     out_s = _build_side(theta_fn, grid, _SideRegions(fluid, solid), rescale)
     in_s = _build_side(theta_fn, grid, _SideRegions(solid, fluid), rescale)
 
-    meta = dict(spatial_shape=tuple(spatial_shape), shape=shape, axes=axes,
-                ns_shape=ns_shape, ns_size=ns_size, n_cells=n_cells,
-                n_spatial_cells=n_spatial_cells)
-    if not pair:
-        return out_s, in_s, meta
-    return _pair_sides_to_ibm(out_s, in_s, **meta)
+    return out_s, in_s, _ibm_meta(spatial_shape, shape, axes)
 
 
-def _pair_sides_to_ibm(out_s, in_s, *, spatial_shape, shape, axes, ns_shape,
-                       ns_size, n_cells, n_spatial_cells):
+def _construct_ibm_core(solid, theta_fn, x_c, layout, rescale):
+    """Shared IBM construction from a solid mask and a wall-position provider.
+
+    The SDF entry point :func:`construct_ibm` delegates here; the particle
+    entry point in :mod:`pymrm.particles` uses :func:`_construct_ibm_sides`.
+    """
+    out_s, in_s, meta = _construct_ibm_sides(solid, theta_fn, x_c, layout,
+                                             rescale)
+    return _pair_sides_to_ibm(out_s, in_s, meta)
+
+
+def _pair_sides_to_ibm(out_s, in_s, meta):
     """Pair the two :class:`_IBMSide` objects into an :class:`IBM`.
 
     Outside and inside entries are matched by sorting on the canonical face
@@ -862,13 +897,13 @@ def _pair_sides_to_ibm(out_s, in_s, *, spatial_shape, shape, axes, ns_shape,
         sib_in=_remap_sib(in_s.sib, sort_in),
         row_scale_in=in_s.row_scale,
 
-        spatial_shape=tuple(spatial_shape),
-        shape=shape,
-        axes=axes,
-        ns_shape=ns_shape,
-        ns_size=ns_size,
-        n_cells=n_cells,
-        n_spatial_cells=n_spatial_cells,
+        spatial_shape=tuple(meta.spatial_shape),
+        shape=meta.shape,
+        axes=meta.axes,
+        ns_shape=meta.ns_shape,
+        ns_size=meta.ns_size,
+        n_cells=meta.n_cells,
+        n_spatial_cells=meta.n_spatial_cells,
     )
 
 
