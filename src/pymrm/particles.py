@@ -102,6 +102,16 @@ __all__ = [
 # Orientation helpers
 # ---------------------------------------------------------------------------
 
+def _angle_orientation(orientation, ndim):
+    """2-D rotation matrix from a scalar angle in radians."""
+    if ndim != 2:
+        raise ValueError(
+            "a scalar orientation (angle) is only valid in 2-D; use a "
+            "scipy.spatial.transform.Rotation in 3-D")
+    c, s = math.cos(float(orientation)), math.sin(float(orientation))
+    return np.array([[c, -s], [s, c]])
+
+
 def _rotation_matrix(orientation, ndim):
     """Body→world rotation matrix from an orientation specification.
 
@@ -119,12 +129,7 @@ def _rotation_matrix(orientation, ndim):
                 f"orientation matrix shape {R.shape} != ({ndim}, {ndim})")
         return R
     if np.ndim(orientation) == 0 and not hasattr(orientation, "as_matrix"):
-        if ndim != 2:
-            raise ValueError(
-                "a scalar orientation (angle) is only valid in 2-D; use a "
-                "scipy.spatial.transform.Rotation in 3-D")
-        c, s = math.cos(float(orientation)), math.sin(float(orientation))
-        return np.array([[c, -s], [s, c]])
+        return _angle_orientation(orientation, ndim)
     if hasattr(orientation, "as_matrix"):
         R = np.asarray(orientation.as_matrix(), dtype=float)
         if R.shape != (ndim, ndim):
