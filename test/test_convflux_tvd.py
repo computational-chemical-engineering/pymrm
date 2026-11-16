@@ -202,6 +202,8 @@ def test_input_errors():
         tvd(np.zeros((4, 2)), 1.0)
     with pytest.raises(ValueError, match="does not fit"):
         tvd(np.zeros((4, 2)), np.ones(3), d=(np.ones(2), None))
+    with pytest.raises(ValueError, match=r"d\[0\] has 3 values, shapes_d\[0\] needs 2"):
+        tvd(np.zeros((4, 2)), 1.0, d=(np.ones(3), None))
 
 
 def test_velocity_accepted_as_by_upwind_constructor():
