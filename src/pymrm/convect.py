@@ -892,6 +892,23 @@ class ConvFluxTVD:
         if n1 > 1:
             self._faces_second, self._faces_penult = f_t[:, 1, :], f_t[:, n1 - 1, :]
 
+    def _face_velocity(self, v, jac_v):
+        """Return the velocity as an array and as a face-shaped triplet."""
+        v_in = np.asarray(v, dtype=float)
+        try:
+            v_aligned = _align_to_axes(v_in, self.shape, self.axis)
+            v_t = create_staggered_array(v_in, self.shape, self.axis, x_f=self._x_f, x_c=self._x_c)
+        except ValueError:
+            raise ValueError(
+                f"v with shape {v_in.shape} does not fit the face shape {self.shape_f}"
+            ) from None
+        centred = (v_in.size > 1 and self.shape[self.axis] > 1 and v_aligned.ndim == len(self.shape)
+                   and v_aligned.shape[self.axis] == self.shape[self.axis])
+        if jac_v and centred:
+            raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
+        v_t = v_t.reshape(self._shape_f_t)
+        return v_in, v_t
+
     def __call__(self, c, v, d=None, jac_v=False):
         """Evaluate the face fluxes and their Jacobians.
 
@@ -930,19 +947,7 @@ class ConvFluxTVD:
         """
         n0, n1, n2 = self._shape_t
         c = np.asarray(c, dtype=float).reshape(self._shape_t)
-        v_in = np.asarray(v, dtype=float)
-        try:
-            v_aligned = _align_to_axes(v_in, self.shape, self.axis)
-            v_t = create_staggered_array(v_in, self.shape, self.axis, x_f=self._x_f, x_c=self._x_c)
-        except ValueError:
-            raise ValueError(
-                f"v with shape {v_in.shape} does not fit the face shape {self.shape_f}"
-            ) from None
-        centred = (v_in.size > 1 and self.shape[self.axis] > 1 and v_aligned.ndim == len(self.shape)
-                   and v_aligned.shape[self.axis] == self.shape[self.axis])
-        if jac_v and centred:
-            raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
-        v_t = v_t.reshape(self._shape_f_t)
+        v_in, v_t = self._face_velocity(v, jac_v)
         if any(self._bc_unset) and not self._warned_unset:
             self._warned_unset = True
             _warn_unset_outflow(tuple(None if unset else {} for unset in self._bc_unset),
