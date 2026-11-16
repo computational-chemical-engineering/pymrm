@@ -989,6 +989,87 @@ def _normalize_values(values_outside, values_inside, npnt, ns_shape):
     return a, b
 
 
+class _SideIndices(NamedTuple):
+    """Full-field flat indices of one side's cut-cell rows, ghosts and opposites."""
+
+    row: np.ndarray
+    ghost: np.ndarray
+    opp: np.ndarray
+    has_opp: np.ndarray
+
+
+class _SourceCols(NamedTuple):
+    """Source-matrix column indices of a crossing layer and the matrix shape."""
+
+    own_col: np.ndarray
+    j_tile: np.ndarray
+    shape: tuple
+
+
+def _make_expander(ibm):
+    """Return ``expand(spatial_flat)`` mapping spatial to full flat indices."""
+    pure_spatial = _is_pure_spatial(ibm)
+    ns_c = _ns_contributions(ibm.shape, ibm.axes)  # (ns,)
+
+    def expand(spatial_flat):
+        """Spatial flat → full flat matrix of shape (len, ns)."""
+        if pure_spatial:
+            return np.asarray(spatial_flat, dtype=np.intp)[:, np.newaxis]
+        sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
+        return sc[:, np.newaxis] + ns_c[np.newaxis, :]
+
+    return expand
+
+
+def _side_indices(expand, row, ghost, opp):
+    """Expanded row, ghost and opposite indices of one side."""
+    f_row = expand(row)                   # (npnt, ns)
+    f_ghost = expand(ghost)               # (npnt, ns)
+    has_opp = opp >= 0                    # (npnt,)
+    f_opp = expand(np.where(has_opp, opp, row))
+    return _SideIndices(f_row, f_ghost, f_opp, has_opp)
+
+
+def _per_crossing(arr, shape):
+    """Broadcast 1-D per-crossing array to (npnt, ns) view."""
+    return np.broadcast_to(arr[:, np.newaxis], shape)
+
+
+def _side_correction(v, idx, coef_c, coef_o):
+    """COO triplets of the matrix correction that folds one side's ghosts."""
+    ns = v.shape[1]
+    has_opp_2d = idx.has_opp[:, np.newaxis].repeat(ns, axis=1)  # (npnt, ns) bool
+    cr_flat = idx.row.ravel()
+    fg_flat = idx.ghost.ravel()
+    fo_mask = has_opp_2d.ravel()
+    cr = np.concatenate([cr_flat,
+                         cr_flat[fo_mask],
+                         cr_flat])
+    cc = np.concatenate([cr_flat,                          # diagonal
+                         idx.opp.ravel()[fo_mask],        # opposite
+                         fg_flat])                         # ghost removal
+    cd = np.concatenate([(v * _per_crossing(coef_c, v.shape)).ravel(),
+                         (v * _per_crossing(coef_o, v.shape)).ravel()[fo_mask],
+                         -v.ravel()])
+    return cr, cc, cd
+
+
+def _side_source_matrix(v, idx, cols, sib, coefs):
+    """Source matrix of one side; *coefs* are the wall and sibling-wall coefficients."""
+    ns = v.shape[1]
+    has_sib_flat = np.repeat(sib >= 0, ns)
+    sib_col = (np.where(has_sib_flat, np.repeat(sib, ns), 0) * ns + cols.j_tile)
+    return coo_array(
+        (np.concatenate([(v * _per_crossing(coefs[0], v.shape)).ravel(),
+                         (v * _per_crossing(coefs[1], v.shape)).ravel()[has_sib_flat]]),
+         (np.concatenate([idx.row.ravel(),
+                          idx.row.ravel()[has_sib_flat]]),
+          np.concatenate([cols.own_col,
+                          sib_col[has_sib_flat]]))),
+        shape=cols.shape,
+    ).tocsr()
+
+
 def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
               return_bc="vector"):
     """Apply the immersed-boundary method to an operator matrix.
@@ -1059,64 +1140,19 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     A = csr_array(mat)
 
     # --- Full flat index expansion ---
-    pure_spatial = _is_pure_spatial(ibm)
-    ns_c = _ns_contributions(ibm.shape, ibm.axes)  # (ns,)
-
-    def expand(spatial_flat):
-        """Spatial flat → full flat matrix of shape (len, ns)."""
-        if pure_spatial:
-            return np.asarray(spatial_flat, dtype=np.intp)[:, np.newaxis]
-        sc = _spatial_contributions(spatial_flat, ibm.shape, ibm.axes)
-        return sc[:, np.newaxis] + ns_c[np.newaxis, :]
-
-    f_row_out = expand(ibm.row_out)       # (npnt, ns)
-    f_ghost_out = expand(ibm.ghost_out)   # (npnt, ns)
-    f_row_in = expand(ibm.row_in)
-    f_ghost_in = expand(ibm.ghost_in)
-
-    has_opp_out = ibm.opp_out >= 0        # (npnt,)
-    f_opp_out = expand(np.where(has_opp_out, ibm.opp_out, ibm.row_out))
-    has_opp_in = ibm.opp_in >= 0
-    f_opp_in = expand(np.where(has_opp_in, ibm.opp_in, ibm.row_in))
+    expand = _make_expander(ibm)
+    out = _side_indices(expand, ibm.row_out, ibm.ghost_out, ibm.opp_out)
+    inn = _side_indices(expand, ibm.row_in, ibm.ghost_in, ibm.opp_in)
 
     # --- Read ghost matrix entries: v[k, j] = A[row(k,j), ghost(k,j)] ---
-    v_out = _read_entries(A, f_row_out.ravel(), f_ghost_out.ravel()).reshape(npnt, ns)
-    v_in = _read_entries(A, f_row_in.ravel(), f_ghost_in.ravel()).reshape(npnt, ns)
-
-    def bc_coef(arr):
-        """Broadcast 1-D per-crossing array to (npnt, ns) view."""
-        return np.broadcast_to(arr[:, np.newaxis], (npnt, ns))
+    v_out = _read_entries(A, out.row.ravel(), out.ghost.ravel()).reshape(npnt, ns)
+    v_in = _read_entries(A, inn.row.ravel(), inn.ghost.ravel()).reshape(npnt, ns)
 
     # --- Matrix correction (COO) ---
-    has_opp_out_2d = has_opp_out[:, np.newaxis].repeat(ns, axis=1)  # (npnt, ns) bool
-    has_opp_in_2d = has_opp_in[:, np.newaxis].repeat(ns, axis=1)
-
-    cr_out_flat = f_row_out.ravel()
-    fg_out_flat = f_ghost_out.ravel()
-    fo_out_mask = has_opp_out_2d.ravel()
-    cr_in_flat = f_row_in.ravel()
-    fg_in_flat = f_ghost_in.ravel()
-    fo_in_mask = has_opp_in_2d.ravel()
-
-    cr_out = np.concatenate([cr_out_flat,
-                             cr_out_flat[fo_out_mask],
-                             cr_out_flat])
-    cc_out = np.concatenate([cr_out_flat,                          # diagonal
-                             f_opp_out.ravel()[fo_out_mask],      # opposite
-                             fg_out_flat])                         # ghost removal
-    cd_out = np.concatenate([(v_out * bc_coef(ibm.coef_c_out)).ravel(),
-                             (v_out * bc_coef(ibm.coef_o_out)).ravel()[fo_out_mask],
-                             -v_out.ravel()])
-
-    cr_in = np.concatenate([cr_in_flat,
-                            cr_in_flat[fo_in_mask],
-                            cr_in_flat])
-    cc_in = np.concatenate([cr_in_flat,
-                            f_opp_in.ravel()[fo_in_mask],
-                            fg_in_flat])
-    cd_in = np.concatenate([(v_in * bc_coef(ibm.coef_c_in)).ravel(),
-                            (v_in * bc_coef(ibm.coef_o_in)).ravel()[fo_in_mask],
-                            -v_in.ravel()])
+    cr_out, cc_out, cd_out = _side_correction(v_out, out, ibm.coef_c_out,
+                                              ibm.coef_o_out)
+    cr_in, cc_in, cd_in = _side_correction(v_in, inn, ibm.coef_c_in,
+                                           ibm.coef_o_in)
 
     correction = coo_array(
         (np.concatenate([cd_out, cd_in]),
@@ -1136,31 +1172,12 @@ def apply_ibm(mat, ibm, values_outside=None, values_inside=None,
     k_rep = np.repeat(np.arange(npnt, dtype=np.intp), ns)   # (npnt*ns,)
     j_tile = np.tile(np.arange(ns, dtype=np.intp), npnt)    # (npnt*ns,)
     own_col = k_rep * ns + j_tile                            # (npnt*ns,)
+    cols = _SourceCols(own_col, j_tile, (n_full, n_cols))
 
-    has_sib_out_flat = np.repeat(ibm.sib_out >= 0, ns)      # (npnt*ns,)
-    sib_out_col = (np.where(has_sib_out_flat, np.repeat(ibm.sib_out, ns), 0) * ns + j_tile)
-    has_sib_in_flat = np.repeat(ibm.sib_in >= 0, ns)
-    sib_in_col = (np.where(has_sib_in_flat, np.repeat(ibm.sib_in, ns), 0) * ns + j_tile)
-
-    G_out = coo_array(
-        (np.concatenate([(v_out * bc_coef(ibm.coef_w_out)).ravel(),
-                         (v_out * bc_coef(ibm.coef_w_sib_out)).ravel()[has_sib_out_flat]]),
-         (np.concatenate([f_row_out.ravel(),
-                          f_row_out.ravel()[has_sib_out_flat]]),
-          np.concatenate([own_col,
-                          sib_out_col[has_sib_out_flat]]))),
-        shape=(n_full, n_cols),
-    ).tocsr()
-
-    G_in = coo_array(
-        (np.concatenate([(v_in * bc_coef(ibm.coef_w_in)).ravel(),
-                         (v_in * bc_coef(ibm.coef_w_sib_in)).ravel()[has_sib_in_flat]]),
-         (np.concatenate([f_row_in.ravel(),
-                          f_row_in.ravel()[has_sib_in_flat]]),
-          np.concatenate([own_col,
-                          sib_in_col[has_sib_in_flat]]))),
-        shape=(n_full, n_cols),
-    ).tocsr()
+    G_out = _side_source_matrix(v_out, out, cols, ibm.sib_out,
+                                (ibm.coef_w_out, ibm.coef_w_sib_out))
+    G_in = _side_source_matrix(v_in, inn, cols, ibm.sib_in,
+                               (ibm.coef_w_in, ibm.coef_w_sib_in))
 
     _scale_csr_rows(G_out, scale_rows, scale_vals)
     _scale_csr_rows(G_in, scale_rows, scale_vals)
