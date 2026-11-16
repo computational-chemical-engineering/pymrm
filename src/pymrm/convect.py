@@ -168,6 +168,65 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
     return conv_matrix
 
 
+def _convflux_bc_by_boundary(
+    values, values_bc_src, i_f, i_c, i_f_bc, shapes_d, shape_bc, shape_t, n_faces, format
+):
+    """Operators and sources per boundary, for inhomogeneous terms on external vectors."""
+    n0, n1, n2 = shape_t
+    values = values.reshape((n0, -1, n2))
+    conv_bc = [None] * 2
+    shapes_d = list(shapes_d)
+    for i in range(2):
+        if shapes_d[i] is None:
+            shapes_d[i] = (1,) * len(shape_bc)
+        num_cols = math.prod(shapes_d[i])
+        i_cols_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[i])
+        i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
+        faces = [0, 1] if n1 == 1 else [i]
+        conv_bc[i] = csc_array(
+            (
+                values_bc_src[:, faces, i, :].ravel(),
+                (
+                    i_f_bc[:, faces, :].ravel(),
+                    np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                ),
+            ),
+            shape=(n_faces, num_cols),
+        )
+    if n1 == 1:
+        conv_matrix_0 = _sparse_array(
+            (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
+            shape=(n_faces, math.prod(shape_t)),
+            format=format,
+        )
+        conv_matrix_1 = _sparse_array(
+            (
+                values[:, -1, :].ravel(),
+                (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
+            ),
+            shape=(n_faces, math.prod(shape_t)),
+            format=format,
+        )
+    else:
+        conv_matrix_0 = _sparse_array(
+            (
+                values[:, :2, :].ravel(),
+                (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
+            ),
+            shape=(n_faces, math.prod(shape_t)),
+            format=format,
+        )
+        conv_matrix_1 = _sparse_array(
+            (
+                values[:, -2:, :].ravel(),
+                (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
+            ),
+            shape=(n_faces, math.prod(shape_t)),
+            format=format,
+        )
+    return conv_matrix_0, conv_bc[0], conv_matrix_1, conv_bc[1]
+
+
 def construct_convflux_bc(
     shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
     format="csc"
@@ -397,58 +456,9 @@ def construct_convflux_bc(
         conv_matrix.sort_indices()
         return conv_matrix, conv_bc
     else:
-        values = values.reshape((shape_t[0], -1, shape_t[2]))
-        conv_bc = [None] * 2
-        shapes_d = list(shapes_d)
-        for i in range(2):
-            if shapes_d[i] is None:
-                shapes_d[i] = (1,) * len(shape_bc)
-            num_cols = math.prod(shapes_d[i])
-            i_cols_bc = np.arange(num_cols, dtype=int).reshape(shapes_d[i])
-            i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc).reshape(n0, 1, n2)
-            faces = [0, 1] if n1 == 1 else [i]
-            conv_bc[i] = csc_array(
-                (
-                    values_bc_src[:, faces, i, :].ravel(),
-                    (
-                        i_f_bc[:, faces, :].ravel(),
-                        np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
-                    ),
-                ),
-                shape=(math.prod(shape_f_t), num_cols),
-            )
-        if shape_t[1] == 1:
-            conv_matrix_0 = _sparse_array(
-                (values[:, 0, :].ravel(), (i_f[:, 0, :].ravel(), i_c[:, 0, :].ravel())),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            conv_matrix_1 = _sparse_array(
-                (
-                    values[:, -1, :].ravel(),
-                    (i_f[:, -1, :].ravel(), i_c[:, -1, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        else:
-            conv_matrix_0 = _sparse_array(
-                (
-                    values[:, :2, :].ravel(),
-                    (i_f[:, :2, :].ravel(), i_c[:, :2, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-            conv_matrix_1 = _sparse_array(
-                (
-                    values[:, -2:, :].ravel(),
-                    (i_f[:, -2:, :].ravel(), i_c[:, -2:, :].ravel()),
-                ),
-                shape=(math.prod(shape_f_t), math.prod(shape_t)),
-                format=format,
-            )
-        return conv_matrix_0, conv_bc[0], conv_matrix_1, conv_bc[1]
+        return _convflux_bc_by_boundary(
+            values, values_bc_src, i_f, i_c, i_f_bc, shapes_d, shape_bc, shape_t,
+            math.prod(shape_f_t), format)
 
 
 # TVD Limiters
