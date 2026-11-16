@@ -119,7 +119,11 @@ def _overwrite_outflow_faces(face, delta, cell_centered_values, outflow, axis):
 
 
 def _on_boundary(value, geo):
-    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``."""
+    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``.
+
+    Unlike ``_on_bc`` this returns a writable copy (adding zeros turns ``-0.0`` into
+    ``0.0``), which the face values built from it rely on to stay bit-identical.
+    """
     return np.reshape(value + np.zeros(geo.shape_bc), geo.shape_bc_d)
 
 
