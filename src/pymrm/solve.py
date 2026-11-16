@@ -152,7 +152,7 @@ class _LinearSolver:
             except RuntimeError as exc:
                 raise _SingularJacobian(str(exc)) from exc
             return (lambda rhs: lu.solve(np.asarray(rhs, dtype=float), trans="T")), None
-        a = sparse.csc_array(jac)
+        a = jac if _is_canonical_csc(jac) else sparse.csc_array(jac)
         r = _row_scale(a) if self.row_scaling else None
         if r is not None:
             a = sparse.csc_array(sparse.diags_array(r) @ a)
@@ -366,6 +366,12 @@ def _backward_error(g, jac, x, x_ref):
     denominator = abs_jac @ (np.abs(x) + _BACKWARD_FLOOR * x_ref) + np.abs(jac @ x - g)
     denominator = np.where(denominator > 0.0, denominator, np.finfo(float).tiny)
     return float(np.max(np.abs(g) / denominator))
+
+
+def _is_canonical_csc(jac):
+    """Whether splu can take ``jac`` as is: a float64 ``csc_array`` without duplicates
+    or unsorted indices, so that the copy ``csc_array(jac)`` would change nothing."""
+    return type(jac) is sparse.csc_array and jac.dtype == np.float64 and jac.has_canonical_format
 
 
 def _is_matrix(jac):
