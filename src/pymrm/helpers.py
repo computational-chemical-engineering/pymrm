@@ -88,23 +88,22 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
+def _stagger_shape(shape, axis):
+    """``shape`` with the length along ``axis`` increased by one (face-centred length)."""
+    return tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
+
+
 def _pairwise_coefficient_matrix(coefficients, shape, axis, fmt):
     """Coefficient matrix coupling two fields of shapes ``shape = (shape_rows, shape_cols)``."""
     shape_rows = shape[0]
     shape_cols = shape[1]
     working_shape = tuple(max(s1, s2) for s1, s2 in zip(shape_rows, shape_cols))
     if axis is not None:
-        working_shape = tuple(
-            s if i != axis else s + 1 for i, s in enumerate(working_shape)
-        )
+        working_shape = _stagger_shape(working_shape, axis)
         if shape_rows[axis] + 1 == working_shape[axis]:
-            shape_rows = tuple(
-                s if i != axis else s + 1 for i, s in enumerate(shape_rows)
-            )
+            shape_rows = _stagger_shape(shape_rows, axis)
         if shape_cols[axis] + 1 == working_shape[axis]:
-            shape_cols = tuple(
-                s if i != axis else s + 1 for i, s in enumerate(shape_cols)
-            )
+            shape_cols = _stagger_shape(shape_cols, axis)
     if coefficients.shape == working_shape:
         coefficients_copy = coefficients
     else:
