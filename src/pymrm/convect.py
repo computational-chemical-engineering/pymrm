@@ -709,6 +709,7 @@ class ConvFluxTVD:
             shape, x_f, x_c, bc_upwind, 1.0, axis, shapes_d=shapes_ext, format="csr")
         self._m_up, self._e_up = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
 
+        self._offsets = np.arange(-2, 2)
         self._build_boundary_stencils(x_f, x_c)
 
         # fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1
@@ -745,7 +746,6 @@ class ConvFluxTVD:
             return (matrix @ indicator.ravel()).reshape(self._shape_f_t)
 
         # band[:, face, o + 2, :]: dependence of a boundary face on cell face + o
-        self._offsets = np.arange(-2, 2)
         self._band_bnd = np.zeros((n0, 2, 4, n2))
         for side, face in enumerate((0, n1)):
             for o in self._offsets:
@@ -779,12 +779,17 @@ class ConvFluxTVD:
             raise ValueError(
                 f"v with shape {v_in.shape} does not fit the face shape {self.shape_f}"
             ) from None
-        centred = (v_in.size > 1 and self.shape[self.axis] > 1 and v_aligned.ndim == len(self.shape)
-                   and v_aligned.shape[self.axis] == self.shape[self.axis])
-        if jac_v and centred:
+        if jac_v and self._is_cell_centred(v_in, v_aligned):
             raise ValueError("jac_v=True needs v on the faces, not at the cell centres")
         v_t = v_t.reshape(self._shape_f_t)
         return v_in, v_t
+
+    def _is_cell_centred(self, v_in, v_aligned):
+        """Whether ``v`` holds one value per cell along the axis rather than per face."""
+        if v_in.size <= 1 or self.shape[self.axis] <= 1:
+            return False
+        return (v_aligned.ndim == len(self.shape)
+                and v_aligned.shape[self.axis] == self.shape[self.axis])
 
     def _external_vectors(self, d):
         """The external boundary vectors ``d`` as flat arrays, checked against ``shapes_d``."""
@@ -801,10 +806,10 @@ class ConvFluxTVD:
                 raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
         return ext
 
-    def _interior_faces(self, c, c_flat, ext, v_t, face, band):
+    def _fill_interior_faces(self, c, ext, v_t, face, band):
         """Fill the interior faces of ``face`` and ``band``; return the boundary upwind weights."""
         n0, n1, n2 = self._shape_t
-        up = (self._m_up @ c_flat + self._e_up[0] @ ext[0]
+        up = (self._m_up @ c.ravel() + self._e_up[0] @ ext[0]
               + self._e_up[1] @ ext[1]).reshape(self._shape_f_t)
         pos = v_t[:, 1:-1, :] > 0
         c_U = np.where(pos, np.concatenate((up[:, :1], c[:, :-2]), axis=1),
@@ -898,7 +903,7 @@ class ConvFluxTVD:
         g_left = g_right = None
 
         if n1 > 1:
-            g_left, g_right = self._interior_faces(c, c_flat, ext, v_t, face, band)
+            g_left, g_right = self._fill_interior_faces(c, ext, v_t, face, band)
 
         flux = (v_t * face).reshape(self.shape_f)
         data = (band * v_t[:, :, None, :])[self._valid][self._perm]
