@@ -175,6 +175,26 @@ def _wall_face_value(bc_i, shape, axis, alpha_1, alpha_2, c_near, c_far, shape_b
     return d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
 
 
+def _staggered_shapes(shape, axis):
+    """Triplet, face and boundary shapes of a cell-centered field along ``axis``."""
+    shape = list(shape)
+    if axis < 0:
+        axis += len(shape)
+    shape_t = [
+        math.prod(shape[:axis]),
+        math.prod(shape[axis: axis + 1]),
+        math.prod(shape[axis + 1:]),
+    ]  # reshape as a triplet
+    shape_f = shape.copy()
+    shape_f[axis] = shape[axis] + 1
+    shape_f_t = shape_t.copy()
+    shape_f_t[1] = shape_f[axis]
+    shape_bc = shape_f.copy()
+    shape_bc[axis] = 1
+    shape_bc_d = [shape_t[0], shape_t[2]]
+    return shape, axis, shape_t, shape_f, shape_f_t, shape_bc, shape_bc_d
+
+
 def interp_cntr_to_stagg_tvd(
     cell_centered_values, x_f, x_c=None, bc=None, v=0, tvd_limiter=None, axis=0
 ):
@@ -217,21 +237,8 @@ def interp_cntr_to_stagg_tvd(
             return _overwrite_outflow_faces(
                 face, delta, cell_centered_values, outflow, axis)
 
-    shape = list(cell_centered_values.shape)
-    if axis < 0:
-        axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]  # reshape as a triplet
-    shape_f = shape.copy()
-    shape_f[axis] = shape[axis] + 1
-    shape_f_t = shape_t.copy()
-    shape_f_t[1] = shape_f[axis]
-    shape_bc = shape_f.copy()
-    shape_bc[axis] = 1
-    shape_bc_d = [shape_t[0], shape_t[2]]
+    shape, axis, shape_t, shape_f, shape_f_t, shape_bc, shape_bc_d = _staggered_shapes(
+        cell_centered_values.shape, axis)
 
     if x_c is None:
         x_c = 0.5 * (x_f[:-1] + x_f[1:])
