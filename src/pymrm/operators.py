@@ -5,7 +5,7 @@ import numpy as np
 from scipy.sparse import csc_array, csr_array
 from pymrm.helpers import unwrap_bc_coeff, _sparse_array, substitute_outflow_bc
 from pymrm.grid import generate_grid
-from pymrm.convect import _convflux_bc_by_boundary
+from pymrm.convect import _convflux_bc_by_boundary, _convflux_geometry
 
 
 def construct_grad(
@@ -193,19 +193,13 @@ def construct_grad_bc(
         otherwise.
     """
     bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
-    shape_bc_d = (shape_t[0], shape_t[2])
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
 
     # Handle special case with one cell in the dimension axis.
     # This is convenient e.g. for flexibility where you can choose not to
     # spatially discretize a direction, but still use a BC, e.g. with a mass transfer coefficient
     # It is a bit subtle because in this case the two opposite faces influence each other
     n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
 
     if n1 == 1:
         if x_c is None:
