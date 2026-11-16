@@ -477,6 +477,26 @@ class _NewtonRun:
             return self.finish(2, False, self.state["ev"], self.state["step"], float("nan"),
                                f"the residual at the last trial point raised {exc}")
 
+    def _newton_step(self, ev, step_inf):
+        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
+
+        A singular Jacobian, a failed linear solve or a non-finite step ends the
+        run: ``finish`` raises for the statuses 5 and 6.
+        """
+        g_raw, g, jac = ev
+        try:
+            solve, r = self.lin.factorize(jac)
+            self.nfact += 1
+            dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
+                            dtype=float).reshape(-1)
+        except _SingularJacobian as exc:
+            return self.finish(5, False, ev, step_inf, float("nan"), str(exc))
+        except _LinearSolverFailed as exc:
+            return self.finish(6, False, ev, step_inf, float("nan"), str(exc), krylov=True)
+        if not np.all(np.isfinite(dx)):
+            return self.finish(6, False, ev, step_inf, float("nan"), "non-finite Newton step")
+        return solve, r, dx
+
     def iterate(self, ev):
         x, x_flat, shape, n, d = self.x, self.x_flat, self.shape, self.n, self.d
         lin, mode, bnd, history = self.lin, self.mode, self.bnd, self.history
@@ -512,17 +532,7 @@ class _NewtonRun:
             g_raw, g, jac = ev
             state["ev"] = ev
             last_it = it == int(maxfev) - 1
-            try:
-                solve, r = lin.factorize(jac)
-                self.nfact += 1
-                dx = np.asarray(solve(g_raw if lin.kind == "callable" else g),
-                                dtype=float).reshape(-1)
-            except _SingularJacobian as exc:
-                return finish(5, False, ev, step_inf, float("nan"), str(exc))
-            except _LinearSolverFailed as exc:
-                return finish(6, False, ev, step_inf, float("nan"), str(exc), krylov=True)
-            if not np.all(np.isfinite(dx)):
-                return finish(6, False, ev, step_inf, float("nan"), "non-finite Newton step")
+            solve, r, dx = self._newton_step(ev, step_inf)
 
             dy = dx / d
             step_inf = float(np.max(np.abs(dy))) if n else 0.0
