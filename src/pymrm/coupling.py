@@ -6,7 +6,7 @@ import warnings
 from typing import NamedTuple
 import numpy as np
 from scipy.sparse import coo_array, csc_array, csr_array
-from pymrm.helpers import unwrap_bc_coeff, _sparse_array
+from pymrm.helpers import unwrap_bc_coeff, _sparse_array, _field_geometry
 
 
 def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=None):
@@ -913,7 +913,7 @@ def construct_interface_matrices(
 
     m_inv, values = _interface_stencil_values(a, b, alphas, shape_i, axis)
 
-    shape_t = [math.prod(shape[0:axis]), shape[axis], math.prod(shape[axis + 1:])]
+    shape_t = _field_geometry(shape, axis).shape_t
     n0, n1, n2 = shape_t
     i0 = np.arange(n0).reshape(-1, 1, 1)
     i2 = np.arange(n2).reshape(1, 1, -1)
