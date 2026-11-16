@@ -202,6 +202,18 @@ def _validated_shapes(domains):
     return shapes
 
 
+def _check_shared_axes(shapes, first, axis):
+    """Raise ValueError unless all domains match ``first`` on every axis but ``axis``."""
+    for name, shape in shapes.items():
+        if any(s != f for i, (s, f) in enumerate(zip(shape, first)) if i != axis):
+            raise ValueError(
+                f"domain {name!r} has shape {shape}; with axis={axis} all domains must "
+                f"match {first} on every other axis (the np.concatenate rule). For "
+                "different trailing sizes use axis=None (region-major), or stack fields "
+                "along axis=-1"
+            )
+
+
 class BlockLayout:
     """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
 
@@ -324,14 +336,7 @@ class BlockLayout:
             raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
         axis = int(axis) % ndim
         first = next(iter(shapes.values()))
-        for name, shape in shapes.items():
-            if any(s != f for i, (s, f) in enumerate(zip(shape, first)) if i != axis):
-                raise ValueError(
-                    f"domain {name!r} has shape {shape}; with axis={axis} all domains must "
-                    f"match {first} on every other axis (the np.concatenate rule). For "
-                    "different trailing sizes use axis=None (region-major), or stack fields "
-                    "along axis=-1"
-                )
+        _check_shared_axes(shapes, first, axis)
         self.axis = axis
         self._local = dict(shapes)
         self._offset, self._box = {}, {}
