@@ -838,6 +838,35 @@ class ConvFluxTVD:
             shape, x_f, x_c, bc_upwind, 1.0, axis, shapes_d=shapes_ext, format="csr")
         self._m_up, self._e_up = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
 
+        self._build_boundary_stencils(x_f, x_c)
+
+        # fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1
+        k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
+        cells = k + self._offsets.reshape(1, 1, -1, 1)
+        valid = (cells >= 0) & (cells < n1)
+        self._valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
+        i0 = np.arange(n0).reshape(-1, 1, 1, 1)
+        i2 = np.arange(n2).reshape(1, 1, 1, -1)
+        rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
+        cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
+        rows, cols = rows[self._valid], cols[self._valid]
+        shape_jac = (math.prod(self._shape_f_t), math.prod(self._shape_t))
+        tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
+                            shape=shape_jac, format=format)
+        tag.sort_indices()
+        self._perm = tag.data.astype(np.intp) - 1
+        self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
+
+        # boundary faces and the interior faces next to them, as flat face indices
+        f_t = np.arange(math.prod(self._shape_f_t)).reshape(self._shape_f_t)
+        self._faces_left, self._faces_right = f_t[:, 0, :], f_t[:, n1, :]
+        if n1 > 1:
+            self._faces_second, self._faces_penult = f_t[:, 1, :], f_t[:, n1 - 1, :]
+
+    def _build_boundary_stencils(self, x_f, x_c):
+        """Precompute the boundary-face bands and the normalised interior positions."""
+        n0, n1, n2 = self._shape_t
+
         def coefficient(matrix, cell):
             """Coefficient of cell ``cell`` (along the axis) in each face row."""
             indicator = np.zeros(self._shape_t)
@@ -868,29 +897,6 @@ class ConvFluxTVD:
                     ((x_d - x_up) / (x_D - x_up)).reshape(1, -1, 1),
                 )
             self._x_norm = x_norm
-
-        # fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1
-        k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
-        cells = k + self._offsets.reshape(1, 1, -1, 1)
-        valid = (cells >= 0) & (cells < n1)
-        self._valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
-        i0 = np.arange(n0).reshape(-1, 1, 1, 1)
-        i2 = np.arange(n2).reshape(1, 1, 1, -1)
-        rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
-        cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
-        rows, cols = rows[self._valid], cols[self._valid]
-        shape_jac = (math.prod(self._shape_f_t), math.prod(self._shape_t))
-        tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
-                            shape=shape_jac, format=format)
-        tag.sort_indices()
-        self._perm = tag.data.astype(np.intp) - 1
-        self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
-
-        # boundary faces and the interior faces next to them, as flat face indices
-        f_t = np.arange(math.prod(self._shape_f_t)).reshape(self._shape_f_t)
-        self._faces_left, self._faces_right = f_t[:, 0, :], f_t[:, n1, :]
-        if n1 > 1:
-            self._faces_second, self._faces_penult = f_t[:, 1, :], f_t[:, n1 - 1, :]
 
     def _face_velocity(self, v, jac_v):
         """Return the velocity as an array and as a face-shaped triplet."""
