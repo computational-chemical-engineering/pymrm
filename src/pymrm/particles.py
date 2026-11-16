@@ -82,6 +82,7 @@ from pymrm.ibm import (
     _lagrange3,
     _neighbor,
     _pair_sides_to_ibm,
+    _row_scale,
 )
 from pymrm.segmentation import Segmentation
 
@@ -882,18 +883,6 @@ def _contact_coords(spec, geom, grid):
     return coords
 
 
-def _contact_row_scale(n_cells, row, coefs, rescale):
-    """Row scaling that caps the largest coefficient of each cell at one."""
-    row_scale = np.ones(n_cells)
-    if rescale and row.size:
-        max_coef = np.maximum.reduce([np.abs(c) for c in coefs])
-        per_cell = np.zeros(n_cells)
-        np.maximum.at(per_cell, row, max_coef)
-        cut = per_cell > 1.0
-        row_scale[cut] = 1.0 / per_cell[cut]
-    return row_scale
-
-
 def _append_contact_side(side, spec, owner, grid, rescale):
     """Append contact-crossing entries to one :class:`_IBMSide`.
 
@@ -914,7 +903,7 @@ def _append_contact_side(side, spec, owner, grid, rescale):
     coef_o_all = np.concatenate([side.coef_o, coef_o])
     coef_w_all = np.concatenate([side.coef_w_self, coef_w])
     coef_ws_all = np.concatenate([side.coef_w_sib, np.zeros(n)])
-    row_scale = _contact_row_scale(
+    row_scale = _row_scale(
         side.n_cells, row, (coef_c_all, coef_o_all, coef_w_all, coef_ws_all),
         rescale)
 
