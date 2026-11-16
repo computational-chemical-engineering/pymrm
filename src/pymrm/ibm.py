@@ -743,8 +743,10 @@ def construct_ibm(sdf, x_c, axes=None, shape=None, rescale=True):
     strides = np.array(
         [math.prod(sdf.shape[a + 1:]) for a in range(sdf.ndim)], dtype=np.intp
     )
-    return _construct_ibm_core(sdf < 0.0, _sdf_theta_fn(sdf, strides), x_c,
-                               _FieldLayout(axes, shape), rescale)
+    out_s, in_s, meta = _construct_ibm_sides(
+        sdf < 0.0, _sdf_theta_fn(sdf, strides), x_c,
+        _FieldLayout(axes, shape), rescale)
+    return _pair_sides_to_ibm(out_s, in_s, meta)
 
 
 class _FieldLayout(NamedTuple):
@@ -838,17 +840,6 @@ def _construct_ibm_sides(solid, theta_fn, x_c, layout, rescale):
     in_s = _build_side(theta_fn, grid, _SideRegions(solid, fluid), rescale)
 
     return out_s, in_s, _ibm_meta(spatial_shape, shape, axes)
-
-
-def _construct_ibm_core(solid, theta_fn, x_c, layout, rescale):
-    """Shared IBM construction from a solid mask and a wall-position provider.
-
-    The SDF entry point :func:`construct_ibm` delegates here; the particle
-    entry point in :mod:`pymrm.particles` uses :func:`_construct_ibm_sides`.
-    """
-    out_s, in_s, meta = _construct_ibm_sides(solid, theta_fn, x_c, layout,
-                                             rescale)
-    return _pair_sides_to_ibm(out_s, in_s, meta)
 
 
 def _pair_sides_to_ibm(out_s, in_s, meta):
