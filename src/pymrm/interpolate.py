@@ -658,6 +658,25 @@ def _boundary_value_matrix(values, i_f, i_c, shape_bc, shape_t, format):
     return matrix
 
 
+def _boundary_value_indices(shape_t, idx_c_0, idx_c_1):
+    """Cell, row and source-row indices of the two-point boundary value stencil."""
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    # Cell indices: two cells nearest the boundary
+    i_c = np.ravel_multi_index(
+        (i0, np.array([idx_c_0, idx_c_1]).reshape(1, -1, 1), i2), shape_t
+    )
+    # Row indices: both entries map to row 0 (single boundary row per batch)
+    i_f = np.ravel_multi_index(
+        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, 1, n2)
+    )
+    i_f_bc = np.ravel_multi_index(
+        (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
+    ).reshape(n0, 1, n2)
+    return i_c, i_f, i_f_bc
+
+
 def construct_boundary_value_matrices(
     shape, x_f, x_c=None, bc=None, axis=0, bound_id=0, shape_d=None, format="csc"
 ):
@@ -733,20 +752,7 @@ def construct_boundary_value_matrices(
             x_c = 0.5 * np.array([x_f[0] + x_f[1], x_f[1] + x_f[2]])
         else:
             x_c = 0.5 * np.array([x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]])
-    n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
-    # Cell indices: two cells nearest the boundary
-    i_c = np.ravel_multi_index(
-        (i0, np.array([idx_c_0, idx_c_1]).reshape(1, -1, 1), i2), shape_t
-    )
-    # Row indices: both entries map to row 0 (single boundary row per batch)
-    i_f = np.ravel_multi_index(
-        (i0, np.array([0, 0]).reshape(1, -1, 1), i2), (n0, 1, n2)
-    )
-    i_f_bc = np.ravel_multi_index(
-        (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
-    ).reshape(n0, 1, n2)
+    i_c, i_f, i_f_bc = _boundary_value_indices(shape_t, idx_c_0, idx_c_1)
     values_bc = np.empty((shape_t[0], shape_t[2]))
     values = np.empty((shape_t[0], 2, shape_t[2]))
 
