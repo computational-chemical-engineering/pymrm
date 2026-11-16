@@ -187,6 +187,21 @@ def update_array_indices(sparse_mat, shape, new_shape, offset=None):
     return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
 
 
+def _validated_shapes(domains):
+    """Shapes of the domains as tuples of ints; raise ValueError for an invalid shape."""
+    shapes = {}
+    for name, shape in domains.items():
+        shape = tuple(shape)
+        if len(shape) == 0 or not all(
+            isinstance(dim, numbers.Integral) and dim > 0 for dim in shape
+        ):
+            raise ValueError(
+                f"domain {name!r}: shape {shape} must be a non-empty tuple of positive ints"
+            )
+        shapes[name] = tuple(int(dim) for dim in shape)
+    return shapes
+
+
 class BlockLayout:
     """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
 
@@ -275,16 +290,7 @@ class BlockLayout:
     def __init__(self, domains, *, axis):
         if not isinstance(domains, dict) or len(domains) == 0:
             raise ValueError("domains must be a non-empty dict of name -> shape")
-        shapes = {}
-        for name, shape in domains.items():
-            shape = tuple(shape)
-            if len(shape) == 0 or not all(
-                isinstance(dim, numbers.Integral) and dim > 0 for dim in shape
-            ):
-                raise ValueError(
-                    f"domain {name!r}: shape {shape} must be a non-empty tuple of positive ints"
-                )
-            shapes[name] = tuple(int(dim) for dim in shape)
+        shapes = _validated_shapes(domains)
         self.shapes = shapes
         self._domains = list(shapes)          # storage domains; subdomains are only added to shapes
         self._sizes = {name: math.prod(shape) for name, shape in shapes.items()}
