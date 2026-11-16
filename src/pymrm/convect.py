@@ -7,9 +7,9 @@ from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
 from .interpolate import create_staggered_array, _align_to_axes
 from .helpers import (
-    _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair, _field_geometry,
+    _sparse_array, substitute_outflow_bc, _unwrap_bc_side, _field_geometry,
     _BoundaryFaceTerms, _boundary_face_indices, _on_bc, _wall_alphas, _diagonal_sources,
-    _bc_operators_by_boundary)
+    _bc_operators_by_boundary, _single_cell_system)
 
 
 def _warn_unset_outflow(bc, v_t, caller):
@@ -174,36 +174,26 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
 def _convflux_bc_single_cell(geo, x_f, x_c, bc, outflow):
     """Boundary-face values and sources for a single cell along ``axis``, before the velocity."""
     n0, _, n2 = geo.shape_t
-    a, b, d = _unwrap_bc_pair(geo.shape, bc, geo.axis)
-    if x_c is None:
-        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    sys = _single_cell_system(geo, x_f, x_c, bc)
+    a, b, d, alpha_1, alpha_2, alpha_0, fctr = sys
     # Both faces reference cell 0
     i_c, i_f, i_f_bc = _boundary_face_indices(geo, [0, 0], [0, 1])
-    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_0_left = alpha_1 - alpha_2_left
-    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-    alpha_0_right = alpha_1 - alpha_2_right
-    fctr = (b[0] + alpha_0_left * a[0]) * (
-        b[1] + alpha_0_right * a[1]
-    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
     values = np.empty((n0, 2, n2))
     values[:, 0, :] = np.broadcast_to(
-        alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr,
+        alpha_1 * a[0] * (a[1] * (alpha_0[1] - alpha_2[0]) + b[1]) * fctr,
         geo.shape,
     ).reshape(geo.shape_bc_d)
     values[:, 1, :] = np.broadcast_to(
-        alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr,
+        alpha_1 * a[1] * (a[0] * (alpha_0[0] - alpha_2[1]) + b[0]) * fctr,
         geo.shape,
     ).reshape(geo.shape_bc_d)
     # values_bc_src[:, face, source]: with one cell, each face value depends
     # on the data of both boundaries
     values_bc_src = np.zeros((n0, 2, 2, n2))
-    values_bc_src[:, 0, 0, :] = _on_bc((a[1] * alpha_0_right + b[1]) * d[0] * fctr, geo)
-    values_bc_src[:, 0, 1, :] = _on_bc(-alpha_2_left * a[0] * d[1] * fctr, geo)
-    values_bc_src[:, 1, 1, :] = _on_bc((a[0] * alpha_0_left + b[0]) * d[1] * fctr, geo)
-    values_bc_src[:, 1, 0, :] = _on_bc(-alpha_2_right * a[1] * d[0] * fctr, geo)
+    values_bc_src[:, 0, 0, :] = _on_bc((a[1] * alpha_0[1] + b[1]) * d[0] * fctr, geo)
+    values_bc_src[:, 0, 1, :] = _on_bc(-alpha_2[0] * a[0] * d[1] * fctr, geo)
+    values_bc_src[:, 1, 1, :] = _on_bc((a[0] * alpha_0[0] + b[0]) * d[1] * fctr, geo)
+    values_bc_src[:, 1, 0, :] = _on_bc(-alpha_2[1] * a[1] * d[0] * fctr, geo)
     for side in (0, 1):
         if outflow[side]:
             values[:, side, :], values_bc_src[:, side, :, :] = 1.0, 0.0

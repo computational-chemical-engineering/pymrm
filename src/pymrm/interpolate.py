@@ -4,7 +4,8 @@ import math
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .helpers import (
-    substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _unwrap_bc_pair, _field_geometry)
+    substitute_outflow_bc, is_outflow_bc, _unwrap_bc_side, _field_geometry,
+    _single_cell_system, _wall_alphas, _on_bc)
 
 
 def _geometry_along(shape, axis):
@@ -125,26 +126,17 @@ def _on_boundary(value, geo):
 def _interp_single_cell(cells, x_f, x_c, bc, geo):
     """Face values of a single-cell domain from the two boundary conditions."""
     staggered_values = np.empty(geo.shape_f_t)
-    a, b, d = _unwrap_bc_pair(geo.shape, bc, geo.axis)
-    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_2_left = (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_0_left = alpha_1 - alpha_2_left
-    alpha_2_right = -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0]))
-    alpha_0_right = alpha_1 - alpha_2_right
-    fctr = (b[0] + alpha_0_left * a[0]) * (
-        b[1] + alpha_0_right * a[1]
-    ) - alpha_2_left * alpha_2_right * a[0] * a[1]
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    fctr_m = alpha_1 * a[0] * (a[1] * (alpha_0_right - alpha_2_left) + b[1]) * fctr
+    a, b, d, alpha_1, alpha_2, alpha_0, fctr = _single_cell_system(geo, x_f, x_c, bc)
+    fctr_m = alpha_1 * a[0] * (a[1] * (alpha_0[1] - alpha_2[0]) + b[1]) * fctr
     staggered_values[:, 0, :] = _on_boundary(fctr_m, geo) * cells[:, 0, :]
-    fctr_m = alpha_1 * a[1] * (a[0] * (alpha_0_left - alpha_2_right) + b[0]) * fctr
+    fctr_m = alpha_1 * a[1] * (a[0] * (alpha_0[0] - alpha_2[1]) + b[0]) * fctr
     staggered_values[:, 1, :] = _on_boundary(fctr_m, geo) * cells[:, 0, :]
     fctr_m = (
-        (a[1] * alpha_0_right + b[1]) * d[0] - alpha_2_left * a[0] * d[1]
+        (a[1] * alpha_0[1] + b[1]) * d[0] - alpha_2[0] * a[0] * d[1]
     ) * fctr
     staggered_values[:, 0, :] += _on_boundary(fctr_m, geo)
     fctr_m = (
-        (a[0] * alpha_0_left + b[0]) * d[1] - alpha_2_right * a[1] * d[0]
+        (a[0] * alpha_0[0] + b[0]) * d[1] - alpha_2[1] * a[1] * d[0]
     ) * fctr
     staggered_values[:, 1, :] += _on_boundary(fctr_m, geo)
     return staggered_values.reshape(geo.shape_f), np.zeros(geo.shape_f)
@@ -165,14 +157,9 @@ def _wall_face_value(bc_i, geo, alphas, c_near, c_far):
 def _wall_faces(cells, x_f, x_c, bc, geo):
     """Face buffer of a multi-cell domain with the two boundary faces filled in."""
     faces = np.empty(geo.shape_f_t)
-    alpha_1 = (x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0]))
-    alpha_2 = (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0]))
-    faces[:, 0, :] = _wall_face_value(
-        bc[0], geo, (alpha_1, alpha_2), cells[:, 0, :], cells[:, 1, :])
-    alpha_1 = -(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-    alpha_2 = -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1]))
-    faces[:, -1, :] = _wall_face_value(
-        bc[1], geo, (alpha_1, alpha_2), cells[:, -1, :], cells[:, -2, :])
+    left, right = _wall_alphas(x_f, x_c)
+    faces[:, 0, :] = _wall_face_value(bc[0], geo, left, cells[:, 0, :], cells[:, 1, :])
+    faces[:, -1, :] = _wall_face_value(bc[1], geo, right, cells[:, -1, :], cells[:, -2, :])
     return faces
 
 
@@ -346,42 +333,29 @@ def _align_to_axes(array, shape, axis):
     return array.reshape(shape_new)
 
 
-def _overwrite_outflow_sides(result, cell_centered_values, bc, outflow, axis, bound_id):
-    """Replace outflow boundaries by the adjacent cell value and a zero gradient."""
-    ax = axis % cell_centered_values.ndim
-    sides = [0, 1] if bound_id is None else [bound_id]
+def _outflow_flags(bc, outflow, sides):
+    """Outflow flag per queried side."""
     if isinstance(bc, dict) or len(outflow) == 1:
-        flags = {sides[0]: outflow[0]}
-    else:
-        flags = {side: outflow[side] for side in sides}
+        return {sides[0]: outflow[0]}
+    return {side: outflow[side] for side in sides}
+
+
+def _overwrite_outflow_sides(result, cells, axis, sides, flags):
+    """Replace outflow boundaries by the adjacent cell value and a zero gradient."""
+    ax = axis % cells.ndim
     for k, side in enumerate(sides):
         if flags.get(side):
-            adjacent = np.take(cell_centered_values, [0 if side == 0 else -1], axis=ax)
+            adjacent = np.take(cells, [0 if side == 0 else -1], axis=ax)
             result[2 * k] = adjacent.reshape(np.shape(result[2 * k]))
             result[2 * k + 1] = np.zeros_like(np.asarray(result[2 * k + 1], dtype=float))
     return tuple(result)
 
 
-def _boundary_values_single_cell(
-    cell_centered_values, x_f, x_c, bc, shape, axis, shape_bc, shape_bc_d, bounds
-):
+def _boundary_values_single_cell(cells, system, geo, bounds):
     """Boundary values and gradients for a domain with a single cell."""
     boundary_values = [None, None]
     boundary_grads = [None, None]
-    if x_c is None:
-        x_c = 0.5 * (x_f[:-1] + x_f[1:])
-    a, b, d = _unwrap_bc_pair(shape, bc, axis)
-    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
-    alpha_2 = [
-        (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0])),
-        -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0])),
-    ]
-    alpha_0 = [alpha_1 - alpha_2[0], alpha_1 - alpha_2[1]]
-
-    fctr = (b[0] + alpha_0[0] * a[0]) * (b[1] + alpha_0[1] * a[1]) - alpha_2[
-        0
-    ] * alpha_2[1] * a[0] * a[1]
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a, b, d, alpha_1, alpha_2, alpha_0, fctr = system
 
     for i in bounds:
         if i == 0:
@@ -391,21 +365,13 @@ def _boundary_values_single_cell(
             j = 0
             sgn = -1
         fctr_i = alpha_1 * (a[j] * (alpha_0[j] - alpha_2[i]) + b[j]) * fctr
-        fctr_m = a[i] * fctr_i
-        fctr_m = np.broadcast_to(fctr_m, shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        boundary_values[i] = fctr_m * cell_centered_values[:, 0, :]
-        fctr_m = b[i] * fctr_i
-        fctr_m = np.broadcast_to(fctr_m, shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        boundary_grads[i] = sgn * fctr_m * cell_centered_values[:, 0, :]
+        boundary_values[i] = _on_bc(a[i] * fctr_i, geo) * cells[:, 0, :]
+        boundary_grads[i] = sgn * _on_bc(b[i] * fctr_i, geo) * cells[:, 0, :]
 
         fctr_m = (
             (a[j] * alpha_0[j] + b[j]) * d[i] - alpha_2[i] * a[i] * d[j]
         ) * fctr
-        fctr_m = np.broadcast_to(fctr_m, shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        boundary_values[i][...] += fctr_m
+        boundary_values[i][...] += _on_bc(fctr_m, geo)
         fctr_m = (
             (
                 a[j] * (-alpha_0[i] * alpha_0[j] + alpha_2[i] * alpha_2[j])
@@ -414,97 +380,76 @@ def _boundary_values_single_cell(
             * d[i]
             - alpha_2[i] * b[i] * d[j]
         ) * fctr
-        fctr_m = np.broadcast_to(fctr_m, shape_bc)
-        fctr_m = np.reshape(fctr_m, shape_bc_d)
-        boundary_grads[i][...] += sgn * fctr_m
-        boundary_values[i] = boundary_values[i].reshape(shape_bc)
-        boundary_grads[i] = boundary_grads[i].reshape(shape_bc)
+        boundary_grads[i][...] += sgn * _on_bc(fctr_m, geo)
+        boundary_values[i] = boundary_values[i].reshape(geo.shape_bc)
+        boundary_grads[i] = boundary_grads[i].reshape(geo.shape_bc)
     return boundary_values, boundary_grads
 
 
-def _boundary_values_two_cell_side(
-    cell_centered_values, x_f, x_c, bc_i, i, shape, axis, shape_bc, shape_bc_d
-):
-    """Boundary value and gradient at boundary ``i`` from the two adjacent cells."""
+def _side_coords(x_f, x_c, i):
+    """Coordinates of the wall, the nearest cell and the second cell at boundary ``i``."""
     if i == 0:
-        sgn = 1
-        idx_0 = 0
-        idx_1 = 1
-    else:
-        sgn = -1
-        idx_0 = -1
-        idx_1 = -2
+        return x_f[0], x_c[0], x_c[1]
+    return x_f[-1], x_c[-1], x_c[-2]
 
-    a, b, d = _unwrap_bc_side(shape, bc_i, axis)
-    alpha_1 = (x_c[idx_1] - x_f[idx_0]) / (
-        (x_c[idx_0] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])
-    )
-    alpha_2 = (x_c[idx_0] - x_f[idx_0]) / (
-        (x_c[idx_1] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])
-    )
+
+def _side_alphas(xs):
+    """Weights ``(alpha_1, alpha_2)`` of the one-sided wall gradient from ``_side_coords``."""
+    x_wall, x_near, x_far = xs
+    alpha_1 = (x_far - x_wall) / ((x_near - x_wall) * (x_far - x_near))
+    alpha_2 = (x_near - x_wall) / ((x_far - x_wall) * (x_far - x_near))
+    return alpha_1, alpha_2
+
+
+def _boundary_values_two_cell_side(cells, bc_i, i, xs, geo):
+    """Boundary value and gradient at boundary ``i`` from the two adjacent cells."""
+    sgn, idx_0, idx_1 = (1, 0, 1) if i == 0 else (-1, -1, -2)
+    x_wall, x_near, x_far = xs
+    a, b, d = _unwrap_bc_side(geo.shape, bc_i, geo.axis)
+    alpha_1, alpha_2 = _side_alphas(xs)
     alpha_0 = alpha_1 - alpha_2
     a *= sgn
     fctr = alpha_0 * a + b
     np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    a_fctr = a * fctr
-    a_fctr = np.broadcast_to(a_fctr, shape_bc)
-    a_fctr = np.reshape(a_fctr, shape_bc_d)
-    b_fctr = b * fctr
-    b_fctr = np.broadcast_to(b_fctr, shape_bc)
-    b_fctr = np.reshape(b_fctr, shape_bc_d)
-    d_fctr = d * fctr
-    d_fctr = np.broadcast_to(d_fctr, shape_bc)
-    d_fctr = np.reshape(d_fctr, shape_bc_d)
-    value = d_fctr + a_fctr * (
-        alpha_1 * cell_centered_values[:, idx_0, :]
-        - alpha_2 * cell_centered_values[:, idx_1, :]
-    )
-    grad = -alpha_0 * d_fctr + b_fctr * (
-        alpha_1 * cell_centered_values[:, idx_0, :]
-        - alpha_2 * cell_centered_values[:, idx_1, :]
-    )
+    a_fctr = _on_bc(a * fctr, geo)
+    b_fctr = _on_bc(b * fctr, geo)
+    d_fctr = _on_bc(d * fctr, geo)
+    c_near, c_far = cells[:, idx_0, :], cells[:, idx_1, :]
+    value = d_fctr + a_fctr * (alpha_1 * c_near - alpha_2 * c_far)
+    grad = -alpha_0 * d_fctr + b_fctr * (alpha_1 * c_near - alpha_2 * c_far)
     if np.any(fctr == 0.0):
-        fltr = np.reshape(np.broadcast_to((fctr == 0.0), shape_bc), shape_bc_d)
+        fltr = _on_bc(fctr == 0.0, geo)
         value[fltr] = (
-            (x_c[idx_1] - x_f[idx_0]) / (x_c[idx_1] - x_c[idx_0])
-        ) * cell_centered_values[:, idx_0, :][fltr] + (
-            (x_c[idx_0] - x_f[idx_0]) / (x_c[idx_0] - x_c[idx_1])
-        ) * cell_centered_values[
-            :, idx_1, :
-        ][
-            fltr
-        ]
-        grad[fltr] = (1.0 / (x_c[idx_1] - x_c[idx_0])) * (
-            cell_centered_values[:, idx_1, :][fltr]
-            - cell_centered_values[:, idx_0, :][fltr]
+            (x_far - x_wall) / (x_far - x_near)
+        ) * c_near[fltr] + (
+            (x_near - x_wall) / (x_near - x_far)
+        ) * c_far[fltr]
+        grad[fltr] = (1.0 / (x_far - x_near)) * (c_far[fltr] - c_near[fltr])
+    return value.reshape(geo.shape_bc), grad.reshape(geo.shape_bc)
+
+
+def _both_sides_bc(bc):
+    """``bc`` as a pair of boundary dictionaries, ``None`` sides replaced by a zero condition."""
+    if bc is None:
+        return ({"a": 0, "b": 0, "d": 0}, {"a": 0, "b": 0, "d": 0})
+    if not isinstance(bc, tuple) and len(bc) != 2:
+        raise ValueError(
+            "Boundary conditions must be a tuple of 2 dictionaries when 2 boundary conditions are required."
         )
-    value = value.reshape(shape_bc)
-    grad = grad.reshape(shape_bc)
-    return value, grad
+    if bc[0] is None:
+        bc[0] = {"a": 0, "b": 0, "d": 0}
+    if bc[1] is None:
+        bc[1] = {"a": 0, "b": 0, "d": 0}
+    return bc
 
 
 def _normalize_boundary_bc(bc, bound_id, single_cell):
     """Return ``bc`` as a pair of boundary dictionaries (``None`` for an unused side)."""
-    both_sides = bound_id is None or single_cell
-    if both_sides:
-        if bc is None:
-            bc = ({"a": 0, "b": 0, "d": 0}, {"a": 0, "b": 0, "d": 0})
-        elif not isinstance(bc, tuple) and len(bc) != 2:
-            raise ValueError(
-                "Boundary conditions must be a tuple of 2 dictionaries when 2 boundary conditions are required."
-            )
-        if bc[0] is None:
-            bc[0] = {"a": 0, "b": 0, "d": 0}
-        if bc[1] is None:
-            bc[1] = {"a": 0, "b": 0, "d": 0}
-    else:
-        if bc is None:
-            bc = {"a": 0, "b": 0, "d": 0}
-        if bound_id == 0:
-            bc = (bc, None)
-        else:
-            bc = (None, bc)
-    return bc
+    if bound_id is None or single_cell:
+        return _both_sides_bc(bc)
+    if bc is None:
+        bc = {"a": 0, "b": 0, "d": 0}
+    return (bc, None) if bound_id == 0 else (None, bc)
 
 
 def compute_boundary_values(
@@ -544,27 +489,23 @@ def compute_boundary_values(
         if any(outflow):
             result = list(compute_boundary_values(
                 cell_centered_values, x_f, x_c, bc, axis, bound_id))
+            sides = [0, 1] if bound_id is None else [bound_id]
             return _overwrite_outflow_sides(
-                result, cell_centered_values, bc, outflow, axis, bound_id)
+                result, cell_centered_values, axis, sides, _outflow_flags(bc, outflow, sides))
 
     geo = _geometry_along(cell_centered_values.shape, axis)
-    shape, axis, shape_t = geo.shape, geo.axis, geo.shape_t
-    shape_bc, shape_bc_d = geo.shape_bc, geo.shape_bc_d
-    cell_centered_values = cell_centered_values.reshape(shape_t)
+    cells = cell_centered_values.reshape(geo.shape_t)
+    single_cell = geo.shape_t[1] == 1
+    bounds = [0, 1] if bound_id is None else [bound_id]
 
-    if bound_id is None:
-        bounds = [0, 1]
-    else:
-        bounds = [bound_id]
-
-    bc = _normalize_boundary_bc(bc, bound_id, shape_t[1] == 1)
+    bc = _normalize_boundary_bc(bc, bound_id, single_cell)
 
     boundary_values = [None, None]
     boundary_grads = [None, None]
 
-    if shape_t[1] == 1:
-        boundary_values, boundary_grads = _boundary_values_single_cell(
-            cell_centered_values, x_f, x_c, bc, shape, axis, shape_bc, shape_bc_d, bounds)
+    if single_cell:
+        system = _single_cell_system(geo, x_f, x_c, bc)
+        boundary_values, boundary_grads = _boundary_values_single_cell(cells, system, geo, bounds)
     else:
         if x_c is None:
             x_c = np.concatenate(
@@ -572,7 +513,7 @@ def compute_boundary_values(
             )
         for i in bounds:
             boundary_values[i], boundary_grads[i] = _boundary_values_two_cell_side(
-                cell_centered_values, x_f, x_c, bc[i], i, shape, axis, shape_bc, shape_bc_d)
+                cells, bc[i], i, _side_coords(x_f, x_c, i), geo)
 
     if bound_id is None:
         return (
@@ -585,9 +526,10 @@ def compute_boundary_values(
         return boundary_values[bound_id], boundary_grads[bound_id]
 
 
-def _boundary_value_matrix(values, i_f, i_c, shape_bc, shape_t, format):
+def _boundary_value_matrix(values, i_f, i_c, geo, format):
     """Sparse matrix from cell values to boundary values in the requested format."""
-    n0, n1, n2 = shape_t
+    n0, n1, n2 = geo.shape_t
+    shape_bc, shape_t = geo.shape_bc, geo.shape_t
     if format == "csc":
         matrix = csc_array(
             (values.ravel(), (i_f.ravel(), i_c.ravel())),
@@ -629,6 +571,51 @@ def _boundary_value_indices(shape_t, idx_c_0, idx_c_1):
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
     ).reshape(n0, 1, n2)
     return i_c, i_f, i_f_bc
+
+
+def _boundary_value_weights(bc, geo, xs, bound_id):
+    """Weights of the two nearest cells and of the source in a boundary value."""
+    sgn, idx_0, idx_1 = (1, 0, 1) if bound_id == 0 else (-1, -1, -2)
+    x_wall, x_near, x_far = xs
+    n0, _, n2 = geo.shape_t
+    values_bc = np.empty((n0, n2))
+    values = np.empty((n0, 2, n2))
+
+    # Get a, b, and d from dictionary
+    a, b, d = _unwrap_bc_side(geo.shape, bc, geo.axis)
+    a *= sgn
+    alpha_1, alpha_2 = _side_alphas(xs)
+    alpha_0 = alpha_1 - alpha_2
+    fctr = alpha_0 * a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    a_fctr = _on_bc(a * fctr, geo)
+    d_fctr = _on_bc(d * fctr, geo)
+    values[:, idx_0, :] = a_fctr * alpha_1
+    values[:, idx_1, :] = -a_fctr * alpha_2
+    values_bc[:, :] = d_fctr
+    if np.any(fctr == 0.0):
+        fltr = _on_bc(fctr == 0.0, geo)
+        values[:, idx_0, :][fltr] = (x_far - x_wall) / (x_far - x_near)
+        values[:, idx_1, :][fltr] = (x_near - x_wall) / (x_near - x_far)
+        values_bc[fltr] = 0.0
+    return values, values_bc
+
+
+def _boundary_value_source(values_bc, i_f_bc, shape_d, geo):
+    """Sparse matrix from the inhomogeneous boundary terms to the boundary values."""
+    n_rows = math.prod(geo.shape_bc)
+    if shape_d is None:
+        return csc_array(
+            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
+            shape=(n_rows, 1),
+        )
+    num_cols = math.prod(shape_d)
+    i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
+    i_cols_bc = np.broadcast_to(i_cols_bc, geo.shape_bc)
+    return csc_array(
+        (values_bc.ravel(), (i_f_bc.ravel(), i_cols_bc.ravel())),
+        shape=(n_rows, num_cols),
+    )
 
 
 def construct_boundary_value_matrices(
@@ -680,76 +667,21 @@ def construct_boundary_value_matrices(
 
     # Trick: Reshape to triplet shape_t
     geo = _field_geometry(shape, axis)
-    shape_t, shape_bc, shape_bc_d = geo.shape_t, geo.shape_bc, geo.shape_bc_d
+    n1 = geo.shape_t[1]
 
-    if shape_t[1] < 2:
+    if n1 < 2:
         raise ValueError(
             "construct_boundary_value_matrices needs at least two cells along axis; "
             "with one cell the boundary value depends on both boundary conditions"
         )
 
-    if bound_id == 0:
-        idx_c_0 = 0
-        idx_c_1 = 1
-        idx_0 = 0
-        idx_1 = 1
-        sgn = 1
-    else:
-        idx_c_0 = shape_t[1] - 2
-        idx_c_1 = shape_t[1] - 1
-        idx_0 = -1
-        idx_1 = -2
-        sgn = -1
+    idx_c_0, idx_c_1 = (0, 1) if bound_id == 0 else (n1 - 2, n1 - 1)
     if x_c is None:
         if bound_id == 0:
             x_c = 0.5 * np.array([x_f[0] + x_f[1], x_f[1] + x_f[2]])
         else:
             x_c = 0.5 * np.array([x_f[-3] + x_f[-2], x_f[-2] + x_f[-1]])
-    i_c, i_f, i_f_bc = _boundary_value_indices(shape_t, idx_c_0, idx_c_1)
-    values_bc = np.empty((shape_t[0], shape_t[2]))
-    values = np.empty((shape_t[0], 2, shape_t[2]))
-
-    # Get a, b, and d from dictionary
-    a, b, d = _unwrap_bc_side(shape, bc, axis)
-    a *= sgn
-    alpha_1 = (x_c[idx_1] - x_f[idx_0]) / (
-        (x_c[idx_0] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])
-    )
-    alpha_2 = (x_c[idx_0] - x_f[idx_0]) / (
-        (x_c[idx_1] - x_f[idx_0]) * (x_c[idx_1] - x_c[idx_0])
-    )
-    alpha_0 = alpha_1 - alpha_2
-    fctr = alpha_0 * a + b
-    np.divide(1, fctr, out=fctr, where=(fctr != 0))
-    a_fctr = a * fctr
-    a_fctr = np.broadcast_to(a_fctr, shape_bc).reshape(shape_bc_d)
-    d_fctr = d * fctr
-    d_fctr = np.broadcast_to(d_fctr, shape_bc).reshape(shape_bc_d)
-    values[:, idx_0, :] = a_fctr * alpha_1
-    values[:, idx_1, :] = -a_fctr * alpha_2
-    values_bc[:, :] = d_fctr
-    if np.any(fctr == 0.0):
-        fltr = np.reshape(np.broadcast_to((fctr == 0.0), shape_bc), shape_bc_d)
-        values[:, idx_0, :][fltr] = (x_c[idx_1] - x_f[idx_0]) / (
-            x_c[idx_1] - x_c[idx_0]
-        )
-        values[:, idx_1, :][fltr] = (x_c[idx_0] - x_f[idx_0]) / (
-            x_c[idx_0] - x_c[idx_1]
-        )
-        values_bc[fltr] = 0.0
-
-    matrix = _boundary_value_matrix(values, i_f, i_c, shape_bc, shape_t, format)
-    if shape_d is None:
-        mat_bc = csc_array(
-            (values_bc.ravel(), i_f_bc.ravel(), np.array([0, i_f_bc.size])),
-            shape=(math.prod(shape_bc), 1),
-        )
-    else:
-        num_cols = math.prod(shape_d)
-        i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
-        i_cols_bc = np.broadcast_to(i_cols_bc, shape_bc)
-        mat_bc = csc_array(
-            (values_bc.ravel(), (i_f_bc.ravel(), i_cols_bc.ravel())),
-            shape=(math.prod(shape_bc), num_cols),
-        )
-    return matrix, mat_bc
+    i_c, i_f, i_f_bc = _boundary_value_indices(geo.shape_t, idx_c_0, idx_c_1)
+    values, values_bc = _boundary_value_weights(bc, geo, _side_coords(x_f, x_c, bound_id), bound_id)
+    matrix = _boundary_value_matrix(values, i_f, i_c, geo, format)
+    return matrix, _boundary_value_source(values_bc, i_f_bc, shape_d, geo)

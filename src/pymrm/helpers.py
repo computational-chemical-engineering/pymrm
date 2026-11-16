@@ -183,6 +183,36 @@ def _wall_alphas(x_f, x_c):
     return left, right
 
 
+class _SingleCellSystem(NamedTuple):
+    """Boundary coefficients, wall weights and coupling factor of a one-cell domain."""
+
+    a: list
+    b: list
+    d: list
+    alpha_1: object
+    alpha_2: list
+    alpha_0: list
+    fctr: np.ndarray
+
+
+def _single_cell_system(geo, x_f, x_c, bc):
+    """Weights and coupling factor of the two boundary conditions of a one-cell domain."""
+    if x_c is None:
+        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    a, b, d = _unwrap_bc_pair(geo.shape, bc, geo.axis)
+    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_2 = [
+        (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0])),
+        -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0])),
+    ]
+    alpha_0 = [alpha_1 - alpha_2[0], alpha_1 - alpha_2[1]]
+    fctr = (b[0] + alpha_0[0] * a[0]) * (b[1] + alpha_0[1] * a[1]) - alpha_2[
+        0
+    ] * alpha_2[1] * a[0] * a[1]
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    return _SingleCellSystem(a, b, d, alpha_1, alpha_2, alpha_0, fctr)
+
+
 def _diagonal_sources(values_bc):
     """Sources per face and boundary when each boundary face depends on its own data only."""
     n0, _, n2 = values_bc.shape
