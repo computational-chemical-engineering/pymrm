@@ -29,7 +29,7 @@ kind = "command"
 cadence = "step"
 behaviour = false
 timeout = 300
-cmd = '"$CODEHEALTH_PY" -m flake8 {files}'
+cmd = '"$CODEHEALTH_PY" -m flake8 {files:*.py}'
 
 # The whole test suite, with every tolerance comparison recorded (.codehealth/assert_recorder.py)
 # and compared byte for byte with the campaign base. A failing test fails the tier.
