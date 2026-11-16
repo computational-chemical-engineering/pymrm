@@ -86,13 +86,12 @@ def construct_convflux_upwind(
     x_f, x_c = generate_grid(shape[axis], x_f, generate_x_c=True, x_c=x_c)
 
     v_f = create_staggered_array(v, shape, axis, x_f=x_f, x_c=x_c)
-    shape_f_t = (math.prod(shape[:axis]), shape[axis] + 1, math.prod(shape[axis + 1:]))
-    _warn_unset_outflow(bc, v_f if np.ndim(v_f) == 0 else np.reshape(v_f, shape_f_t),
+    geo = _field_geometry(shape, axis)
+    _warn_unset_outflow(bc, v_f if np.ndim(v_f) == 0 else np.reshape(v_f, geo.shape_f_t),
                         "construct_convflux_upwind")
     conv_matrix = construct_convflux_upwind_int(shape, v_f, axis, format=format)
     if bc is None or bc == (None, None):
-        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-        conv_bc = csc_array((math.prod(shape_f), 1))
+        conv_bc = csc_array((math.prod(geo.shape_f), 1))
         return conv_matrix, conv_bc
     else:
         if shapes_d is None or shapes_d == (None, None):
@@ -130,9 +129,8 @@ def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
     scipy.sparse.csc_array or scipy.sparse.csr_array
         Sparse matrix mapping cell-centered values to interior face fluxes.
     """
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
+    geo = _field_geometry(shape, axis)
+    shape_t, shape_f_t = geo.shape_t, geo.shape_f_t
 
     n0, n1, n2 = shape_t
     if isinstance(v, (float, int)):
@@ -669,13 +667,13 @@ class ConvFluxTVD:
         self._warned_unset = False
         self.shape = shape
         self.axis = axis
-        self.shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+        geo = _field_geometry(shape, axis)
+        self.shape_f = geo.shape_f
         self._x_f, self._x_c = x_f, x_c
         self.tvd_limiter = upwind if tvd_limiter is None else tvd_limiter
         self.format = format
-        n0, n1, n2 = math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:])
-        self._shape_t = (n0, n1, n2)
-        self._shape_f_t = (n0, n1 + 1, n2)
+        n0, n1, n2 = self._shape_t = geo.shape_t
+        self._shape_f_t = geo.shape_f_t
 
         if shapes_d is None:
             shapes_d = (None, None)
