@@ -435,8 +435,6 @@ class _NewtonRun:
     state: dict = field(default_factory=lambda: {"last": False, "ev": None, "step": float("nan"),
                                                  "bad": None})
 
-    breakdown = NewtonBreakdown   # KrylovBreakdown when an iterative solver fails
-
     def _call(self, xv, guard):
         """``function(xv, *args)`` as ``(g_raw, jac)``; None if guarded and recoverable."""
         if not guard:
@@ -479,8 +477,8 @@ class _NewtonRun:
         return _backward_error(g_flat, jac, self.x_flat,
                                _field_reference(self.x_flat, self.shape, self.d_user, self.x0_size))
 
-    def finish(self, status, ev, step_norm, be, extra=""):
-        """The result of the run, raised in a ``breakdown`` for the statuses 4, 5 and 6."""
+    def _outcome(self, status, ev, step_norm, be, extra):
+        """``(message, result)`` of the run ending with ``status``."""
         if ev is None:
             g_raw = self.state["bad"] if status == 4 else None
         else:
@@ -489,10 +487,15 @@ class _NewtonRun:
         result = OptimizeResult(x=self.x, success=status in (0, 1), status=status, message=message,
                                 nit=len(self.history), nfev=self.nfev, nfact=self.nfact, fun=g_raw,
                                 step_norm=step_norm, backward_error=be, history=self.history)
+        return message, result
+
+    def finish(self, status, ev, step_norm, be, extra=""):
+        """The result of the run, raised in a ``breakdown`` for the statuses 4, 5 and 6."""
+        message, result = self._outcome(status, ev, step_norm, be, extra)
         if status in (4, 5, 6):
             # No usable Newton step: raise, as these cases did up to 2.5.0
             # (callers catch ValueError, LinAlgError or RuntimeError).
-            raise self.breakdown(message, result)
+            raise NewtonBreakdown(message, result)
         return result
 
     def solve(self, guard_guess):
@@ -529,12 +532,11 @@ class _NewtonRun:
             dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
                             dtype=float).reshape(-1)
         except _SingularJacobian as exc:
-            return self.finish(5, ev, step_inf, float("nan"), str(exc))
+            self.finish(5, ev, step_inf, float("nan"), str(exc))     # raises
         except _LinearSolverFailed as exc:
-            self.breakdown = KrylovBreakdown
-            return self.finish(6, ev, step_inf, float("nan"), str(exc))
+            raise KrylovBreakdown(*self._outcome(6, ev, step_inf, float("nan"), str(exc)))
         if not np.all(np.isfinite(dx)):
-            return self.finish(6, ev, step_inf, float("nan"), "non-finite Newton step")
+            self.finish(6, ev, step_inf, float("nan"), "non-finite Newton step")     # raises
         return solve, r, dx
 
     def iterate(self, ev):
