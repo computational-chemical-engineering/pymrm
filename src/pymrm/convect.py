@@ -227,6 +227,21 @@ def _convflux_bc_by_boundary(
     return conv_matrix_0, conv_bc[0], conv_matrix_1, conv_bc[1]
 
 
+def _convflux_geometry(shape, axis):
+    """Triplet shapes and index grids of the boundary-face operators."""
+    # Trick: Reshape to triplet shape_t
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
+    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
+    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
+    shape_bc_d = (shape_t[0], shape_t[2])
+
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    return shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2
+
+
 def construct_convflux_bc(
     shape, x_f, x_c=None, bc=(None, None), v=1.0, axis=0, shapes_d=(None, None),
     format="csc"
@@ -268,16 +283,8 @@ def construct_convflux_bc(
     # construct_grad), then the outflow face is set to the adjacent cell value.
     bc, outflow = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
-    # Trick: Reshape to triplet shape_t
-    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
-    shape_f_t = (shape_t[0], shape_f[axis], shape_t[2])
-    shape_bc = shape[:axis] + (1,) + shape[axis + 1:]
-    shape_bc_d = (shape_t[0], shape_t[2])
-
+    shape_f, shape_t, shape_f_t, shape_bc, shape_bc_d, i0, i2 = _convflux_geometry(shape, axis)
     n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
 
     # Handle special case with one cell in the dimension axis
     if n1 == 1:
