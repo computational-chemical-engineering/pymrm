@@ -432,13 +432,14 @@ class _CutKinds(NamedTuple):
     sandwich: np.ndarray
     fallback: np.ndarray
     normal: np.ndarray
+    has_fallback: bool
 
 
 def _cut_coefficients(theta_fn, geo, kinds):
     """Lagrange coefficients and opposite cells of the cut cells of one direction."""
     cells, a, direction = geo.cells, geo.a, geo.direction
     xc, xg, xo, xw = geo.xs
-    sandwich, fallback, normal = kinds
+    sandwich, fallback, normal, has_fallback = kinds
     coef_c = np.zeros(cells.size)
     coef_o = np.zeros(cells.size)
     coef_w_self = np.zeros(cells.size)
@@ -463,7 +464,7 @@ def _cut_coefficients(theta_fn, geo, kinds):
         coef_c[sandwich] = m1
         coef_w_self[sandwich] = m2
 
-    if np.any(fallback):
+    if has_fallback:
         xcf, xwf, xgf = xc[fallback], xw[fallback], xg[fallback]
         coef_c[fallback] = (xgf - xwf) / (xcf - xwf)
         coef_w_self[fallback] = (xgf - xcf) / (xwf - xcf)
@@ -501,10 +502,11 @@ def _cut_cell_entries(theta_fn, grid, a, direction, masks):
     sandwich = masks.omask.ravel()[cells]
     fallback = (~sandwich) & (~masks.opp_valid.ravel()[cells])
     normal = (~sandwich) & (~fallback)
+    has_fallback = bool(np.any(fallback))
 
     geo = _CutGeometry(cells, strides, a, direction, (xc, xg, xo, xw))
     coef_c, coef_o, coef_w_self, coef_w_sib, opp_lin = _cut_coefficients(
-        theta_fn, geo, _CutKinds(sandwich, fallback, normal))
+        theta_fn, geo, _CutKinds(sandwich, fallback, normal, has_fallback))
 
     ghost_lin = cells + direction * strides[a]
     lower = np.minimum(cells, ghost_lin)
@@ -529,7 +531,7 @@ def _cut_cell_entries(theta_fn, grid, a, direction, masks):
         "crossing_key": key.astype(np.intp),
         "coords": coords,
     }
-    return entries, bool(np.any(fallback))
+    return entries, has_fallback
 
 
 def _axis_entries(theta_fn, grid, regions, a):
