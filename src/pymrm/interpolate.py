@@ -390,6 +390,22 @@ def _align_to_axes(array, shape, axis):
     return array.reshape(shape_new)
 
 
+def _overwrite_outflow_sides(result, cell_centered_values, bc, outflow, axis, bound_id):
+    """Replace outflow boundaries by the adjacent cell value and a zero gradient."""
+    ax = axis % cell_centered_values.ndim
+    sides = [0, 1] if bound_id is None else [bound_id]
+    if isinstance(bc, dict) or len(outflow) == 1:
+        flags = {sides[0]: outflow[0]}
+    else:
+        flags = {side: outflow[side] for side in sides}
+    for k, side in enumerate(sides):
+        if flags.get(side):
+            adjacent = np.take(cell_centered_values, [0 if side == 0 else -1], axis=ax)
+            result[2 * k] = adjacent.reshape(np.shape(result[2 * k]))
+            result[2 * k + 1] = np.zeros_like(np.asarray(result[2 * k + 1], dtype=float))
+    return tuple(result)
+
+
 def compute_boundary_values(
     cell_centered_values, x_f, x_c=None, bc=None, axis=0, bound_id=None
 ):
@@ -427,18 +443,8 @@ def compute_boundary_values(
         if any(outflow):
             result = list(compute_boundary_values(
                 cell_centered_values, x_f, x_c, bc, axis, bound_id))
-            ax = axis % cell_centered_values.ndim
-            sides = [0, 1] if bound_id is None else [bound_id]
-            if isinstance(bc, dict) or len(outflow) == 1:
-                flags = {sides[0]: outflow[0]}
-            else:
-                flags = {side: outflow[side] for side in sides}
-            for k, side in enumerate(sides):
-                if flags.get(side):
-                    adjacent = np.take(cell_centered_values, [0 if side == 0 else -1], axis=ax)
-                    result[2 * k] = adjacent.reshape(np.shape(result[2 * k]))
-                    result[2 * k + 1] = np.zeros_like(np.asarray(result[2 * k + 1], dtype=float))
-            return tuple(result)
+            return _overwrite_outflow_sides(
+                result, cell_centered_values, bc, outflow, axis, bound_id)
 
     shape = list(cell_centered_values.shape)
     if axis < 0:
