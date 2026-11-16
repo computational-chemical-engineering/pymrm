@@ -130,7 +130,9 @@ class _LinearSolver:
     def factorize(self, jac):
         """Return ``(solve, row_scale)`` for this Jacobian."""
         if self.kind == "direct":
-            return self._direct(jac)
+            if sparse.issparse(jac):
+                return self._direct_sparse(jac)
+            return self._direct_dense(jac)
         if self.kind in ("cg", "bicgstab"):
             return self._iterative(jac), None
         if self.kind == "splu":
@@ -141,13 +143,8 @@ class _LinearSolver:
         solver, kwargs = self.solver, self.kwargs
         return (lambda rhs: solver(jac, rhs, **kwargs)), None
 
-    def _direct(self, jac):
+    def _direct_sparse(self, jac):
         options = {"permc_spec": "COLAMD", **self.splu_kwargs}
-        if sparse.issparse(jac):
-            return self._direct_sparse(jac, options)
-        return self._direct_dense(jac)
-
-    def _direct_sparse(self, jac, options):
         if self.legacy and jac.format == "csr":
             # spsolve factors the transpose of a CSR matrix and solves with it
             try:
