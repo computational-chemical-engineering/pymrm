@@ -3,6 +3,7 @@
 import math
 import numbers
 import warnings
+from typing import NamedTuple
 import numpy as np
 from scipy.sparse import coo_array, csc_array, csr_array
 from pymrm.helpers import unwrap_bc_coeff, _sparse_array
@@ -234,6 +235,52 @@ def _box_extent(index, parent, parent_shape):
     return starts, shape
 
 
+class _Placement(NamedTuple):
+    """Where each domain sits in the state: axis, state shape, local shapes, offsets, boxes."""
+
+    axis: object
+    shape: tuple
+    local: dict
+    offset: dict
+    box: dict
+
+
+def _flat_placement(sizes):
+    """Region-major layout: domain `name` is a contiguous stretch of the flat state."""
+    local, offset, box = {}, {}, {}
+    start = 0
+    for name, n in sizes.items():
+        local[name] = (n,)
+        offset[name] = (start,)
+        box[name] = slice(start, start + n)
+        start += n
+    return _Placement(None, (sum(sizes.values()),), local, offset, box)
+
+
+def _axis_placement(shapes, axis):
+    """Place the domains one after another along ``axis`` (all other axes shared)."""
+    ndims = {len(shape) for shape in shapes.values()}
+    if len(ndims) != 1:
+        raise ValueError(
+            f"with axis={axis} all domains need the same number of dimensions, got {shapes}; "
+            "use axis=None for a region-major layout"
+        )
+    ndim = ndims.pop()
+    if not isinstance(axis, numbers.Integral) or not -ndim <= axis < ndim:
+        raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
+    axis = int(axis) % ndim
+    first = next(iter(shapes.values()))
+    _check_shared_axes(shapes, first, axis)
+    offset, box = {}, {}
+    start = 0
+    for name, shape in shapes.items():
+        offset[name] = tuple(start if i == axis else 0 for i in range(ndim))
+        box[name] = tuple(slice(o, o + s) for o, s in zip(offset[name], shape))
+        start += shape[axis]
+    state_shape = tuple(start if i == axis else s for i, s in enumerate(first))
+    return _Placement(axis, state_shape, dict(shapes), offset, box)
+
+
 class BlockLayout:
     """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
 
@@ -328,44 +375,9 @@ class BlockLayout:
         self._sizes = {name: math.prod(shape) for name, shape in shapes.items()}
         self.size = sum(self._sizes.values())
 
-        if axis is None:
-            # region-major: domain `name` is a contiguous stretch of the flat state
-            self.axis = None
-            self.shape = (self.size,)
-            self._local, self._offset, self._box = {}, {}, {}
-            start = 0
-            for name, n in self._sizes.items():
-                self._local[name] = (n,)
-                self._offset[name] = (start,)
-                self._box[name] = slice(start, start + n)
-                start += n
-            return
-
-        self._set_axis_layout(shapes, axis)
-
-    def _set_axis_layout(self, shapes, axis):
-        """Place the domains one after another along ``axis`` (all other axes shared)."""
-        ndims = {len(shape) for shape in shapes.values()}
-        if len(ndims) != 1:
-            raise ValueError(
-                f"with axis={axis} all domains need the same number of dimensions, got {shapes}; "
-                "use axis=None for a region-major layout"
-            )
-        ndim = ndims.pop()
-        if not isinstance(axis, numbers.Integral) or not -ndim <= axis < ndim:
-            raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
-        axis = int(axis) % ndim
-        first = next(iter(shapes.values()))
-        _check_shared_axes(shapes, first, axis)
-        self.axis = axis
-        self._local = dict(shapes)
-        self._offset, self._box = {}, {}
-        start = 0
-        for name, shape in shapes.items():
-            self._offset[name] = tuple(start if i == axis else 0 for i in range(ndim))
-            self._box[name] = tuple(slice(o, o + s) for o, s in zip(self._offset[name], shape))
-            start += shape[axis]
-        self.shape = tuple(start if i == axis else s for i, s in enumerate(first))
+        placement = _flat_placement(self._sizes) if axis is None else _axis_placement(shapes, axis)
+        self.axis, self.shape = placement.axis, placement.shape
+        self._local, self._offset, self._box = placement.local, placement.offset, placement.box
 
     @classmethod
     def from_fields(cls, names, shape):
