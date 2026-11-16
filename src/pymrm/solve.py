@@ -629,104 +629,132 @@ class _NewtonRun:
 
     def _damped_step(self, it):
         """Stop, or find a damped step, accept it and evaluate there (None: iterate on)."""
-        x_flat, dx, bnd, shape, d, n = self.x_flat, self.dx, self.bnd, self.shape, self.d, self.n
-        mode, step_inf, ev = self.mode, self.step_inf, self.ev
-        g, jac, r, dy, lin, solve = self.g, self.jac, self.r, self.dy, self.lin, self.lin_solve
-        evaluate = self.evaluate
+        step_inf = self.step_inf
         if self.converged and self.gate:
             return self._final_step(0)
         if self.stagnant and self.gate:
             if self.clipped:
-                return self.finish(8, False, ev, step_inf, self.be,
+                return self.finish(8, False, self.ev, step_inf, self.be,
                                    f"{self.clipped} components held by a bound")
             return self._final_step(1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
         self.gate_failed = self.converged
+        accepted = self._find_step()
+        if accepted is None:
+            extra = f"{self.lam_min:g} at iteration {it}"
+            if self.clipped:
+                extra += f"; {self.clipped} components held by a bound"
+            return self.finish(3, False, self.ev, step_inf, self.backward_error(self.g, self.jac), extra)
+        return self._accept(accepted)
+
+    def _trial(self, lam):
+        """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
+        x_flat, dx, bnd = self.x_flat, self.dx, self.bnd
+        trial = x_flat - lam * dx
+        self.clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
+        return trial, ev_t
+
+    def _find_step(self):
+        """The accepted ``(trial, ev_t, lam)`` of this iteration, None if the damping failed."""
+        bnd = self.bnd
         accepted = None
-        lam_max = max(_LAM_FLOOR, bnd.max_step(x_flat, dx)) if bnd.active else 1.0
+        lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, self.dx)) if bnd.active else 1.0
         at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
-        clipped = self.clipped
-        theta = self.theta
-        if mode == "guarded":
+        if self.mode == "guarded":
             # Full step (shortened only by the bounds far from the solution).
             lam = 1.0 if self.near else lam_max
-            trial = x_flat - lam * dx
-            clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-            ev_t = evaluate(trial.reshape(shape), guard=True)
+            trial, ev_t = self._trial(lam)
             if lam == lam_max:
-                at_lam_max = (trial, ev_t, clipped)
+                at_lam_max = (trial, ev_t, self.clipped)
             if ev_t is not None:
-                accepted = (trial, ev_t, lam)
-            else:
-                self.lam_next = 0.25 * lam
+                return (trial, ev_t, lam)
+            self.lam_next = 0.25 * lam
+        accepted, at_lam_max = self._search(lam_max, at_lam_max)
+        escaped = False
         if accepted is None:
-            # Damped search: monotonicity test or Armijo, from lam_next.
-            lam = min(self.lam_next, lam_max)
-            dy_rms = _rms(dy)
-            row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
-            phi0 = float(np.linalg.norm(row * g))
-            best = None
-            # Near the solution a failed test is usually round-off: search briefly.
-            lam_min = _LAM_NEAR if self.near else _LAM_MIN
-            while lam >= lam_min:
-                trial = x_flat - lam * dx
-                clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-                ev_t = evaluate(trial.reshape(shape), guard=True)
-                if lam == lam_max:
-                    at_lam_max = (trial, ev_t, clipped)
-                if ev_t is None:
-                    lam *= 0.25
-                    continue
-                if mode == "armijo":
-                    phi = float(np.linalg.norm(row * ev_t[1]))
-                    if phi <= (1.0 - _ARMIJO_C * lam) * phi0:
-                        accepted = (trial, ev_t, lam)
-                        break
-                    if best is None or phi < best[0]:
-                        best = (phi, trial, ev_t, lam, clipped)
-                    lam *= 0.5
-                    continue
-                try:
-                    rhs = ev_t[0] if lin.kind == "callable" else ev_t[1]
-                    dbar = np.asarray(solve(rhs), dtype=float).reshape(-1) / d
-                except _LinearSolverFailed:
-                    dbar = np.full(n, np.inf)    # no test possible: reject the trial
-                theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
-                if not np.isfinite(theta):
-                    lam *= 0.5
-                    continue
-                if theta <= 1.0 - lam / 4.0:
-                    accepted = (trial, ev_t, lam)
-                    break
-                mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
-                lam = min(0.5 * lam, max(mu, 0.1 * lam))
-            if accepted is None and best is not None and best[0] < phi0:
-                _, trial, ev_t, lam, clipped = best
-                ev_t = evaluate(trial.reshape(shape), guard=True)  # restore model state
-                if ev_t is not None:
-                    accepted = (trial, ev_t, lam)
-            escaped = False
-            if accepted is None and _ESCAPE:
-                lam = lam_max
-                if at_lam_max is not None:
-                    trial, ev_t, clipped = at_lam_max
-                    if ev_t is not None:
-                        ev_t = evaluate(trial.reshape(shape), guard=True)
-                else:
-                    trial = x_flat - lam * dx
-                    clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-                    ev_t = evaluate(trial.reshape(shape), guard=True)
-                if ev_t is not None:
-                    accepted = (trial, ev_t, lam)
-                    escaped = True
-            if accepted is None:
-                self.clipped, self.theta = clipped, theta
-                extra = f"{lam_min:g} at iteration {it}"
-                if clipped:
-                    extra += f"; {clipped} components held by a bound"
-                return self.finish(3, False, ev, step_inf, self.backward_error(g, jac), extra)
-            self.lam_next = 1.0 if (escaped or mode == "guarded") else min(1.0, 4.0 * accepted[2])
-        self.clipped, self.theta = clipped, theta
-        return self._accept(accepted)
+            accepted = self._restore_best()
+        if accepted is None and _ESCAPE:
+            accepted = self._escape(lam_max, at_lam_max)
+            escaped = accepted is not None
+        if accepted is not None:
+            self.lam_next = 1.0 if (escaped or self.mode == "guarded") else min(1.0, 4.0 * accepted[2])
+        return accepted
+
+    def _search(self, lam_max, at_lam_max):
+        """Damped search: monotonicity test or Armijo, from lam_next."""
+        lam = min(self.lam_next, lam_max)
+        self.dy_rms = _rms(self.dy)
+        r, jac = self.r, self.jac
+        self.row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
+        self.phi0 = float(np.linalg.norm(self.row * self.g))
+        self.best = None
+        # Near the solution a failed test is usually round-off: search briefly.
+        self.lam_min = lam_min = _LAM_NEAR if self.near else _LAM_MIN
+        test = self._armijo_test if self.mode == "armijo" else self._monotonicity_test
+        while lam >= lam_min:
+            trial, ev_t = self._trial(lam)
+            if lam == lam_max:
+                at_lam_max = (trial, ev_t, self.clipped)
+            if ev_t is None:
+                lam *= 0.25
+                continue
+            accepted, lam = test(trial, ev_t, lam)
+            if accepted is not None:
+                return accepted, at_lam_max
+        return None, at_lam_max
+
+    def _armijo_test(self, trial, ev_t, lam):
+        """``(accepted, lam)``: the trial if it decreases the scaled residual enough, else a halved lam."""
+        phi = float(np.linalg.norm(self.row * ev_t[1]))
+        if phi <= (1.0 - _ARMIJO_C * lam) * self.phi0:
+            return (trial, ev_t, lam), lam
+        best = self.best
+        if best is None or phi < best[0]:
+            self.best = (phi, trial, ev_t, lam, self.clipped)
+        lam *= 0.5
+        return None, lam
+
+    def _monotonicity_test(self, trial, ev_t, lam):
+        """``(accepted, lam)``: the trial if its simplified Newton step contracts, else a smaller lam."""
+        dy, dy_rms = self.dy, self.dy_rms
+        try:
+            rhs = ev_t[0] if self.lin.kind == "callable" else ev_t[1]
+            dbar = np.asarray(self.lin_solve(rhs), dtype=float).reshape(-1) / self.d
+        except _LinearSolverFailed:
+            dbar = np.full(self.n, np.inf)    # no test possible: reject the trial
+        self.theta = theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
+        if not np.isfinite(theta):
+            lam *= 0.5
+            return None, lam
+        if theta <= 1.0 - lam / 4.0:
+            return (trial, ev_t, lam), lam
+        mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
+        lam = min(0.5 * lam, max(mu, 0.1 * lam))
+        return None, lam
+
+    def _restore_best(self):
+        """The best Armijo trial if it decreased the residual, re-evaluated; else None."""
+        best = self.best
+        if best is None or not best[0] < self.phi0:
+            return None
+        _, trial, ev_t, lam, self.clipped = best
+        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)  # restore model state
+        if ev_t is not None:
+            return (trial, ev_t, lam)
+        return None
+
+    def _escape(self, lam_max, at_lam_max):
+        """The (bounded) full step if its residual is finite, else None."""
+        lam = lam_max
+        if at_lam_max is not None:
+            trial, ev_t, self.clipped = at_lam_max
+            if ev_t is not None:
+                ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
+        else:
+            trial, ev_t = self._trial(lam)
+        if ev_t is not None:
+            return (trial, ev_t, lam)
+        return None
 
     def _accept(self, accepted):
         """Take the accepted damped step, then the callback and refresh (None: iterate on)."""
