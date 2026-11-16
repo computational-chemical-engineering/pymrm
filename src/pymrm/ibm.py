@@ -496,7 +496,7 @@ def _cut_cell_entries(theta_fn, grid, a, direction, masks):
     # cells the solid sits against the domain boundary, so ``ia -
     # direction`` is out of bounds and ``xo`` is never used; clip the
     # gather index to keep it in range instead of indexing past the edge.
-    xo = x_c[a][np.clip(ia - direction, 0, spatial_shape[a] - 1)]
+    xo = x_c[a][np.minimum(np.maximum(ia - direction, 0), spatial_shape[a] - 1)]
     xw = xc + theta * (xg - xc)
 
     sandwich = masks.omask.ravel()[cells]
