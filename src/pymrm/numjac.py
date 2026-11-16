@@ -76,6 +76,46 @@ def _expand_index(idx, shape):
     return list(product(*expanded_dims))
 
 
+def _normalize_dependency(dep, shape_in, shape_out):
+    """Bring one dependency to the form ``(index_in, index_out, fixed_axes, periodic_axes)``."""
+    if not isinstance(dep, tuple):
+        raise ValueError("Each dependency must be a tuple.")
+
+    if len(dep) == 3 and isinstance(dep[0], tuple):
+        # Almost in full, assuming no periodic axes
+        index_in, index_out, fixed_axes = dep
+        periodic_axes = []
+    elif len(dep) == 4 and isinstance(dep[0], tuple):
+        # Already in full form
+        index_in, index_out, fixed_axes, periodic_axes = dep
+        for d in periodic_axes:
+            if d in fixed_axes:
+                raise ValueError("Axis cannot be both fixed and periodic.")
+            if shape_in[d] != shape_out[d]:
+                raise ValueError(
+                    "Periodic axes must have the same size in input and output shapes."
+                )
+    else:
+        # Shorthand form (e.g., (0,1,0))
+        index_in = dep
+        index_out = (0,) * len(shape_out)
+        fixed_axes = []
+        periodic_axes = []
+
+    # Ensure fixed_axes is a list
+    if fixed_axes is None:
+        fixed_axes = []
+    elif not isinstance(fixed_axes, list):
+        raise ValueError("fixed_axes_list must be a list or None.")
+
+    # Ensure periodic_axes is a list
+    if periodic_axes is None:
+        periodic_axes = []
+    elif not isinstance(periodic_axes, list):
+        raise ValueError("periodic_axes_list must be a list or None.")
+    return index_in, index_out, fixed_axes, periodic_axes
+
+
 def expand_dependencies(shape_in, shape_out, dependencies):
     """Expand compact dependency definitions into fully explicit tuples.
 
@@ -100,43 +140,7 @@ def expand_dependencies(shape_in, shape_out, dependencies):
     # Convert shorthand notation to full triple form
     normalized_deps = []
     for dep in dependencies:
-        if not isinstance(dep, tuple):
-            raise ValueError("Each dependency must be a tuple.")
-
-        if len(dep) == 3 and isinstance(dep[0], tuple):
-            # Almost in full, assuming no periodic axes
-            index_in, index_out, fixed_axes = dep
-            periodic_axes = []
-        elif len(dep) == 4 and isinstance(dep[0], tuple):
-            # Already in full form
-            index_in, index_out, fixed_axes, periodic_axes = dep
-            for d in periodic_axes:
-                if d in fixed_axes:
-                    raise ValueError("Axis cannot be both fixed and periodic.")
-                if shape_in[d] != shape_out[d]:
-                    raise ValueError(
-                        "Periodic axes must have the same size in input and output shapes."
-                    )
-        else:
-            # Shorthand form (e.g., (0,1,0))
-            index_in = dep
-            index_out = (0,) * len(shape_out)
-            fixed_axes = []
-            periodic_axes = []
-
-        # Ensure fixed_axes is a list
-        if fixed_axes is None:
-            fixed_axes = []
-        elif not isinstance(fixed_axes, list):
-            raise ValueError("fixed_axes_list must be a list or None.")
-
-        # Ensure periodic_axes is a list
-        if periodic_axes is None:
-            periodic_axes = []
-        elif not isinstance(periodic_axes, list):
-            raise ValueError("periodic_axes_list must be a list or None.")
-
-        normalized_deps.append((index_in, index_out, fixed_axes, periodic_axes))
+        normalized_deps.append(_normalize_dependency(dep, shape_in, shape_out))
 
     # Now expand reference and dependent indices
     expanded_deps = []
