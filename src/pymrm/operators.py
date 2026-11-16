@@ -54,8 +54,7 @@ def construct_grad(
     bc, _ = substitute_outflow_bc(bc, {"a": 1.0, "b": 0.0, "d": 0.0})
 
     if bc == (None, None):
-        shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
-        grad_bc = csc_array((math.prod(shape_f), 1))
+        grad_bc = csc_array((math.prod(_field_geometry(shape, axis).shape_f), 1))
         return grad_matrix, grad_bc
     else:
         if shapes_d is None or shapes_d == (None, None):
@@ -97,13 +96,7 @@ def construct_grad_int(shape, x_f, x_c=None, axis=0, format="csc"):
     """
     if axis < 0:
         axis += len(shape)
-    shape_t = [
-        math.prod(shape[:axis]),
-        math.prod(shape[axis: axis + 1]),
-        math.prod(shape[axis + 1:]),
-    ]
-
-    n0, n1, n2 = shape_t
+    n0, n1, n2 = _field_geometry(shape, axis).shape_t
     # Open grids for each dimension; the 4th axis selects the face-pair [j, j+1]
     i0 = np.arange(n0).reshape(-1, 1, 1, 1)
     i1 = np.arange(n1).reshape(1, -1, 1, 1)
