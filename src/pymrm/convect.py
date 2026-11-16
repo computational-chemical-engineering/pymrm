@@ -922,6 +922,48 @@ class ConvFluxTVD:
                         raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
         return ext
 
+    def _interior_faces(self, c, c_flat, ext, v_t, face, band):
+        """Fill the interior faces of ``face`` and ``band``; return the boundary upwind weights."""
+        n0, n1, n2 = self._shape_t
+        up = (self._m_up @ c_flat + self._e_up[0] @ ext[0]
+              + self._e_up[1] @ ext[1]).reshape(self._shape_f_t)
+        pos = v_t[:, 1:-1, :] > 0
+        c_U = np.where(pos, np.concatenate((up[:, :1], c[:, :-2]), axis=1),
+                       np.concatenate((c[:, 2:], up[:, n1:]), axis=1))
+        c_C = np.where(pos, c[:, :-1], c[:, 1:])
+        c_D = np.where(pos, c[:, 1:], c[:, :-1])
+        x_norm_c = np.where(pos, self._x_norm[True][0], self._x_norm[False][0])
+        x_norm_d = np.where(pos, self._x_norm[True][1], self._x_norm[False][1])
+        dc_DU = c_D - c_U
+        c_norm = np.zeros_like(c_C)
+        np.divide(c_C - c_U, dc_DU, out=c_norm, where=(dc_DU != 0))
+        phi = self.tvd_limiter(c_norm, x_norm_c, x_norm_d)
+        face[:, 1:-1, :] = c_C + phi * dc_DU
+        active = dc_DU != 0
+        dphi = np.zeros_like(c_norm)
+        if np.any(active):
+            dphi[active] = _limiter_derivative(
+                self.tvd_limiter, c_norm[active], x_norm_c[active], x_norm_d[active])
+        w_C = 1 + dphi
+        w_D = phi - c_norm * dphi
+        w_U = -phi + (c_norm - 1) * dphi
+
+        inner = band[:, 1:-1]                    # faces 1 .. n1-1, offsets -2 .. 1
+        neg = ~pos
+        # v > 0: U = k-2, C = k-1, D = k; v <= 0: U = k+1, C = k, D = k-1
+        inner[:, :, 1] += np.where(pos, w_C, w_D)
+        inner[:, :, 2] += np.where(pos, w_D, w_C)
+        inner[:, 1:, 0] += np.where(pos[:, 1:], w_U[:, 1:], 0.0)
+        inner[:, :-1, 3] += np.where(neg[:, :-1], w_U[:, :-1], 0.0)
+        # the upwind point of face 1 (v > 0) and face n1-1 (v <= 0) is a boundary value
+        g_left = np.where(pos[:, 0], w_U[:, 0], 0.0)
+        inner[:, 0, 1] += g_left * self._up_left[0]
+        inner[:, 0, 2] += g_left * self._up_left[1]
+        g_right = np.where(neg[:, -1], w_U[:, -1], 0.0)
+        inner[:, -1, 2] += g_right * self._up_right[0]
+        inner[:, -1, 1] += g_right * self._up_right[1]
+        return g_left, g_right
+
     def __call__(self, c, v, d=None, jac_v=False):
         """Evaluate the face fluxes and their Jacobians.
 
@@ -977,43 +1019,7 @@ class ConvFluxTVD:
         g_left = g_right = None
 
         if n1 > 1:
-            up = (self._m_up @ c_flat + self._e_up[0] @ ext[0]
-                  + self._e_up[1] @ ext[1]).reshape(self._shape_f_t)
-            pos = v_t[:, 1:-1, :] > 0
-            c_U = np.where(pos, np.concatenate((up[:, :1], c[:, :-2]), axis=1),
-                           np.concatenate((c[:, 2:], up[:, n1:]), axis=1))
-            c_C = np.where(pos, c[:, :-1], c[:, 1:])
-            c_D = np.where(pos, c[:, 1:], c[:, :-1])
-            x_norm_c = np.where(pos, self._x_norm[True][0], self._x_norm[False][0])
-            x_norm_d = np.where(pos, self._x_norm[True][1], self._x_norm[False][1])
-            dc_DU = c_D - c_U
-            c_norm = np.zeros_like(c_C)
-            np.divide(c_C - c_U, dc_DU, out=c_norm, where=(dc_DU != 0))
-            phi = self.tvd_limiter(c_norm, x_norm_c, x_norm_d)
-            face[:, 1:-1, :] = c_C + phi * dc_DU
-            active = dc_DU != 0
-            dphi = np.zeros_like(c_norm)
-            if np.any(active):
-                dphi[active] = _limiter_derivative(
-                    self.tvd_limiter, c_norm[active], x_norm_c[active], x_norm_d[active])
-            w_C = 1 + dphi
-            w_D = phi - c_norm * dphi
-            w_U = -phi + (c_norm - 1) * dphi
-
-            inner = band[:, 1:-1]                    # faces 1 .. n1-1, offsets -2 .. 1
-            neg = ~pos
-            # v > 0: U = k-2, C = k-1, D = k; v <= 0: U = k+1, C = k, D = k-1
-            inner[:, :, 1] += np.where(pos, w_C, w_D)
-            inner[:, :, 2] += np.where(pos, w_D, w_C)
-            inner[:, 1:, 0] += np.where(pos[:, 1:], w_U[:, 1:], 0.0)
-            inner[:, :-1, 3] += np.where(neg[:, :-1], w_U[:, :-1], 0.0)
-            # the upwind point of face 1 (v > 0) and face n1-1 (v <= 0) is a boundary value
-            g_left = np.where(pos[:, 0], w_U[:, 0], 0.0)
-            inner[:, 0, 1] += g_left * self._up_left[0]
-            inner[:, 0, 2] += g_left * self._up_left[1]
-            g_right = np.where(neg[:, -1], w_U[:, -1], 0.0)
-            inner[:, -1, 2] += g_right * self._up_right[0]
-            inner[:, -1, 1] += g_right * self._up_right[1]
+            g_left, g_right = self._interior_faces(c, c_flat, ext, v_t, face, band)
 
         flux = (v_t * face).reshape(self.shape_f)
         data = (band * v_t[:, :, None, :])[self._valid][self._perm]
