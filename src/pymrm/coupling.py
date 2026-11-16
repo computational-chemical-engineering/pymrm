@@ -214,6 +214,26 @@ def _check_shared_axes(shapes, first, axis):
             )
 
 
+def _box_extent(index, parent, parent_shape):
+    """Start and shape of the unit-step box ``index`` in a domain of shape ``parent_shape``."""
+    starts, shape = [], []
+    for ix, dim in zip(index, parent_shape):
+        if isinstance(ix, numbers.Integral):
+            ix = int(ix) + (dim if ix < 0 else 0)
+            if not 0 <= ix < dim:
+                raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
+            ix = slice(ix, ix + 1)
+        if not isinstance(ix, slice):
+            raise ValueError("a subdomain index holds integers and slices only")
+        start, stop, step = ix.indices(dim)
+        if step != 1 or stop <= start:
+            raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
+        starts.append(start)
+        shape.append(stop - start)
+    shape = tuple(shape)
+    return starts, shape
+
+
 class BlockLayout:
     """Named domains concatenated into one state, as ``np.concatenate(parts, axis)``.
 
@@ -408,21 +428,7 @@ class BlockLayout:
         if len(index) > len(parent_shape):
             raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
         index = index + (slice(None),) * (len(parent_shape) - len(index))
-        starts, shape = [], []
-        for ix, dim in zip(index, parent_shape):
-            if isinstance(ix, numbers.Integral):
-                ix = int(ix) + (dim if ix < 0 else 0)
-                if not 0 <= ix < dim:
-                    raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
-                ix = slice(ix, ix + 1)
-            if not isinstance(ix, slice):
-                raise ValueError("a subdomain index holds integers and slices only")
-            start, stop, step = ix.indices(dim)
-            if step != 1 or stop <= start:
-                raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
-            starts.append(start)
-            shape.append(stop - start)
-        shape = tuple(shape)
+        starts, shape = _box_extent(index, parent, parent_shape)
         if self.axis is None:
             box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
             flat = self.index(parent)[box].ravel()
