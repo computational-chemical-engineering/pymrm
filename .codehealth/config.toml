@@ -1,0 +1,76 @@
+# cce-code-health configuration for pymrm (campaign c1, 2026-11-16). The gate reads this file from
+# the base commit, so a step cannot loosen its own gate; `.codehealth/*` is always forbidden in a step.
+schema = 1
+profile = "python@0"
+
+[scope]
+include = ["src/pymrm/*"]
+exclude = ["src/pymrm/_version.py"]
+
+[gate]
+forbid = ["test/*", "plugins/*", "docs/*", "examples/*", "tutorials/*", "pyproject.toml", "requirements*"]
+literals = true
+public_api = true
+# The base and self-test worktrees lack the untracked, generated src/pymrm/_version.py: copy the
+# main checkout's. Every tier uses the suite venv (pymrm_suite/.venv, two levels above the git dir)
+# and PYTHONPATH=src so it imports the tree under test, not the editable install.
+prefix = 'test -f src/pymrm/_version.py || cp {gitdir}/../src/pymrm/_version.py src/pymrm/_version.py;'
+
+[gate.env]
+PYTHONHASHSEED = "0"
+OMP_NUM_THREADS = "1"
+OPENBLAS_NUM_THREADS = "1"
+MKL_NUM_THREADS = "1"
+CODEHEALTH_PY = "{gitdir}/../../.venv/bin/python"
+
+[[gate.tier]]
+name = "flake8"
+kind = "command"
+cadence = "step"
+behaviour = false
+timeout = 300
+cmd = '"$CODEHEALTH_PY" -m flake8 {files}'
+
+# The whole test suite, with every tolerance comparison recorded (.codehealth/assert_recorder.py)
+# and compared byte for byte with the campaign base. A failing test fails the tier.
+[[gate.tier]]
+name = "asserts"
+kind = "reference"
+cadence = "step"
+timeout = 1200
+detect_exit = [1, 124]
+coverage = true
+outputs = ["asserts.bin"]
+cmd = 'CODEHEALTH_RECORD={out}/asserts.bin PYTHONPATH="src:.codehealth${PYTHONPATH:+:$PYTHONPATH}" "$CODEHEALTH_PY" -m pytest -q -p no:cacheprovider -p assert_recorder -n 8 --dist loadgroup test'
+
+[[gate.tier]]
+name = "bench-newton"
+kind = "benchmark"
+cadence = "step"
+timeout = 900
+max_slowdown = 0.03
+cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py newton'
+
+[[gate.tier]]
+name = "bench-tvd"
+kind = "benchmark"
+cadence = "step"
+timeout = 900
+max_slowdown = 0.03
+cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py tvd'
+
+[[gate.tier]]
+name = "bench-ibm"
+kind = "benchmark"
+cadence = "step"
+timeout = 900
+max_slowdown = 0.03
+cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py ibm'
+
+[[gate.tier]]
+name = "bench-assembly"
+kind = "benchmark"
+cadence = "step"
+timeout = 900
+max_slowdown = 0.03
+cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py assembly'
