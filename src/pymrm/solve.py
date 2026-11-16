@@ -409,21 +409,29 @@ class _NewtonRun:
 
     breakdown = NewtonBreakdown   # KrylovBreakdown when an iterative solver fails
 
+    def _call(self, xv, guard):
+        """``function(xv, *args)`` as ``(g_raw, jac)``; None if guarded and recoverable."""
+        if not guard:
+            g_raw, jac = self.function(xv, *self.args)
+            return g_raw, jac
+        try:
+            g_raw, jac = self.function(xv, *self.args)
+        except self.recoverable:
+            return None
+        except Exception as exc:
+            if self.state["last"]:
+                # The old iteration never evaluated here: report, do not raise.
+                raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
+            raise
+        return g_raw, jac
+
     def evaluate(self, xv, guard):
         """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
         self.nfev += 1
-        if guard:
-            try:
-                g_raw, jac = self.function(xv, *self.args)
-            except self.recoverable:
-                return None
-            except Exception as exc:
-                if self.state["last"]:
-                    # The old iteration never evaluated here: report, do not raise.
-                    raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
-                raise
-        else:
-            g_raw, jac = self.function(xv, *self.args)
+        out = self._call(xv, guard)
+        if out is None:
+            return None
+        g_raw, jac = out
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
         g_flat = g_raw.reshape(-1)
         if sparse.issparse(jac) and jac.format not in ("csr", "csc", "coo", "bsr", "dia"):
