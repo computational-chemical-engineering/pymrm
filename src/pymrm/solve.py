@@ -583,6 +583,12 @@ class _NewtonRun:
             converged = converged or step_inf == 0.0
         return converged, excess
 
+    def _stalled(self, step_inf):
+        """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
+        window = self.window
+        return (len(window) >= _STAGNATION_WINDOW
+                and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
+
     def _measure(self):
         """Step norm, convergence and stagnation tests and backward error of this iteration."""
         dy = self.dx / self.d
@@ -598,10 +604,9 @@ class _NewtonRun:
         if near or self.last_it or self.relative:
             be = self.backward_error(self.g, self.jac)
         self.at_floor = near
-        backward_tol, window = self.backward_tol, self.window
+        backward_tol = self.backward_tol
         self.gate = backward_tol is None or np.isnan(be) or be <= backward_tol
-        self.stagnant = (self.use_stagnation and self.at_floor and len(window) >= _STAGNATION_WINDOW
-                         and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
+        self.stagnant = self.use_stagnation and self.at_floor and self._stalled(step_inf)
         self.dy, self.step_inf, self.converged, self.near, self.be = dy, step_inf, converged, near, be
 
     def _plain_step(self):
