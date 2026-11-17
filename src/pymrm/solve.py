@@ -720,9 +720,7 @@ class _NewtonRun:
         if self.converged and self.gate:
             return self._final_step(0)
         if self.stagnant and self.gate:
-            if self.clipped:
-                return self.finish(8, self.ev, step_inf, self.be,
-                                   f"{self.clipped} components held by a bound")
+            # _final_step takes the stalled step and reports 8 only if that step is held
             return self._final_step(1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
         self.gate_failed = self.converged
         accepted = self._find_step()
