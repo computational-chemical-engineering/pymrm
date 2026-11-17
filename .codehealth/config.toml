@@ -1,7 +1,11 @@
-# cce-code-health configuration for pymrm (campaign c1, 2026-11-16). The gate reads this file from
+# cce-code-health configuration for pymrm (campaign c1 2026-11-16, c2 2026-11-17). The gate reads this file from
 # the base commit, so a step cannot loosen its own gate; `.codehealth/*` is always forbidden in a step.
 schema = 1
-profile = "python@0"
+profile = "python@1"
+
+# Campaign c2 (2026-11-17): python@1 (CodeScene-aligned thresholds, class-state smell, clones); python@0 for c1.
+[profiles]
+python = "python@1"
 
 [scope]
 include = ["src/pymrm/*"]
