@@ -1,0 +1,33 @@
+id = "c2-s6-state-dict"
+approved_by = "orchestrator pymrm-health under decision 25 (private dict keys only; public API unchanged)"
+reason = "newton's private _NewtonRun.state dict (dict used as a struct, C2_RULES) is replaced by explicit arguments and return values; its literal keys vanish"
+
+[[literals_removed]]
+file = "src/pymrm/solve.py"
+literal = "last"
+count = 3
+reason = "key of the removed private state dict"
+
+[[literals_removed]]
+file = "src/pymrm/solve.py"
+literal = "ev"
+count = 3
+reason = "key of the removed private state dict"
+
+[[literals_removed]]
+file = "src/pymrm/solve.py"
+literal = "step"
+count = 3
+reason = "key of the removed private state dict"
+
+[[literals_removed]]
+file = "src/pymrm/solve.py"
+literal = "bad"
+count = 4
+reason = "key of the removed private state dict"
+
+[[literals_removed]]
+file = "src/pymrm/solve.py"
+literal = "nan"
+count = 1
+reason = "float(\"nan\") default of the removed state dict's 'step' key"
