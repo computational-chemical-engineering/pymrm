@@ -452,6 +452,22 @@ class _Carry(NamedTuple):
     theta: float
 
 
+class _Trial(NamedTuple):
+    """The point ``x - lam dx`` after ``bnd.project`` and its evaluation (None: unusable or not evaluated)."""
+
+    x: np.ndarray
+    ev: _Eval
+    lam: float
+    clipped: int
+
+
+class _Best(NamedTuple):
+    """The Armijo trial with the smallest scaled residual ``phi`` so far."""
+
+    phi: float
+    trial: _Trial
+
+
 def _stalled(window, step_inf):
     """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
     return (len(window) >= _STAGNATION_WINDOW
@@ -506,7 +522,6 @@ class _NewtonRun:
 
     # Iteration state, set by ``iterate`` and the phases of an iteration.
     lam_next: float = field(init=False)
-    clipped: int = field(init=False)
     theta: float = field(init=False)
     dy_rms: float = field(init=False)
     row: object = field(init=False)
@@ -683,20 +698,19 @@ class _NewtonRun:
         lam = 1.0
         if not s.near and bnd.active:
             lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
-        trial = x_flat - lam * dx
-        self.clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+        t = self._project(s, lam)
         if bnd.active:
-            bnd.commit(x_flat, trial, dx)
-        x_flat[:] = trial
+            bnd.commit(x_flat, t.x, dx)
+        x_flat[:] = t.x
         self.history.append({"step_norm": s.step_inf, "damping": lam, "theta": self.theta,
-                             "clipped": self.clipped})
+                             "clipped": t.clipped})
         if self.callback is not None:
             self.callback(self.x, s.ev.g_raw)
         if self.refresh is not None:
             self.refresh(self.x)
-        return self._plain_verdict(s, lam)
+        return self._plain_verdict(s, t)
 
-    def _plain_verdict(self, s, lam):
+    def _plain_verdict(self, s, t):
         """Stop after a plain step, or evaluate at the new ``x``: the result or the ``_Carry``."""
         converged, step_inf, be = s.converged, s.step_inf, s.be
         if self.relative and step_inf > 0.0:
@@ -705,18 +719,18 @@ class _NewtonRun:
         if converged and s.gate:
             return self.finish(0, s.ev, step_inf, be)
         if s.stagnant and s.gate:
-            if self.clipped:
+            if t.clipped:
                 return self.finish(8, s.ev, step_inf, be,
-                                   f"{self.clipped} components held by a bound")
+                                   f"{t.clipped} components held by a bound")
             return self.finish(1, s.ev, step_inf, be,
                                f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
         if s.last_it:
             # plain Newton does not evaluate after its last step
-            return self._exhausted(_Carry(s.ev, step_inf, be, converged, self.clipped, lam, self.theta))
+            return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, self.theta))
         ev_new = self.evaluate(self.x, guard=False)
         if ev_new is None:
             return self.finish(4, s.ev, step_inf, float("nan"), "after a full step")
-        return _Carry(ev_new, step_inf, be, converged, self.clipped, lam, self.theta)
+        return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, self.theta)
 
     def _final_step(self, s, status, extra=""):
         """Take the converged step without evaluating there, as plain Newton did."""
@@ -745,45 +759,48 @@ class _NewtonRun:
             # _final_step takes the stalled step and reports 8 only if that step is held
             return self._final_step(s, 1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
         accepted = self._find_step(s)
-        if accepted is None:
+        if accepted.ev is None:
             extra = f"{self.lam_min:g} at iteration {it}"
-            if self.clipped:
-                extra += f"; {self.clipped} components held by a bound"
+            if accepted.clipped:
+                extra += f"; {accepted.clipped} components held by a bound"
             return self.finish(3, s.ev, step_inf, self.backward_error(s.ev.g, s.ev.jac), extra)
         return self._accept(s, accepted)
 
-    def _trial(self, s, lam):
-        """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
+    def _project(self, s, lam):
+        """The trial point ``x - lam dx``, held inside the bounds, not evaluated."""
         x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
         trial = x_flat - lam * dx
-        self.clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
-        return trial, ev_t
+        clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+        return _Trial(trial, None, lam, clipped)
+
+    def _trial(self, s, lam):
+        """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
+        t = self._project(s, lam)
+        return _Trial(t.x, self.evaluate(t.x.reshape(self.shape), guard=True), lam, t.clipped)
 
     def _find_step(self, s):
-        """The accepted ``(trial, ev_t, lam)`` of this iteration, None if the damping failed."""
+        """The accepted ``_Trial`` of this iteration; its ``ev`` is None if the damping failed."""
         bnd = self.bnd
-        accepted = None
         lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx)) if bnd.active else 1.0
-        at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
+        at_lam_max = None   # the trial at lam_max, if made
         if self.mode == "guarded":
             # Full step (shortened only by the bounds far from the solution).
             lam = 1.0 if s.near else lam_max
-            trial, ev_t = self._trial(s, lam)
+            t = self._trial(s, lam)
             if lam == lam_max:
-                at_lam_max = (trial, ev_t, self.clipped)
-            if ev_t is not None:
-                return (trial, ev_t, lam)
+                at_lam_max = t
+            if t.ev is not None:
+                return t
             self.lam_next = 0.25 * lam
         accepted, at_lam_max = self._search(s, lam_max, at_lam_max)
-        escaped = False
         if accepted is None:
             accepted = self._restore_best()
-        if accepted is None and _ESCAPE:
-            accepted = self._escape(s, lam_max, at_lam_max)
-            escaped = accepted is not None
         if accepted is not None:
-            self.lam_next = 1.0 if (escaped or self.mode == "guarded") else min(1.0, 4.0 * accepted[2])
+            self.lam_next = 1.0 if self.mode == "guarded" else min(1.0, 4.0 * accepted.lam)
+            return accepted
+        accepted = self._escape(s, lam_max, at_lam_max)
+        if accepted.ev is not None:
+            self.lam_next = 1.0
         return accepted
 
     def _search(self, s, lam_max, at_lam_max):
@@ -798,33 +815,34 @@ class _NewtonRun:
         self.lam_min = lam_min = _LAM_NEAR if s.near else _LAM_MIN
         test = self._armijo_test if self.mode == "armijo" else self._monotonicity_test
         while lam >= lam_min:
-            trial, ev_t = self._trial(s, lam)
+            t = self._trial(s, lam)
             if lam == lam_max:
-                at_lam_max = (trial, ev_t, self.clipped)
-            if ev_t is None:
+                at_lam_max = t
+            if t.ev is None:
                 lam *= 0.25
                 continue
-            accepted, lam = test(s, trial, ev_t, lam)
+            accepted, lam = test(s, t)
             if accepted is not None:
                 return accepted, at_lam_max
         return None, at_lam_max
 
-    def _armijo_test(self, s, trial, ev_t, lam):
+    def _armijo_test(self, s, t):
         """``(accepted, lam)``: the trial if it decreases the scaled residual enough, else a halved lam."""
-        phi = float(np.linalg.norm(self.row * ev_t[1]))
+        lam = t.lam
+        phi = float(np.linalg.norm(self.row * t.ev.g))
         if phi <= (1.0 - _ARMIJO_C * lam) * self.phi0:
-            return (trial, ev_t, lam), lam
+            return t, lam
         best = self.best
-        if best is None or phi < best[0]:
-            self.best = (phi, trial, ev_t, lam, self.clipped)
+        if best is None or phi < best.phi:
+            self.best = _Best(phi, t)
         lam *= 0.5
         return None, lam
 
-    def _monotonicity_test(self, s, trial, ev_t, lam):
+    def _monotonicity_test(self, s, t):
         """``(accepted, lam)``: the trial if its simplified Newton step contracts, else a smaller lam."""
-        dy, dy_rms = s.dy, self.dy_rms
+        dy, dy_rms, lam = s.dy, self.dy_rms, t.lam
         try:
-            rhs = ev_t[0] if self.lin.kind == "callable" else ev_t[1]
+            rhs = t.ev.g_raw if self.lin.kind == "callable" else t.ev.g
             dbar = np.asarray(s.lin_solve(rhs), dtype=float).reshape(-1) / self.d
         except _LinearSolverFailed:
             dbar = np.full(self.n, np.inf)    # no test possible: reject the trial
@@ -833,7 +851,7 @@ class _NewtonRun:
             lam *= 0.5
             return None, lam
         if theta <= 1.0 - lam / 4.0:
-            return (trial, ev_t, lam), lam
+            return t, lam
         mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
         lam = min(0.5 * lam, max(mu, 0.1 * lam))
         return None, lam
@@ -841,36 +859,32 @@ class _NewtonRun:
     def _restore_best(self):
         """The best Armijo trial if it decreased the residual, re-evaluated; else None."""
         best = self.best
-        if best is None or not best[0] < self.phi0:
+        if best is None or not best.phi < self.phi0:
             return None
-        _, trial, ev_t, lam, self.clipped = best
-        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)  # restore model state
+        t = best.trial
+        ev_t = self.evaluate(t.x.reshape(self.shape), guard=True)  # restore model state
         if ev_t is not None:
-            return (trial, ev_t, lam)
+            return _Trial(t.x, ev_t, t.lam, t.clipped)
         return None
 
     def _escape(self, s, lam_max, at_lam_max):
-        """The (bounded) full step if its residual is finite, else None."""
-        lam = lam_max
-        if at_lam_max is not None:
-            trial, ev_t, self.clipped = at_lam_max
-            if ev_t is not None:
-                ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
-        else:
-            trial, ev_t = self._trial(s, lam)
-        if ev_t is not None:
-            return (trial, ev_t, lam)
-        return None
+        """The (bounded) full step, its ``ev`` None unless its residual is finite."""
+        if at_lam_max is None:
+            return self._trial(s, lam_max)
+        t = at_lam_max
+        if t.ev is not None:
+            t = _Trial(t.x, self.evaluate(t.x.reshape(self.shape), guard=True), lam_max, t.clipped)
+        return t
 
     def _accept(self, s, accepted):
         """Take the accepted damped step, then the callback and refresh: the ``_Carry`` or the result."""
         x_flat, bnd = self.x_flat, self.bnd
-        trial, ev, lam = accepted
+        trial, ev, lam, clipped = accepted.x, accepted.ev, accepted.lam, accepted.clipped
         if bnd.active:
             bnd.commit(x_flat, trial, s.dx)
         x_flat[:] = trial
         self.history.append({"step_norm": s.step_inf, "damping": lam, "theta": self.theta,
-                             "clipped": self.clipped})
+                             "clipped": clipped})
         stale = False
         if self.callback is not None:
             # The callback may change x or model state: re-evaluate after it.
@@ -885,7 +899,7 @@ class _NewtonRun:
                 return self.finish(4, ev, s.step_inf, float("nan"),
                                    "after the callback or refresh")
             ev = ev_new
-        return _Carry(ev, s.step_inf, s.be, s.converged, self.clipped, lam, self.theta)
+        return _Carry(ev, s.step_inf, s.be, s.converged, clipped, lam, self.theta)
 
     def _exhausted(self, carry):
         """The result after ``maxfev`` iterations without convergence."""
