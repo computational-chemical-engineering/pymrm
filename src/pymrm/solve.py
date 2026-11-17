@@ -519,6 +519,17 @@ def _search_context(s):
     return _SearchCtx(s.dy, dy_rms, s.lin_solve, row, phi0)
 
 
+def _stop_status(s, converged):
+    """0 if ``converged``, 1 if stalled, None to iterate on (both need the backward-error gate of ``s``)."""
+    if not s.gate:
+        return None
+    if converged:
+        return 0
+    if s.stagnant:
+        return 1
+    return None
+
+
 def _stalled(window, step_inf):
     """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
     return (len(window) >= _STAGNATION_WINDOW
@@ -741,15 +752,7 @@ class _NewtonRun:
         if not s.near and bnd.active:
             lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
         t = self._project(s, lam)
-        if bnd.active:
-            bnd.commit(x_flat, t.x, dx)
-        x_flat[:] = t.x
-        self.history.append({"step_norm": s.step_inf, "damping": lam, "theta": _UNTESTED,
-                             "clipped": t.clipped})
-        if self.callback is not None:
-            self.callback(self.x, s.ev.g_raw)
-        if self.refresh is not None:
-            self.refresh(self.x)
+        self._take(s, t, _UNTESTED)
         return self._plain_verdict(s, t)
 
     def _plain_verdict(self, s, t):
@@ -758,14 +761,9 @@ class _NewtonRun:
         if self.relative and step_inf > 0.0:
             # The relative test uses x after the step (and the callback).
             converged = bool(np.all(np.abs(s.dy) <= self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)))
-        if converged and s.gate:
-            return self.finish(0, s.ev, step_inf, be)
-        if s.stagnant and s.gate:
-            if t.clipped:
-                return self.finish(8, s.ev, step_inf, be,
-                                   f"{t.clipped} components held by a bound")
-            return self.finish(1, s.ev, step_inf, be,
-                               f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+        status = _stop_status(s, converged)
+        if status is not None:
+            return self._final(s, status, t.clipped)
         if s.last_it:
             # plain Newton does not evaluate after its last step
             return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
@@ -774,32 +772,45 @@ class _NewtonRun:
             return self.finish(4, s.ev, step_inf, float("nan"), "after a full step")
         return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
 
-    def _final_step(self, s, status, extra=""):
-        """Take the converged step without evaluating there, as plain Newton did."""
-        x_flat, dx, bnd, step_inf = self.x_flat, s.dx, self.bnd, s.step_inf
-        trial = x_flat - dx
-        n_clip = bnd.project(trial, x_flat, dx) if bnd.active else 0
+    def _take(self, s, t, theta):
+        """Take the step to the trial ``t``, then the callback and refresh; whether one of them ran."""
+        x_flat, bnd = self.x_flat, self.bnd
         if bnd.active:
-            bnd.commit(x_flat, trial, dx)
-        x_flat[:] = trial
-        self.history.append({"step_norm": step_inf, "damping": 1.0, "theta": float("nan"),
-                             "clipped": n_clip})
+            bnd.commit(x_flat, t.x, s.dx)
+        x_flat[:] = t.x
+        self.history.append({"step_norm": s.step_inf, "damping": t.lam, "theta": theta,
+                             "clipped": t.clipped})
+        stale = False
         if self.callback is not None:
+            # The callback may change x or model state: re-evaluate after it.
             self.callback(self.x, s.ev.g_raw)
+            stale = True
         if self.refresh is not None:
             self.refresh(self.x)
-        if status == 1 and n_clip:
-            return self.finish(8, s.ev, step_inf, s.be, f"{n_clip} components held by a bound")
-        return self.finish(status, s.ev, step_inf, s.be, extra)
+            stale = True
+        return stale
+
+    def _final(self, s, status, clipped):
+        """The result of a converged (0) or stalled run (1, or 8 if its last step is held by a bound)."""
+        step_inf = s.step_inf
+        if status == 0:
+            return self.finish(0, s.ev, step_inf, s.be)
+        if clipped:
+            return self.finish(8, s.ev, step_inf, s.be, f"{clipped} components held by a bound")
+        return self.finish(1, s.ev, step_inf, s.be, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+
+    def _final_step(self, s, status):
+        """Take the converged or stalled step without evaluating there, as plain Newton did."""
+        t = self._project(s, 1.0)
+        self._take(s, t, float("nan"))
+        return self._final(s, status, t.clipped)
 
     def _damped_step(self, s, carry, it):
-        """Stop, or find a damped step, accept it and evaluate there (None: iterate on)."""
-        step_inf = s.step_inf
-        if s.converged and s.gate:
-            return self._final_step(s, 0)
-        if s.stagnant and s.gate:
+        """Stop, or find a damped step, accept it and evaluate there: the result or the ``_Carry``."""
+        status = _stop_status(s, s.converged)
+        if status is not None:
             # _final_step takes the stalled step and reports 8 only if that step is held
-            return self._final_step(s, 1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+            return self._final_step(s, status)
         found = self._find_step(s, carry.lam_next)
         if found.trial.ev is None:
             return self._damping_failed(s, found.trial.clipped, it)
@@ -922,29 +933,14 @@ class _NewtonRun:
 
     def _accept(self, s, found):
         """Take the found damped step, then the callback and refresh: the ``_Carry`` or the result."""
-        x_flat, bnd = self.x_flat, self.bnd
-        accepted = found.trial
-        trial, ev, lam, clipped = accepted.x, accepted.ev, accepted.lam, accepted.clipped
-        if bnd.active:
-            bnd.commit(x_flat, trial, s.dx)
-        x_flat[:] = trial
-        self.history.append({"step_norm": s.step_inf, "damping": lam, "theta": found.theta,
-                             "clipped": clipped})
-        stale = False
-        if self.callback is not None:
-            # The callback may change x or model state: re-evaluate after it.
-            self.callback(self.x, s.ev.g_raw)
-            stale = True
-        if self.refresh is not None:
-            self.refresh(self.x)
-            stale = True
-        if stale:
-            ev_new = self.evaluate(self.x, guard=True)
-            if ev_new is None:
-                return self.finish(4, ev, s.step_inf, float("nan"),
+        t = found.trial
+        ev = t.ev
+        if self._take(s, t, found.theta):
+            ev = self.evaluate(self.x, guard=True)
+            if ev is None:
+                return self.finish(4, t.ev, s.step_inf, float("nan"),
                                    "after the callback or refresh")
-            ev = ev_new
-        return _Carry(ev, s.step_inf, s.be, s.converged, clipped, lam, found.theta, found.lam_next)
+        return _Carry(ev, s.step_inf, s.be, s.converged, t.clipped, t.lam, found.theta, found.lam_next)
 
     def _exhausted(self, carry):
         """The result after ``maxfev`` iterations without convergence."""
