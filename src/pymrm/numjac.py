@@ -108,7 +108,6 @@ def _normalize_dependency(dep, shape_in, shape_out):
     elif len(dep) == 4 and isinstance(dep[0], tuple):
         # Already in full form
         index_in, index_out, fixed_axes, periodic_axes = dep
-        _check_periodic_axes(periodic_axes, fixed_axes, shape_in, shape_out)
     else:
         # Shorthand form (e.g., (0,1,0))
         index_in = dep
@@ -118,6 +117,7 @@ def _normalize_dependency(dep, shape_in, shape_out):
 
     fixed_axes = _axes_list(fixed_axes, "fixed_axes_list must be a list or None.")
     periodic_axes = _axes_list(periodic_axes, "periodic_axes_list must be a list or None.")
+    _check_periodic_axes(periodic_axes, fixed_axes, shape_in, shape_out)
     return index_in, index_out, fixed_axes, periodic_axes
 
 

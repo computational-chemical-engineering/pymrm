@@ -438,15 +438,12 @@ def _both_sides_bc(bc):
     """``bc`` as a pair of boundary dictionaries, ``None`` sides replaced by a zero condition."""
     if bc is None:
         return ({"a": 0, "b": 0, "d": 0}, {"a": 0, "b": 0, "d": 0})
-    if not isinstance(bc, tuple) and len(bc) != 2:
+    if not isinstance(bc, (tuple, list)) or len(bc) != 2:
         raise ValueError(
             "Boundary conditions must be a tuple of 2 dictionaries when 2 boundary conditions are required."
         )
-    if bc[0] is None:
-        bc[0] = {"a": 0, "b": 0, "d": 0}
-    if bc[1] is None:
-        bc[1] = {"a": 0, "b": 0, "d": 0}
-    return bc
+    # a new tuple: the caller's bc is not changed
+    return tuple({"a": 0, "b": 0, "d": 0} if side is None else side for side in bc)
 
 
 def _normalize_boundary_bc(bc, bound_id, single_cell):
