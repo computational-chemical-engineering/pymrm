@@ -24,6 +24,7 @@ _NEAR = 100.0         # steps within _NEAR times the tolerance are taken in full
 _STAGNATION_WINDOW = 5
 _STAGNATION_RATIO = 1.0  # a step no smaller than the smallest of the window
 _ARMIJO_C = 1.0e-4
+_UNTESTED = float("nan")  # theta of a step no monotonicity test measured
 _BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
@@ -439,6 +440,18 @@ class _Step(NamedTuple):
     last: bool
 
 
+class _Carry(NamedTuple):
+    """What an iteration hands to the next, to the verbose line and to ``_exhausted``."""
+
+    ev: _Eval
+    step_inf: float
+    be: float
+    gate_failed: bool
+    clipped: int
+    lam: float
+    theta: float
+
+
 def _stalled(window, step_inf):
     """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
     return (len(window) >= _STAGNATION_WINDOW
@@ -492,15 +505,9 @@ class _NewtonRun:
                                                  "bad": None})
 
     # Iteration state, set by ``iterate`` and the phases of an iteration.
-    ev: tuple = field(init=False)
     lam_next: float = field(init=False)
-    step_inf: float = field(init=False)
-    be: float = field(init=False)
-    gate_failed: bool = field(init=False)
     clipped: int = field(init=False)
-    stopped: bool = field(init=False)
     theta: float = field(init=False)
-    lam: float = field(init=False)
     dy_rms: float = field(init=False)
     row: object = field(init=False)
     phi0: float = field(init=False)
@@ -612,32 +619,24 @@ class _NewtonRun:
         return _Newton(solve, r, dx)
 
     def iterate(self, ev):
-        self.ev = ev
         self.lam_next = 1.0
+        carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED)
         window = []          # step norms of the recent full steps at the floor
-        self.step_inf = float("nan")
-        self.be = float("nan")
-        self.gate_failed = False
-        self.clipped = 0
-        self.stopped = False      # a plain step ended the last iteration without evaluating
         maxfev = int(self.maxfev)
         for it in range(maxfev):
-            ev = self.ev
+            ev = carry.ev
             self.state["ev"] = ev
-            s = self._measure(ev, self._newton_step(ev, self.step_inf), it == maxfev - 1, window)
-            self.step_inf, self.be = s.step_inf, s.be
-            self.theta = float("nan")
-            result = self._plain_step(s) if self.mode == "none" else self._damped_step(s, it)
-            if result is not None:
-                return result
-            if self.stopped:
-                break
+            s = self._measure(ev, self._newton_step(ev, carry.step_inf), it == maxfev - 1, window)
+            self.theta = _UNTESTED
+            carry = self._plain_step(s) if self.mode == "none" else self._damped_step(s, it)
+            if isinstance(carry, OptimizeResult):
+                return carry
             # Report the iteration and update the stagnation window.
             if self.verbose:
-                print(f"newton it={it:3d} |dx|={self.step_inf:.3e} lam={self.lam:.3g} "
-                      f"theta={self.theta:.3g} clipped={self.clipped} nfev={self.nfev}")
+                print(f"newton it={it:3d} |dx|={carry.step_inf:.3e} lam={carry.lam:.3g} "
+                      f"theta={carry.theta:.3g} clipped={carry.clipped} nfev={self.nfev}")
             _slide(window, s, self.use_stagnation)
-        return self._exhausted()
+        return self._exhausted(carry)
 
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
@@ -689,17 +688,16 @@ class _NewtonRun:
         if bnd.active:
             bnd.commit(x_flat, trial, dx)
         x_flat[:] = trial
-        self.lam = lam
         self.history.append({"step_norm": s.step_inf, "damping": lam, "theta": self.theta,
                              "clipped": self.clipped})
         if self.callback is not None:
             self.callback(self.x, s.ev.g_raw)
         if self.refresh is not None:
             self.refresh(self.x)
-        return self._plain_verdict(s)
+        return self._plain_verdict(s, lam)
 
-    def _plain_verdict(self, s):
-        """Stop after a plain step, or evaluate at the new ``x`` (None: iterate on)."""
+    def _plain_verdict(self, s, lam):
+        """Stop after a plain step, or evaluate at the new ``x``: the result or the ``_Carry``."""
         converged, step_inf, be = s.converged, s.step_inf, s.be
         if self.relative and step_inf > 0.0:
             # The relative test uses x after the step (and the callback).
@@ -712,15 +710,13 @@ class _NewtonRun:
                                    f"{self.clipped} components held by a bound")
             return self.finish(1, s.ev, step_inf, be,
                                f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
-        self.gate_failed = converged
         if s.last_it:
-            self.stopped = True     # plain Newton does not evaluate after its last step
-            return None
+            # plain Newton does not evaluate after its last step
+            return self._exhausted(_Carry(s.ev, step_inf, be, converged, self.clipped, lam, self.theta))
         ev_new = self.evaluate(self.x, guard=False)
         if ev_new is None:
             return self.finish(4, s.ev, step_inf, float("nan"), "after a full step")
-        self.ev = ev_new
-        return None
+        return _Carry(ev_new, step_inf, be, converged, self.clipped, lam, self.theta)
 
     def _final_step(self, s, status, extra=""):
         """Take the converged step without evaluating there, as plain Newton did."""
@@ -748,7 +744,6 @@ class _NewtonRun:
         if s.stagnant and s.gate:
             # _final_step takes the stalled step and reports 8 only if that step is held
             return self._final_step(s, 1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
-        self.gate_failed = s.converged
         accepted = self._find_step(s)
         if accepted is None:
             extra = f"{self.lam_min:g} at iteration {it}"
@@ -868,10 +863,9 @@ class _NewtonRun:
         return None
 
     def _accept(self, s, accepted):
-        """Take the accepted damped step, then the callback and refresh (None: iterate on)."""
+        """Take the accepted damped step, then the callback and refresh: the ``_Carry`` or the result."""
         x_flat, bnd = self.x_flat, self.bnd
-        trial, self.ev, lam = accepted
-        self.lam = lam
+        trial, ev, lam = accepted
         if bnd.active:
             bnd.commit(x_flat, trial, s.dx)
         x_flat[:] = trial
@@ -888,20 +882,20 @@ class _NewtonRun:
         if stale:
             ev_new = self.evaluate(self.x, guard=True)
             if ev_new is None:
-                return self.finish(4, self.ev, s.step_inf, float("nan"),
+                return self.finish(4, ev, s.step_inf, float("nan"),
                                    "after the callback or refresh")
-            self.ev = ev_new
-        return None
+            ev = ev_new
+        return _Carry(ev, s.step_inf, s.be, s.converged, self.clipped, lam, self.theta)
 
-    def _exhausted(self):
+    def _exhausted(self, carry):
         """The result after ``maxfev`` iterations without convergence."""
-        ev, step_inf, be = self.ev, self.step_inf, self.be
+        ev, step_inf, be = carry.ev, carry.step_inf, carry.be
         if self.mode != "none":
-            be = self.backward_error(ev[1], ev[2])     # ev is at x after a damped step
-        if self.gate_failed:
+            be = self.backward_error(ev.g, ev.jac)     # ev is at x after a damped step
+        if carry.gate_failed:
             return self.finish(7, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
-        if self.clipped:
-            return self.finish(8, ev, step_inf, be, f"{self.clipped} components held by a bound")
+        if carry.clipped:
+            return self.finish(8, ev, step_inf, be, f"{carry.clipped} components held by a bound")
         return self.finish(2, ev, step_inf, be)
 
 
