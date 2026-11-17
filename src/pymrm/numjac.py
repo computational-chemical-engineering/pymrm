@@ -203,7 +203,7 @@ def unravel_index_numba(lin_idx, shape):
     return idx
 
 
-@njit
+@njit(cache=True)
 def iterate_over_entries(
     shape_in, shape_out, shape_rel, idx_in, idx_out, row_indices, col_indices, entry_idx
 ):
@@ -357,7 +357,7 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     return row_indices, col_indices
 
 
-@njit
+@njit(cache=True)
 def group_columns_by_non_overlap_numba(indptr, indices):
     """
     Group columns of a sparse matrix by non-overlapping rows.
