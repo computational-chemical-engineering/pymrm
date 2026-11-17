@@ -2,6 +2,7 @@
 
 import warnings
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import NamedTuple
 
 import numpy as np
@@ -29,6 +30,21 @@ _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
 # Exceptions that mark an evaluation point as unusable (``newton``'s default).
 _RECOVERABLE = (FloatingPointError, OverflowError, ZeroDivisionError)
+
+
+class _Status(IntEnum):
+    """Newton's status codes (``result.status`` stays a plain int)."""
+
+    CONVERGED = 0
+    STALLED = 1
+    MAXFEV = 2
+    DAMPING_FAILED = 3
+    NON_FINITE = 4
+    SINGULAR = 5
+    SOLVER_FAILED = 6
+    BACKWARD_ERROR = 7
+    ON_BOUND = 8
+
 
 _MESSAGES = {
     0: "Converged",
@@ -531,9 +547,9 @@ def _stop_status(s, converged):
     if not s.gate:
         return None
     if converged:
-        return 0
+        return _Status.CONVERGED
     if s.stagnant:
-        return 1
+        return _Status.STALLED
     return None
 
 
@@ -643,14 +659,15 @@ class _NewtonRun:
         ev = end.ev
         g_raw = None if ev is None else ev.g_raw
         message = _MESSAGES[status] + (f": {extra}" if extra else "")
-        return OptimizeResult(x=self.x, success=status in (0, 1), status=status, message=message,
+        return OptimizeResult(x=self.x, success=status in (_Status.CONVERGED, _Status.STALLED),
+                              status=int(status), message=message,
                               nit=len(self.history), nfev=self.nfev, nfact=self.nfact, fun=g_raw,
                               step_norm=end.step_norm, backward_error=end.be, history=self.history)
 
     def finish(self, status, end, extra=""):
         """The result of the run ending at ``end``, raised in a ``breakdown`` for the statuses 4, 5 and 6."""
         result = self._outcome(status, end, extra)
-        if status in (4, 5, 6):
+        if status in (_Status.NON_FINITE, _Status.SINGULAR, _Status.SOLVER_FAILED):
             # No usable Newton step: raise, as these cases did up to 2.5.0
             # (callers catch ValueError, LinAlgError or RuntimeError).
             raise NewtonBreakdown(result.message, result)
@@ -664,12 +681,12 @@ class _NewtonRun:
             try:
                 ev = self._evaluate(self.x, guard=False, last=False)
             except self.recoverable as exc:
-                return self.finish(4, _End(None, float("nan"), float("nan")),
+                return self.finish(_Status.NON_FINITE, _End(None, float("nan"), float("nan")),
                                    f"{type(exc).__name__} at the initial guess ({exc})")
         else:
             ev = self._evaluate(self.x, guard=False, last=False)
         if not _is_finite(ev):
-            return self.finish(4, _End(ev, float("nan"), float("nan")), "at the initial guess")
+            return self.finish(_Status.NON_FINITE, _End(ev, float("nan"), float("nan")), "at the initial guess")
         return self.iterate(ev)
 
     def _newton_step(self, ev, step_inf):
@@ -685,12 +702,12 @@ class _NewtonRun:
             dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
                             dtype=float).reshape(-1)
         except _SingularJacobian as exc:
-            self.finish(5, _End(ev, step_inf, float("nan")), str(exc))     # raises
+            self.finish(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))     # raises
         except _LinearSolverFailed as exc:
-            result = self._outcome(6, _End(ev, step_inf, float("nan")), str(exc))
+            result = self._outcome(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc))
             raise KrylovBreakdown(result.message, result)
         if not np.isfinite(dx).all():
-            self.finish(6, _End(ev, step_inf, float("nan")), "non-finite Newton step")     # raises
+            self.finish(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")     # raises
         return _Newton(solve, r, dx)
 
     def iterate(self, ev):
@@ -771,7 +788,7 @@ class _NewtonRun:
             return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
         ev_new = self.evaluate(self.x, guard=False)
         if ev_new is None:
-            return self.finish(4, _End(s.ev, step_inf, float("nan")), "after a full step")
+            return self.finish(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
         return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
 
     def _take(self, s, t, theta):
@@ -795,11 +812,12 @@ class _NewtonRun:
     def _final(self, s, status, clipped):
         """The result of a converged (0) or stalled run (1, or 8 if its last step is held by a bound)."""
         step_inf = s.step_inf
-        if status == 0:
-            return self.finish(0, _End(s.ev, step_inf, s.be))
+        if status == _Status.CONVERGED:
+            return self.finish(_Status.CONVERGED, _End(s.ev, step_inf, s.be))
         if clipped:
-            return self.finish(8, _End(s.ev, step_inf, s.be), f"{clipped} components held by a bound")
-        return self.finish(1, _End(s.ev, step_inf, s.be), f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+            return self.finish(_Status.ON_BOUND, _End(s.ev, step_inf, s.be), f"{clipped} components held by a bound")
+        return self.finish(_Status.STALLED, _End(s.ev, step_inf, s.be),
+                           f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
 
     def _final_step(self, s, status):
         """Take the converged or stalled step without evaluating there, as plain Newton did."""
@@ -819,7 +837,7 @@ class _NewtonRun:
                 return self._damping_failed(s, found.trial.clipped, it)
             return self._accept(s, found)
         except _LastEvaluationFailed as exc:
-            return self.finish(2, _End(s.ev, s.step_inf, float("nan")),
+            return self.finish(_Status.MAXFEV, _End(s.ev, s.step_inf, float("nan")),
                                f"the residual at the last trial point raised {exc}")
 
     def _damping_failed(self, s, clipped, it):
@@ -827,7 +845,7 @@ class _NewtonRun:
         extra = f"{_lam_min(s.near):g} at iteration {it}"
         if clipped:
             extra += f"; {clipped} components held by a bound"
-        return self.finish(3, _End(s.ev, s.step_inf, self.backward_error(s.ev.g, s.ev.jac)), extra)
+        return self.finish(_Status.DAMPING_FAILED, _End(s.ev, s.step_inf, self.backward_error(s.ev.g, s.ev.jac)), extra)
 
     def _project(self, s, lam):
         """The trial point ``x - lam dx``, held inside the bounds, not evaluated."""
@@ -944,7 +962,7 @@ class _NewtonRun:
         if self._take(s, t, found.theta):
             ev = self.evaluate(self.x, guard=True, last=s.last)
             if ev is None:
-                return self.finish(4, _End(t.ev, s.step_inf, float("nan")),
+                return self.finish(_Status.NON_FINITE, _End(t.ev, s.step_inf, float("nan")),
                                    "after the callback or refresh")
         return _Carry(ev, s.step_inf, s.be, s.converged, t.clipped, t.lam, found.theta, found.lam_next)
 
@@ -954,10 +972,10 @@ class _NewtonRun:
         if self.mode != "none":
             be = self.backward_error(ev.g, ev.jac)     # ev is at x after a damped step
         if carry.gate_failed:
-            return self.finish(7, _End(ev, step_inf, be), f"{be:.2e} after maxfev iterations")
+            return self.finish(_Status.BACKWARD_ERROR, _End(ev, step_inf, be), f"{be:.2e} after maxfev iterations")
         if carry.clipped:
-            return self.finish(8, _End(ev, step_inf, be), f"{carry.clipped} components held by a bound")
-        return self.finish(2, _End(ev, step_inf, be))
+            return self.finish(_Status.ON_BOUND, _End(ev, step_inf, be), f"{carry.clipped} components held by a bound")
+        return self.finish(_Status.MAXFEV, _End(ev, step_inf, be))
 
 
 def newton(
