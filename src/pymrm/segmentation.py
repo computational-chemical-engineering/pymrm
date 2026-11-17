@@ -173,41 +173,36 @@ def crossing_segments(seg, ibm):
 # Per-segment -> per-crossing / per-cell expansion
 # ---------------------------------------------------------------------------
 
-def _segment_lookup(values, n_segments, default, name, trailing_shape=None):
-    """Build a ``(n_segments + 1, *trailing)`` lookup table indexed by label.
+def _segment_lookup_dict(values, n_segments, default, name, trailing_shape):
+    """Lookup table from a ``{label: value}`` dict (see :func:`_segment_lookup`)."""
+    items = {}
+    for label, v in values.items():
+        label = int(label)
+        if not 1 <= label <= n_segments:
+            raise ValueError(
+                f"{name}: segment label {label} out of range "
+                f"1..{n_segments}")
+        items[label] = np.asarray(v, dtype=float)
+    shapes = [a.shape for a in items.values()]
+    if default is not None:
+        shapes.append(np.asarray(default, dtype=float).shape)
+    if trailing_shape is not None:
+        shapes.append(tuple(trailing_shape))
+    trailing = np.broadcast_shapes(*shapes) if shapes else ()
+    lookup = np.zeros((n_segments + 1,) + trailing, dtype=float)
+    provided = np.zeros(n_segments + 1, dtype=bool)
+    if default is not None:
+        lookup[:] = np.broadcast_to(np.asarray(default, dtype=float),
+                                    trailing)
+        provided[:] = True
+    for label, a in items.items():
+        lookup[label] = np.broadcast_to(a, trailing)
+        provided[label] = True
+    return lookup, provided
 
-    Row ``s`` holds the value for segment ``s``; row ``0`` (background) holds
-    *default*.  ``provided`` flags which rows carry a value.  ``values`` is
-    either an array of shape ``(n_segments, *trailing)`` or a ``{label: value}``
-    dict; per-segment values are broadcast to a common trailing shape (forced to
-    *trailing_shape* when given).
-    """
-    if isinstance(values, dict):
-        items = {}
-        for label, v in values.items():
-            label = int(label)
-            if not 1 <= label <= n_segments:
-                raise ValueError(
-                    f"{name}: segment label {label} out of range "
-                    f"1..{n_segments}")
-            items[label] = np.asarray(v, dtype=float)
-        shapes = [a.shape for a in items.values()]
-        if default is not None:
-            shapes.append(np.asarray(default, dtype=float).shape)
-        if trailing_shape is not None:
-            shapes.append(tuple(trailing_shape))
-        trailing = np.broadcast_shapes(*shapes) if shapes else ()
-        lookup = np.zeros((n_segments + 1,) + trailing, dtype=float)
-        provided = np.zeros(n_segments + 1, dtype=bool)
-        if default is not None:
-            lookup[:] = np.broadcast_to(np.asarray(default, dtype=float),
-                                        trailing)
-            provided[:] = True
-        for label, a in items.items():
-            lookup[label] = np.broadcast_to(a, trailing)
-            provided[label] = True
-        return lookup, provided
 
+def _segment_lookup_array(values, n_segments, default, name, trailing_shape):
+    """Lookup table from an ``(n_segments, *trailing)`` array (see :func:`_segment_lookup`)."""
     arr = np.asarray(values, dtype=float)
     if arr.ndim == 0 or arr.shape[0] != n_segments:
         raise ValueError(
@@ -225,6 +220,22 @@ def _segment_lookup(values, n_segments, default, name, trailing_shape=None):
         provided[0] = False
     lookup[1:] = arr
     return lookup, provided
+
+
+def _segment_lookup(values, n_segments, default, name, trailing_shape=None):
+    """Build a ``(n_segments + 1, *trailing)`` lookup table indexed by label.
+
+    Row ``s`` holds the value for segment ``s``; row ``0`` (background) holds
+    *default*.  ``provided`` flags which rows carry a value.  ``values`` is
+    either an array of shape ``(n_segments, *trailing)`` or a ``{label: value}``
+    dict; per-segment values are broadcast to a common trailing shape (forced to
+    *trailing_shape* when given).
+    """
+    if isinstance(values, dict):
+        return _segment_lookup_dict(values, n_segments, default, name,
+                                    trailing_shape)
+    return _segment_lookup_array(values, n_segments, default, name,
+                                 trailing_shape)
 
 
 def _index_lookup(lookup, provided, idx, name):

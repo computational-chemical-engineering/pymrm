@@ -94,6 +94,17 @@ def _coerce_coeff(value, npnt, ns_shape, name):
     return _normalize_point_values(value, npnt, ns_shape, name)
 
 
+def _ic_pair(pair, i, key, npnt, ns_shape):
+    """Coerce the (out, in) coefficient pair ``ic[i][key]``."""
+    if np.ndim(pair) == 0 or len(pair) != 2:
+        raise ValueError(
+            f"ic[{i}]['{key}'] must be a pair "
+            "(coefficient_out, coefficient_in)"
+        )
+    return [_coerce_coeff(pair[s], npnt, ns_shape, f"ic[{i}]['{key}'][{s}]")
+            for s in range(2)]
+
+
 def _ic_coefficients(ic, npnt, ns_shape):
     """Normalise the two-equation ic tuple.
 
@@ -111,15 +122,7 @@ def _ic_coefficients(ic, npnt, ns_shape):
             continue
         for key, target in (("a", a), ("b", b)):
             if key in eq:
-                pair = eq[key]
-                if np.ndim(pair) == 0 or len(pair) != 2:
-                    raise ValueError(
-                        f"ic[{i}]['{key}'] must be a pair "
-                        "(coefficient_out, coefficient_in)"
-                    )
-                for s in range(2):
-                    target[i][s] = _coerce_coeff(
-                        pair[s], npnt, ns_shape, f"ic[{i}]['{key}'][{s}]")
+                target[i] = _ic_pair(eq[key], i, key, npnt, ns_shape)
         if "d" in eq:
             d[i] = _coerce_coeff(eq["d"], npnt, ns_shape, f"ic[{i}]['d']")
     return a, b, d

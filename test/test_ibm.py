@@ -540,6 +540,17 @@ def test_boundary_adjacent_solid_fallback(solid_cell):
     assert recon == pytest.approx(u[ibm.ghost_in[k]])
 
 
+def test_boundary_fallback_warning_points_at_caller():
+    """The first-order fallback warning is attributed to the caller of construct_ibm."""
+    n = 10
+    _, x_c = generate_grid(n, np.linspace(0.0, 1.0, n + 1), generate_x_c=True)
+    sdf = np.ones(n)
+    sdf[-1] = -1.0
+    with pytest.warns(RuntimeWarning, match="first-order") as record:
+        construct_ibm(sdf, x_c)
+    assert [w.filename for w in record] == [__file__]
+
+
 def test_boundary_adjacent_solid_2d_no_crash():
     """A solid touching a domain wall (cut cells in the outer layer) builds."""
     nx, ny = 20, 20

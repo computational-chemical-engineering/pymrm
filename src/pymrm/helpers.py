@@ -19,6 +19,7 @@ Functions
 """
 
 import math
+from typing import NamedTuple
 import numpy as np
 from scipy.sparse import diags, csc_array, csr_array
 
@@ -88,6 +89,217 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
     return a
 
 
+def _bc_coeff(shape, bc_side, key, axis):
+    """Coefficient ``key`` of one boundary condition expanded to ``shape`` (zeros if it is ``None``)."""
+    if bc_side:
+        return unwrap_bc_coeff(shape, bc_side[key], axis=axis)
+    return np.zeros((1,) * len(shape))
+
+
+def _unwrap_bc_side(shape, bc_side, axis):
+    """Coefficients ``a``, ``b``, ``d`` of one boundary condition (zeros if it is ``None``)."""
+    return [_bc_coeff(shape, bc_side, key, axis) for key in ["a", "b", "d"]]
+
+
+def _wall_factor(bc_side, geo, alpha_1, alpha_2, sgn=1):
+    """Coefficients of one boundary condition and its wall factor ``1 / (alpha_0 a + b)``.
+
+    Returns ``(a, b, d, alpha_0, fctr)`` with ``alpha_0 = alpha_1 - alpha_2`` and ``a``
+    multiplied by ``sgn``; ``fctr`` is left at zero where ``alpha_0 a + b`` vanishes.
+    """
+    a, b, d = _unwrap_bc_side(geo.shape, bc_side, geo.axis)
+    alpha_0 = alpha_1 - alpha_2
+    if sgn != 1:
+        a *= sgn
+    fctr = alpha_0 * a + b
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    return a, b, d, alpha_0, fctr
+
+
+def _unwrap_bc_pair(shape, bc, axis):
+    """Coefficients ``a``, ``b``, ``d`` of two boundary conditions, each a list over the sides."""
+    return [[_bc_coeff(shape, bc_side, key, axis) for bc_side in bc] for key in ["a", "b", "d"]]
+
+
+class _FieldGeometry(NamedTuple):
+    """Shapes of a cell-centred field along one axis: triplet, face, boundary."""
+
+    shape: tuple
+    axis: int
+    shape_t: tuple
+    shape_f: tuple
+    shape_f_t: tuple
+    shape_bc: tuple
+    shape_bc_d: tuple
+
+
+def _field_geometry(shape, axis):
+    """Triplet, face and boundary shapes of a field of ``shape`` along ``axis``.
+
+    ``axis`` must be non-negative; the caller normalises it.
+    """
+    shape = tuple(shape)
+    shape_t = (math.prod(shape[:axis]), shape[axis], math.prod(shape[axis + 1:]))
+    shape_f = shape[:axis] + (shape[axis] + 1,) + shape[axis + 1:]
+    return _FieldGeometry(
+        shape, axis, shape_t, shape_f, (shape_t[0], shape_f[axis], shape_t[2]),
+        shape[:axis] + (1,) + shape[axis + 1:], (shape_t[0], shape_t[2]))
+
+
+class _BoundaryFaceTerms(NamedTuple):
+    """Boundary-face coefficients with the index grids they are placed on."""
+
+    values: np.ndarray
+    values_bc: np.ndarray
+    values_bc_src: np.ndarray
+    i_c: np.ndarray
+    i_f: np.ndarray
+    i_f_bc: np.ndarray
+
+
+def _boundary_face_indices(geo, cell_idx, face_idx):
+    """Flat cell, face and boundary-face indices of the boundary stencils.
+
+    ``cell_idx`` and ``face_idx`` list the positions along the axis of each stencil
+    entry; the boundary faces are the first and the last face.
+    """
+    n0, _, n2 = geo.shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+
+    def flat(idx, shape):
+        return np.ravel_multi_index((i0, np.array(idx).reshape(1, -1, 1), i2), shape)
+
+    return (flat(cell_idx, geo.shape_t), flat(face_idx, geo.shape_f_t),
+            flat([0, geo.shape_f_t[1] - 1], geo.shape_f_t))
+
+
+def _on_bc(value, geo):
+    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``."""
+    return np.broadcast_to(value, geo.shape_bc).reshape(geo.shape_bc_d)
+
+
+def _wall_alphas(x_f, x_c):
+    """Wall-stencil weights ``(alpha_1, alpha_2)`` of the left and the right boundary."""
+    left = ((x_c[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_c[1] - x_c[0])),
+            (x_c[0] - x_f[0]) / ((x_c[1] - x_f[0]) * (x_c[1] - x_c[0])))
+    right = (-(x_c[-2] - x_f[-1]) / ((x_c[-1] - x_f[-1]) * (x_c[-2] - x_c[-1])),
+             -(x_c[-1] - x_f[-1]) / ((x_c[-2] - x_f[-1]) * (x_c[-2] - x_c[-1])))
+    return left, right
+
+
+class _SingleCellSystem(NamedTuple):
+    """Boundary coefficients, wall weights and coupling factor of a one-cell domain."""
+
+    a: list
+    b: list
+    d: list
+    alpha_1: object
+    alpha_2: list
+    alpha_0: list
+    fctr: np.ndarray
+
+
+def _single_cell_system(geo, x_f, x_c, bc):
+    """Weights and coupling factor of the two boundary conditions of a one-cell domain."""
+    if x_c is None:
+        x_c = 0.5 * (x_f[0:-1] + x_f[1:])
+    a, b, d = _unwrap_bc_pair(geo.shape, bc, geo.axis)
+    alpha_1 = (x_f[1] - x_f[0]) / ((x_c[0] - x_f[0]) * (x_f[1] - x_c[0]))
+    alpha_2 = [
+        (x_c[0] - x_f[0]) / ((x_f[1] - x_f[0]) * (x_f[1] - x_c[0])),
+        -(x_c[0] - x_f[1]) / ((x_f[0] - x_f[1]) * (x_f[0] - x_c[0])),
+    ]
+    alpha_0 = [alpha_1 - alpha_2[0], alpha_1 - alpha_2[1]]
+    fctr = (b[0] + alpha_0[0] * a[0]) * (b[1] + alpha_0[1] * a[1]) - alpha_2[
+        0
+    ] * alpha_2[1] * a[0] * a[1]
+    np.divide(1, fctr, out=fctr, where=(fctr != 0))
+    return _SingleCellSystem(a, b, d, alpha_1, alpha_2, alpha_0, fctr)
+
+
+def _diagonal_sources(values_bc):
+    """Sources per face and boundary when each boundary face depends on its own data only."""
+    n0, _, n2 = values_bc.shape
+    sources = np.zeros((n0, 2, 2, n2))
+    sources[:, 0, 0, :] = values_bc[:, 0, :]
+    sources[:, 1, 1, :] = values_bc[:, 1, :]
+    return sources
+
+
+def _bc_operators_by_boundary(terms, shapes_d, geo, format):
+    """Operators and sources per boundary, for inhomogeneous terms on external vectors."""
+    n0, n1, n2 = geo.shape_t
+    n_faces = math.prod(geo.shape_f_t)
+    values = terms.values.reshape((n0, -1, n2))
+    bc_sources = []
+    for i in range(2):
+        shape_d = (1,) * len(geo.shape_bc) if shapes_d[i] is None else shapes_d[i]
+        num_cols = math.prod(shape_d)
+        i_cols_bc = np.arange(num_cols, dtype=int).reshape(shape_d)
+        i_cols_bc = np.broadcast_to(i_cols_bc, geo.shape_bc).reshape(n0, 1, n2)
+        faces = [0, 1] if n1 == 1 else [i]
+        bc_sources.append(csc_array(
+            (
+                terms.values_bc_src[:, faces, i, :].ravel(),
+                (
+                    terms.i_f_bc[:, faces, :].ravel(),
+                    np.broadcast_to(i_cols_bc, (n0, len(faces), n2)).ravel(),
+                ),
+            ),
+            shape=(n_faces, num_cols),
+        ))
+    sides = (slice(0, 1), slice(-1, None)) if n1 == 1 else (slice(None, 2), slice(-2, None))
+    matrices = [
+        _sparse_array(
+            (values[:, s, :].ravel(), (terms.i_f[:, s, :].ravel(), terms.i_c[:, s, :].ravel())),
+            shape=(n_faces, math.prod(geo.shape_t)),
+            format=format,
+        )
+        for s in sides
+    ]
+    return matrices[0], bc_sources[0], matrices[1], bc_sources[1]
+
+
+def _stagger_shape(shape, axis):
+    """``shape`` with the length along ``axis`` increased by one (face-centred length)."""
+    return tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
+
+
+def _pairwise_coefficient_matrix(coefficients, shape, axis, fmt):
+    """Coefficient matrix coupling two fields of shapes ``shape = (shape_rows, shape_cols)``."""
+    shape_rows = shape[0]
+    shape_cols = shape[1]
+    working_shape = tuple(max(s1, s2) for s1, s2 in zip(shape_rows, shape_cols))
+    if axis is not None:
+        working_shape = _stagger_shape(working_shape, axis)
+        if shape_rows[axis] + 1 == working_shape[axis]:
+            shape_rows = _stagger_shape(shape_rows, axis)
+        if shape_cols[axis] + 1 == working_shape[axis]:
+            shape_cols = _stagger_shape(shape_cols, axis)
+    if coefficients.shape == working_shape:
+        coefficients_copy = coefficients
+    else:
+        coefficients_copy = np.array(coefficients)
+        shape_coeff = (1,) * (
+            len(working_shape) - coefficients_copy.ndim
+        ) + coefficients_copy.shape
+        coefficients_copy = coefficients_copy.reshape(shape_coeff)
+        coefficients_copy = np.broadcast_to(coefficients_copy, working_shape)
+    num_rows = math.prod(shape_rows)
+    rows = np.arange(num_rows).reshape(shape_rows)
+    rows = np.broadcast_to(rows, working_shape).ravel()
+    num_cols = math.prod(shape_cols)
+    cols = np.arange(num_cols).reshape(shape_cols)
+    cols = np.broadcast_to(cols, working_shape).ravel()
+    coeff_matrix = _sparse_array(
+        (coefficients_copy.ravel(), (rows, cols)),
+        shape=(num_rows, num_cols),
+        format=fmt,
+    )
+    return coeff_matrix
+
+
 def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="csc"):
     """
     Build a sparse coefficient matrix with optional broadcasting and (row, col) coupling.
@@ -153,44 +365,10 @@ def construct_coefficient_matrix(coefficients, shape=None, axis=None, format="cs
     if shape is None:
         coeff_matrix = cls(diags(coefficients.ravel(), format=fmt))
     elif all(isinstance(t, tuple) for t in shape):
-        shape_rows = shape[0]
-        shape_cols = shape[1]
-        working_shape = tuple(max(s1, s2) for s1, s2 in zip(shape_rows, shape_cols))
-        if axis is not None:
-            working_shape = tuple(
-                s if i != axis else s + 1 for i, s in enumerate(working_shape)
-            )
-            if shape_rows[axis] + 1 == working_shape[axis]:
-                shape_rows = tuple(
-                    s if i != axis else s + 1 for i, s in enumerate(shape_rows)
-                )
-            if shape_cols[axis] + 1 == working_shape[axis]:
-                shape_cols = tuple(
-                    s if i != axis else s + 1 for i, s in enumerate(shape_cols)
-                )
-        if coefficients.shape == working_shape:
-            coefficients_copy = coefficients
-        else:
-            coefficients_copy = np.array(coefficients)
-            shape_coeff = (1,) * (
-                len(working_shape) - coefficients_copy.ndim
-            ) + coefficients_copy.shape
-            coefficients_copy = coefficients_copy.reshape(shape_coeff)
-            coefficients_copy = np.broadcast_to(coefficients_copy, working_shape)
-        num_rows = math.prod(shape_rows)
-        rows = np.arange(num_rows).reshape(shape_rows)
-        rows = np.broadcast_to(rows, working_shape).ravel()
-        num_cols = math.prod(shape_cols)
-        cols = np.arange(num_cols).reshape(shape_cols)
-        cols = np.broadcast_to(cols, working_shape).ravel()
-        coeff_matrix = _sparse_array(
-            (coefficients_copy.ravel(), (rows, cols)),
-            shape=(num_rows, num_cols),
-            format=fmt,
-        )
+        coeff_matrix = _pairwise_coefficient_matrix(coefficients, shape, axis, fmt)
     else:
         if axis is not None:
-            shape = tuple(s if i != axis else s + 1 for i, s in enumerate(shape))
+            shape = _stagger_shape(shape, axis)
         coefficients_copy = np.array(coefficients)
         shape_coeff = (1,) * (
             len(shape) - coefficients_copy.ndim
