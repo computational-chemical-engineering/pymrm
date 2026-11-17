@@ -1,0 +1,7 @@
+id = "opt-o1-numba-cache"
+approved_by = "user (pymrm-health session, 2026-11-17: 'okay. Go ahead' to the speed-up lane naming O1, caching numba's compiled code in numjac)"
+reason = "Optimize lane c1-opt O1: @njit -> @njit(cache=True) on the two numjac kernels called from Python (iterate_over_entries, group_columns_by_non_overlap_numba; callees are compiled into them, compute_df and precompute_perturbations_numba are unused); same names, signatures and results, compiled code reused across processes"
+changed = [
+  "src/pymrm/numjac.py:iterate_over_entries",
+  "src/pymrm/numjac.py:group_columns_by_non_overlap_numba",
+]
