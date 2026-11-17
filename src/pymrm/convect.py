@@ -693,6 +693,10 @@ class ConvFluxTVD:
         m_0, e_0, m_1, e_1 = construct_convflux_bc(
             shape, x_f, x_c, bc_upwind, 1.0, axis, shapes_d=shapes_ext, format="csr")
         self._m_up, self._e_up = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
+        # without shapes_d the external vectors are always ones: their boundary terms are constant
+        unit = np.ones(1)
+        self._ext_face = None if self._with_d else (self._e_face[0] @ unit, self._e_face[1] @ unit)
+        self._ext_up = None if self._with_d else (self._e_up[0] @ unit, self._e_up[1] @ unit)
 
         self._offsets = np.arange(-2, 2)
         self._build_boundary_stencils(x_f, x_c)
@@ -712,6 +716,7 @@ class ConvFluxTVD:
                             shape=shape_jac, format=format)
         tag.sort_indices()
         self._perm = tag.data.astype(np.intp) - 1
+        self._take = np.flatnonzero(self._valid)[self._perm]   # band entries in jac.data order
         self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
 
         # boundary faces and the interior faces next to them, as flat face indices
@@ -791,11 +796,18 @@ class ConvFluxTVD:
                 raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
         return ext
 
+    @staticmethod
+    def _boundary_terms(e, const, ext):
+        """``(e[0] @ ext[0], e[1] @ ext[1])``, or ``const`` when it was computed once for unit ``ext``."""
+        if const is not None:
+            return const
+        return e[0] @ ext[0], e[1] @ ext[1]
+
     def _fill_interior_faces(self, c, ext, v_t, face, band):
         """Fill the interior faces of ``face`` and ``band``; return the boundary upwind weights."""
         n0, n1, n2 = self._shape_t
-        up = (self._m_up @ c.ravel() + self._e_up[0] @ ext[0]
-              + self._e_up[1] @ ext[1]).reshape(self._shape_f_t)
+        up_0, up_1 = self._boundary_terms(self._e_up, self._ext_up, ext)
+        up = (self._m_up @ c.ravel() + up_0 + up_1).reshape(self._shape_f_t)
         pos = v_t[:, 1:-1, :] > 0
         c_U = np.where(pos, np.concatenate((up[:, :1], c[:, :-2]), axis=1),
                        np.concatenate((c[:, 2:], up[:, n1:]), axis=1))
@@ -879,8 +891,8 @@ class ConvFluxTVD:
         ext = self._external_vectors(d)
 
         c_flat = c.ravel()
-        face_bnd = (self._m_face @ c_flat + self._e_face[0] @ ext[0]
-                    + self._e_face[1] @ ext[1]).reshape(self._shape_f_t)
+        bnd_0, bnd_1 = self._boundary_terms(self._e_face, self._ext_face, ext)
+        face_bnd = (self._m_face @ c_flat + bnd_0 + bnd_1).reshape(self._shape_f_t)
         face = np.zeros(self._shape_f_t)
         face[:, 0, :], face[:, n1, :] = face_bnd[:, 0, :], face_bnd[:, n1, :]
         band = np.zeros((n0, n1 + 1, 4, n2))       # d c_f / d c, before the velocity
@@ -891,7 +903,7 @@ class ConvFluxTVD:
             g_left, g_right = self._fill_interior_faces(c, ext, v_t, face, band)
 
         flux = (v_t * face).reshape(self.shape_f)
-        data = (band * v_t[:, :, None, :])[self._valid][self._perm]
+        data = (band * v_t[:, :, None, :]).ravel()[self._take]
         jac = _sparse_array((data, self._indices.copy(), self._indptr.copy()),
                             shape=self._shape_jac, format=self.format)
         out = [flux, jac]
