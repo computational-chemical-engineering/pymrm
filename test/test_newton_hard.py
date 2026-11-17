@@ -299,6 +299,31 @@ def test_damped_steps_at_a_round_off_floor_count_for_stagnation(damping):
     assert res.status == 1 and res.nit <= 30     # 100 (maxfev) when damped steps reset it
 
 
+@pytest.mark.parametrize("last_step, status", [(-1e-5, 1), (1e-5, 8)])
+def test_damped_stagnation_takes_the_stalled_step_like_plain_newton(last_step, status):
+    """The step before the stall is held by the lower bound; the stalled step is free
+    (moves away from the bound, status 1) or held itself (status 8). The guarded
+    path must take the stalled step and report what plain Newton reports; it used
+    to stop before that step with status 8 from the previous step's bound count."""
+    def scripted():
+        # residual = the prescribed Newton step (identity Jacobian), one per evaluation
+        steps = iter([0.9e-5] * 4 + [1e-5, last_step])
+
+        def f(x):
+            return np.array([next(steps)]), csc_array([[1.0]])
+        return f
+
+    kw = dict(tol=1e-6, backward_tol=None, bounds=(0.0, None), maxfev=20, stagnation=True)
+    plain = newton(scripted(), np.array([4.1e-5]), damping="none", **kw)
+    guarded = newton(scripted(), np.array([4.1e-5]), damping="guarded", **kw)
+    assert plain.status == status
+    assert [h["clipped"] for h in plain.history] == [0, 0, 0, 0, 1, int(status == 8)]
+    assert guarded.status == plain.status
+    assert guarded.nit == plain.nit == 6
+    assert guarded.x[0] == plain.x[0]
+    assert [h["clipped"] for h in guarded.history] == [h["clipped"] for h in plain.history]
+
+
 def test_recoverable_exception_at_a_trial_point_shortens_the_step():
     def f(x):
         with np.errstate(invalid="raise", divide="raise"):
