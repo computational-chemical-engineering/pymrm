@@ -166,6 +166,18 @@ def expand_dependencies(shape_in, shape_out, dependencies):
     return expanded_deps
 
 
+def _njit_cached(func):
+    """``njit(cache=True)``, or plain ``njit`` where numba finds no writable cache directory.
+
+    numba raises at decoration (import) time when neither the package's ``__pycache__`` nor a
+    user cache directory is writable, for example in a read-only container without a home.
+    """
+    try:
+        return njit(cache=True)(func)
+    except RuntimeError:
+        return njit(func)
+
+
 @njit
 def ravel_index_numba(shape, index):
     """
@@ -203,7 +215,7 @@ def unravel_index_numba(lin_idx, shape):
     return idx
 
 
-@njit(cache=True)
+@_njit_cached
 def iterate_over_entries(
     shape_in, shape_out, shape_rel, idx_in, idx_out, row_indices, col_indices, entry_idx
 ):
@@ -357,7 +369,7 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     return row_indices, col_indices
 
 
-@njit(cache=True)
+@_njit_cached
 def group_columns_by_non_overlap_numba(indptr, indices):
     """
     Group columns of a sparse matrix by non-overlapping rows.
