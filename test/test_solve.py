@@ -326,3 +326,12 @@ def test_newton_old_options_reproduce_spsolve_on_csr_bit_for_bit():
         g, jac = f(x)
         x = x - spsolve(jac, g)
     np.testing.assert_array_equal(res.x, x)
+
+
+def test_ignored_lin_solver_kwarg_warns_at_the_callers_line():
+    """The warning about an ignored lin_solver_kwargs key points at the newton call (issue #45)."""
+    def fun(x):
+        return x - 1.0, csc_array(np.eye(x.size))
+    with pytest.warns(RuntimeWarning, match="is ignored") as record:
+        newton(fun, np.zeros(2), lin_solver_kwargs={"not_an_option": 1})
+    assert record[0].filename == __file__

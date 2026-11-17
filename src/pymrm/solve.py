@@ -125,7 +125,7 @@ class _LinearSolver:
                 elif key != "use_umfpack":
                     warnings.warn(f"newton: lin_solver_kwargs['{key}'] is not an option of "
                                   "the direct solver and is ignored.", RuntimeWarning,
-                                  stacklevel=4)
+                                  stacklevel=3)   # __init__ <- newton <- the caller
 
     def factorize(self, jac):
         """Return ``(solve, row_scale)`` for this Jacobian."""

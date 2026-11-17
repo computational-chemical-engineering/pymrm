@@ -412,6 +412,13 @@ def test_expand_dependencies_fixed_axes_not_list_in_3tuple_raises():
         expand_dependencies((5,), (5,), [((0,), (0,), 42)])
 
 
+def test_expand_dependencies_periodic_axes_none_in_4tuple():
+    """In 4-tuple form, periodic_axes=None is normalised before the periodic checks (issue #45)."""
+    with_none = expand_dependencies((4,), (4,), [((0,), (0,), [], None)])
+    with_empty = expand_dependencies((4,), (4,), [((0,), (0,), [], [])])
+    assert with_none == with_empty
+
+
 # ---------------------------------------------------------------------------
 # generate_sparsity_pattern – shape_in != shape_out
 # ---------------------------------------------------------------------------

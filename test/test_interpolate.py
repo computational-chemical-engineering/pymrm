@@ -289,3 +289,26 @@ def test_create_staggered_array_1d_to_staggered():
     arr = np.arange(n, dtype=float)
     result = create_staggered_array(arr, shape, 0, x_f=x_f, x_c=x_c)
     assert result.shape == (n + 1,)
+
+
+@pytest.mark.parametrize("make", [tuple, list])
+def test_compute_boundary_values_none_side_takes_default(make):
+    """bc with a None side gets the zero condition, for a tuple and a list, and the caller's bc
+    is not changed (issue #45)."""
+    x_f = np.linspace(0.0, 1.0, 6)
+    c = np.linspace(1.0, 2.0, 5).reshape(-1, 1)
+    right = {"a": 0, "b": 1, "d": 2.0}
+    bc = make([None, right])
+    got = compute_boundary_values(c, x_f, bc=bc)
+    want = compute_boundary_values(c, x_f, bc=({"a": 0, "b": 0, "d": 0}, right))
+    for g, w in zip(got, want):
+        np.testing.assert_array_equal(g, w)
+    assert bc[0] is None
+
+
+def test_compute_boundary_values_rejects_wrong_bc_length():
+    x_f = np.linspace(0.0, 1.0, 6)
+    c = np.ones((5, 1))
+    side = {"a": 0, "b": 1, "d": 1.0}
+    with pytest.raises(ValueError, match="tuple of 2 dictionaries"):
+        compute_boundary_values(c, x_f, bc=(side, side, side))
