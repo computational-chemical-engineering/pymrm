@@ -693,10 +693,12 @@ class ConvFluxTVD:
         m_0, e_0, m_1, e_1 = construct_convflux_bc(
             shape, x_f, x_c, bc_upwind, 1.0, axis, shapes_d=shapes_ext, format="csr")
         self._m_up, self._e_up = (m_0 + m_1).tocsr(), (e_0.tocsr(), e_1.tocsr())
-        # without shapes_d the external vectors are always ones: their boundary terms are constant
-        unit = np.ones(1)
-        self._ext_face = None if self._with_d else (self._e_face[0] @ unit, self._e_face[1] @ unit)
-        self._ext_up = None if self._with_d else (self._e_up[0] @ unit, self._e_up[1] @ unit)
+        # without shapes_d the external vectors never change: their boundary terms are constant
+        self._ext_face = self._ext_up = None
+        if not self._with_d:
+            unit = self._external_vectors(None)
+            self._ext_face = self._boundary_terms(self._e_face, None, unit)
+            self._ext_up = self._boundary_terms(self._e_up, None, unit)
 
         self._offsets = np.arange(-2, 2)
         self._build_boundary_stencils(x_f, x_c)
@@ -705,18 +707,18 @@ class ConvFluxTVD:
         k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
         cells = k + self._offsets.reshape(1, 1, -1, 1)
         valid = (cells >= 0) & (cells < n1)
-        self._valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
+        valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
         i0 = np.arange(n0).reshape(-1, 1, 1, 1)
         i2 = np.arange(n2).reshape(1, 1, 1, -1)
         rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
         cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
-        rows, cols = rows[self._valid], cols[self._valid]
+        rows, cols = rows[valid], cols[valid]
         shape_jac = (math.prod(self._shape_f_t), math.prod(self._shape_t))
         tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
                             shape=shape_jac, format=format)
         tag.sort_indices()
-        self._perm = tag.data.astype(np.intp) - 1
-        self._take = np.flatnonzero(self._valid)[self._perm]   # band entries in jac.data order
+        # band entries in the order of jac.data
+        self._take = np.flatnonzero(valid)[tag.data.astype(np.intp) - 1]
         self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
 
         # boundary faces and the interior faces next to them, as flat face indices
