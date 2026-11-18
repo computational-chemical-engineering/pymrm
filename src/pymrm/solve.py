@@ -720,11 +720,15 @@ class _NewtonRun:
             raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")
         return solve, r, dx
 
+    def _relative_limit(self):
+        """Per unknown, the largest scaled step the relative test accepts at the current x."""
+        return self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)
+
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
         tol = self.tol
         if self.relative:
-            limit = self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)
+            limit = self._relative_limit()
             converged = bool(np.all(np.abs(dy) <= limit))
             with np.errstate(divide="ignore", invalid="ignore"):
                 excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
@@ -771,7 +775,7 @@ class _NewtonRun:
         converged, step_inf, be = s.converged, s.step_inf, s.be
         if self.relative and step_inf > 0.0:
             # The relative test uses x after the step (and the callback).
-            converged = bool(np.all(np.abs(s.dy) <= self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)))
+            converged = bool(np.all(np.abs(s.dy) <= self._relative_limit()))
         status = _stop_status(s, converged)
         if status is not None:
             return self._final(s, status, t.clipped)
