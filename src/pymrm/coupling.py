@@ -52,6 +52,14 @@ def _pair_if_integers(dims):
     return dims
 
 
+class _ShapeOffset(NamedTuple):
+    """``shape``, ``new_shape`` and ``offset`` of an index update, each in ((rows), (cols)) form."""
+
+    shape: tuple
+    new_shape: tuple
+    offset: tuple
+
+
 def _parse_shape_offset(shape, new_shape, offset):
     """Normalise *shape*, *new_shape* and *offset* into ((rows), (cols)) form.
 
@@ -61,7 +69,7 @@ def _parse_shape_offset(shape, new_shape, offset):
     shape = _pair_if_integers(shape)
     new_shape = _pair_if_integers(new_shape)
     offset = (None, None) if offset is None else _pair_if_integers(offset)
-    return shape, new_shape, offset
+    return _ShapeOffset(shape, new_shape, offset)
 
 
 def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
@@ -205,8 +213,9 @@ def _box_extent(index, parent, parent_shape):
         extent = _unit_step_extent(ix, dim)
         if extent is None:
             raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
-        starts.append(extent[0])
-        shape.append(extent[1])
+        start, size = extent
+        starts.append(start)
+        shape.append(size)
     return starts, tuple(shape)
 
 
@@ -716,7 +725,7 @@ def _interface_source(ic_elem, shape, axis):
     return np.zeros((1,) * len(shape))
 
 
-def _interface_coefficients(ic, shape, shape_i, axis):
+def _interface_coefficients(ic, shape, axis):
     """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
     a = [_interface_pair(ic_elem, "a", shape, axis) for ic_elem in ic]
     b = [_interface_pair(ic_elem, "b", shape, axis) for ic_elem in ic]
@@ -924,7 +933,7 @@ def construct_interface_matrices(
     shape, shape_i = _interface_shapes(shapes, axis)
     x_cs = _cell_centers(x_cs, x_fs)
 
-    a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
+    a, b, d = _interface_coefficients(ic, shape, axis)
 
     alphas = _interface_alphas(x_cs, x_fs)
 
