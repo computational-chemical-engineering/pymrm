@@ -590,6 +590,22 @@ def _limiter_derivative(tvd_limiter, normalized_c_c, normalized_x_c, normalized_
     ) / (2 * step)
 
 
+def _normalised_positions(x_f, x_c):
+    """Normalised cell and face positions of the interior faces 1 .. n1-1, per flow direction."""
+    x_d = x_f[1:-1]
+    x_U = np.concatenate((x_f[:1], x_c[:-2]))
+    x_norm = {}
+    for positive, x_up, x_C, x_D in (
+        (True, x_U, x_c[:-1], x_c[1:]),
+        (False, np.concatenate((x_c[2:], x_f[-1:])), x_c[1:], x_c[:-1]),
+    ):
+        x_norm[positive] = (
+            ((x_C - x_up) / (x_D - x_up)).reshape(1, -1, 1),
+            ((x_d - x_up) / (x_D - x_up)).reshape(1, -1, 1),
+        )
+    return x_norm
+
+
 class ConvFluxTVD:
     """TVD convective face flux with its exact Jacobians, for Newton solves.
 
@@ -729,37 +745,28 @@ class ConvFluxTVD:
 
     def _build_boundary_stencils(self, x_f, x_c):
         """Precompute the boundary-face bands and the normalised interior positions."""
+        n1 = self._shape_t[1]
+        self._band_bnd = self._boundary_band()
+        if n1 > 1:
+            self._up_left = [self._cell_coefficient(self._m_up, j)[:, 0, :] for j in (0, 1)]
+            self._up_right = [self._cell_coefficient(self._m_up, j)[:, n1, :] for j in (n1 - 1, n1 - 2)]
+            self._x_norm = _normalised_positions(x_f, x_c)
+
+    def _cell_coefficient(self, matrix, cell):
+        """Coefficient of cell ``cell`` (along the axis) in each face row."""
+        indicator = np.zeros(self._shape_t)
+        indicator[:, cell, :] = 1.0
+        return (matrix @ indicator.ravel()).reshape(self._shape_f_t)
+
+    def _boundary_band(self):
+        """``band[:, side, o + 2, :]``: dependence of a boundary face on the cell ``o`` faces away."""
         n0, n1, n2 = self._shape_t
-
-        def coefficient(matrix, cell):
-            """Coefficient of cell ``cell`` (along the axis) in each face row."""
-            indicator = np.zeros(self._shape_t)
-            indicator[:, cell, :] = 1.0
-            return (matrix @ indicator.ravel()).reshape(self._shape_f_t)
-
-        # band[:, face, o + 2, :]: dependence of a boundary face on cell face + o
-        self._band_bnd = np.zeros((n0, 2, 4, n2))
+        band = np.zeros((n0, 2, 4, n2))
         for side, face in enumerate((0, n1)):
             for o in self._offsets:
                 if 0 <= face + o < n1:
-                    self._band_bnd[:, side, o + 2, :] = coefficient(self._m_face, face + o)[:, face, :]
-        if n1 > 1:
-            self._up_left = [coefficient(self._m_up, j)[:, 0, :] for j in (0, 1)]
-            self._up_right = [coefficient(self._m_up, j)[:, n1, :] for j in (n1 - 1, n1 - 2)]
-
-            # normalized positions of the interior faces 1 .. n1-1, per direction
-            x_d = x_f[1:-1]
-            x_U = np.concatenate((x_f[:1], x_c[:-2]))
-            x_norm = {}
-            for positive, x_up, x_C, x_D in (
-                (True, x_U, x_c[:-1], x_c[1:]),
-                (False, np.concatenate((x_c[2:], x_f[-1:])), x_c[1:], x_c[:-1]),
-            ):
-                x_norm[positive] = (
-                    ((x_C - x_up) / (x_D - x_up)).reshape(1, -1, 1),
-                    ((x_d - x_up) / (x_D - x_up)).reshape(1, -1, 1),
-                )
-            self._x_norm = x_norm
+                    band[:, side, o + 2, :] = self._cell_coefficient(self._m_face, face + o)[:, face, :]
+        return band
 
     def _face_velocity(self, v, jac_v):
         """Return the velocity as an array and as a face-shaped triplet."""
