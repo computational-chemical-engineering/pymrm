@@ -846,6 +846,45 @@ def _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format
     return interface_matrix
 
 
+def _interface_shapes(shapes, axis):
+    """Combined shape of the two subdomains and the shape of the interface plane."""
+    if not all(
+        s1 == s2 for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1])) if i != axis
+    ):
+        raise ValueError(
+            "Tuples shapes[0] and shapes[1] must be equal except for the specified axis."
+        )
+    shape = tuple(
+        s1 + s2 if i == axis else s1
+        for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1]))
+    )
+    shape_i = tuple(1 if i == axis else s for i, s in enumerate(shape))
+    return shape, shape_i
+
+
+def _cell_centers(x_cs, x_fs):
+    """Cell-centre coordinates of the two subdomains, midpoints of the faces where not given."""
+    return [
+        0.5 * (x_fs[i][1:] + x_fs[i][:-1]) if x_cs[i] is None else x_cs[i]
+        for i in range(2)
+    ]
+
+
+def _interface_stencil_indices(shape_t, n_first):
+    """Row and column indices of the 4-point stencil around the interface."""
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    # Row indices: flat index into the interface (n0 x n2) array
+    row_indices = np.ravel_multi_index(
+        (i0, np.zeros((1, 4, 1), dtype=int), i2), (n0, 1, n2)
+    )
+    # Column indices: 4-point stencil around the interface
+    stencil = (n_first + np.array([-2, -1, 0, 1])).reshape(1, -1, 1)
+    col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
+    return row_indices, col_indices
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -884,23 +923,8 @@ def construct_interface_matrices(
         ``(mat0, bc00, bc01, mat1, bc10, bc11)``.
     """
 
-    if not all(
-        s1 == s2 for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1])) if i != axis
-    ):
-        raise ValueError(
-            "Tuples shapes[0] and shapes[1] must be equal except for the specified axis."
-        )
-    shape = tuple(
-        s1 + s2 if i == axis else s1
-        for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1]))
-    )
-    shape_i = tuple(1 if i == axis else s for i, s in enumerate(shape))
-
-    # Extract the cell-centered grid points for the two subdomains
-    for i in range(2):
-        if x_cs[i] is None:
-            x_cs = list(x_cs)
-            x_cs[i] = 0.5 * (x_fs[i][1:] + x_fs[i][:-1])
+    shape, shape_i = _interface_shapes(shapes, axis)
+    x_cs = _cell_centers(x_cs, x_fs)
 
     a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
 
@@ -914,20 +938,12 @@ def construct_interface_matrices(
     m_inv, values = _interface_stencil_values(a, b, alphas, shape_i, axis)
 
     shape_t = _field_geometry(shape, axis).shape_t
-    n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
-    # Row indices: flat index into the interface (n0 x n2) array
-    row_indices = np.ravel_multi_index(
-        (i0, np.zeros((1, 4, 1), dtype=int), i2), (n0, 1, n2)
-    )
-    # Column indices: 4-point stencil around the interface
-    stencil = (shapes[0][axis] + np.array([-2, -1, 0, 1])).reshape(1, -1, 1)
-    col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
+    row_indices, col_indices = _interface_stencil_indices(shape_t, shapes[0][axis])
 
     # Create the sparse matrix representing the interface
     interface_matrix = _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format)
 
+    n0, _, n2 = shape_t
     geo = _InterfaceBcGeometry(shape_i, shape_t, np.ravel_multi_index(
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
     ))
@@ -942,13 +958,12 @@ def construct_interface_matrices(
             interface_matrix[1],
             interface_bc[1],
         )
-    else:
-        interface_bc = _interface_bc_by_source(m_inv, d, shapes_d, geo)
-        return (
-            interface_matrix[0],
-            interface_bc[0][0],
-            interface_bc[0][1],
-            interface_matrix[1],
-            interface_bc[1][0],
-            interface_bc[1][1],
-        )
+    interface_bc = _interface_bc_by_source(m_inv, d, shapes_d, geo)
+    return (
+        interface_matrix[0],
+        interface_bc[0][0],
+        interface_bc[0][1],
+        interface_matrix[1],
+        interface_bc[1][0],
+        interface_bc[1][1],
+    )
