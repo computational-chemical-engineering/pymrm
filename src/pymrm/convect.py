@@ -94,21 +94,19 @@ def construct_convflux_upwind(
     if bc is None or bc == (None, None):
         conv_bc = csc_array((math.prod(geo.shape_f), 1))
         return conv_matrix, conv_bc
-    else:
-        if shapes_d is None or shapes_d == (None, None):
-            conv_matrix_bc, conv_bc = construct_convflux_bc(
-                shape, x_f, x_c, bc, v_f, axis, format=format
-            )
-            conv_matrix += conv_matrix_bc
-            return conv_matrix, conv_bc
-        else:
-            conv_matrix_bc_0, conv_bc_0, conv_matrix_bc_1, conv_bc_1 = (
-                construct_convflux_bc(
-                    shape, x_f, x_c, bc, v_f, axis, shapes_d=shapes_d, format=format
-                )
-            )
-            conv_matrix += conv_matrix_bc_0 + conv_matrix_bc_1
-            return conv_matrix, conv_bc_0, conv_bc_1
+    if shapes_d is None or shapes_d == (None, None):
+        conv_matrix_bc, conv_bc = construct_convflux_bc(
+            shape, x_f, x_c, bc, v_f, axis, format=format
+        )
+        conv_matrix += conv_matrix_bc
+        return conv_matrix, conv_bc
+    conv_matrix_bc_0, conv_bc_0, conv_matrix_bc_1, conv_bc_1 = (
+        construct_convflux_bc(
+            shape, x_f, x_c, bc, v_f, axis, shapes_d=shapes_d, format=format
+        )
+    )
+    conv_matrix += conv_matrix_bc_0 + conv_matrix_bc_1
+    return conv_matrix, conv_bc_0, conv_bc_1
 
 
 def construct_convflux_upwind_int(shape, v=1.0, axis=0, format="csc"):
