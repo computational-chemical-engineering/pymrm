@@ -12,6 +12,8 @@ from scipy.linalg.lapack import dgetrf as _dgetrf, dgetrs as _dgetrs
 from scipy.optimize import Bounds, OptimizeResult
 from scipy.sparse import linalg
 
+from .helpers import _csc_abs_matvec
+
 # What ``damping="auto"`` resolves to when neither a callback nor a callable
 # linear solver is passed.
 _AUTO_DAMPING = "guarded"
@@ -372,12 +374,13 @@ def _backward_error(g, jac, x, x_ref):
     scale of their field (a reaction dead zone, an absent species) are judged
     against that scale instead of against their own size.
     """
-    if sparse.issparse(jac):
-        abs_jac = abs(jac)
+    jac = jac if sparse.issparse(jac) else np.asarray(jac, dtype=float)
+    v = np.abs(x) + _BACKWARD_FLOOR * x_ref
+    if _is_canonical_csc(jac) and (v.dtype, v.shape) == (np.float64, jac.shape[1:]):
+        weighted = _csc_abs_matvec(jac, v)  # abs(jac) @ v, the same floats without the copy
     else:
-        jac = np.asarray(jac, dtype=float)
-        abs_jac = np.abs(jac)
-    denominator = abs_jac @ (np.abs(x) + _BACKWARD_FLOOR * x_ref) + np.abs(jac @ x - g)
+        weighted = abs(jac) @ v
+    denominator = weighted + np.abs(jac @ x - g)
     denominator = np.where(denominator > 0.0, denominator, np.finfo(float).tiny)
     return float(np.max(np.abs(g) / denominator))
 

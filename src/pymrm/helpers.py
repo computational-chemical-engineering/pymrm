@@ -23,6 +23,11 @@ from typing import NamedTuple
 import numpy as np
 from scipy.sparse import diags, csc_array, csr_array
 
+try:  # private scipy kernel behind ``csc_array @ vector``
+    from scipy.sparse._sparsetools import csc_matvec as _csc_matvec
+except ImportError:  # pragma: no cover
+    _csc_matvec = None
+
 
 _FORMATS = {"csc", "csr"}
 
@@ -54,6 +59,17 @@ def _sparse_array(args, shape=None, format="csc"):
     if shape is not None:
         return cls(args, shape=shape)
     return cls(args)
+
+
+def _csc_abs_matvec(jac, v):
+    # ``abs(jac) @ v`` for a canonical float64 csc_array ``jac`` and a float64 vector ``v`` of
+    # length jac.shape[1], without the checked copy that abs(jac) builds: ``@`` calls the same
+    # kernel on the same |entries| into a zeroed result, so the floats are the same.
+    if _csc_matvec is None:  # pragma: no cover
+        return abs(jac) @ v
+    result = np.zeros(jac.shape[0])
+    _csc_matvec(*jac.shape, jac.indptr, jac.indices, np.abs(jac.data), v, result)
+    return result
 
 
 def unwrap_bc_coeff(shape, bc_coeff, axis=0):
