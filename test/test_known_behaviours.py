@@ -4,6 +4,7 @@ A pin asserts today's behaviour. An xfail asserts the correct behaviour and fail
 that a fix flips it.
 """
 import re
+import warnings
 
 import numpy as np
 import pytest
@@ -208,3 +209,17 @@ def test_continuation_first_value_failure_returns_the_failed_result_only():
     assert result.params == [] and result.xs == []
     assert result.last_param is None
     assert "no solution at the first value" in result.message
+
+
+def test_newton_ignored_lin_solver_kwargs_warning_reports_the_callers_file():
+    """maintainer-note-c2 item 10: the "ignored" warning for lin_solver_kwargs names the caller's file.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        newton(lambda x: (x - 1.0, csc_array([[1.0]])), np.zeros(1), lin_solver_kwargs={"unknown_key": 1})
+    ignored = [w for w in caught if "is ignored" in str(w.message)]
+    assert len(ignored) == 1
+    assert ignored[0].category is RuntimeWarning
+    assert ignored[0].filename == __file__
