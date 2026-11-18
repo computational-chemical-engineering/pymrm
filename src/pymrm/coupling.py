@@ -709,27 +709,27 @@ class BlockLayout:
         return jac
 
 
-def _interface_pair(ic_elem, key, shape, shape_i, axis):
+def _interface_pair(ic_elem, key, shape, axis):
     """Coefficient ``key`` of one interface equation for both subdomains, zeros where absent."""
     if ic_elem and key in ic_elem:
         return tuple(
             unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis) for j in range(2)
         )
-    return tuple(np.zeros((1,) * len(shape_i)) for j in range(2))
+    return tuple(np.zeros((1,) * len(shape)) for j in range(2))
 
 
-def _interface_source(ic_elem, shape, shape_i, axis):
+def _interface_source(ic_elem, shape, axis):
     """Source term ``d`` of one interface equation, zeros where absent."""
     if ic_elem and "d" in ic_elem:
         return unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
-    return np.zeros((1,) * len(shape_i))
+    return np.zeros((1,) * len(shape))
 
 
 def _interface_coefficients(ic, shape, shape_i, axis):
     """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
-    a = [_interface_pair(ic_elem, "a", shape, shape_i, axis) for ic_elem in ic]
-    b = [_interface_pair(ic_elem, "b", shape, shape_i, axis) for ic_elem in ic]
-    d = [_interface_source(ic_elem, shape, shape_i, axis) for ic_elem in ic]
+    a = [_interface_pair(ic_elem, "a", shape, axis) for ic_elem in ic]
+    b = [_interface_pair(ic_elem, "b", shape, axis) for ic_elem in ic]
+    d = [_interface_source(ic_elem, shape, axis) for ic_elem in ic]
     return a, b, d
 
 
