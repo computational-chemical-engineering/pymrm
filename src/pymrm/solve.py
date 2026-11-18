@@ -705,7 +705,7 @@ class _NewtonRun:
         window = []          # step norms of the recent full steps at the floor
         maxfev = int(self.maxfev)
         for it in range(maxfev):
-            s = self._measure(carry.ev, carry.step_inf, it == maxfev - 1, window)
+            s = self._newton_step_and_tests(carry.ev, carry.step_inf, it == maxfev - 1, window)
             out = self._plain_step(s) if self.mode == "none" else self._damped_step(s, carry, it)
             if isinstance(out, OptimizeResult):
                 return out
@@ -732,7 +732,7 @@ class _NewtonRun:
             converged = converged or step_inf == 0.0
         return converged, excess
 
-    def _measure(self, ev, prev_step, last_it, window):
+    def _newton_step_and_tests(self, ev, prev_step, last_it, window):
         """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
         lin_solve, r, dx = self._newton_step(ev, prev_step)     # prev_step: the norm reported if it fails
         dy = dx / self.d
