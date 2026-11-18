@@ -746,7 +746,7 @@ class _NewtonRun:
 
     def _measure(self, ev, newton, last_it, window):
         """Step norm, convergence and stagnation tests and backward error of this iteration."""
-        dy = newton.dx / self.d
+        dy = newton.dx if self.d_user is None else newton.dx / self.d     # d is all ones without a scale
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
         near = converged or (self.refresh is None and excess < _NEAR)
