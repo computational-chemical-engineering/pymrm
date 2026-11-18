@@ -1505,17 +1505,21 @@ class _Correction(NamedTuple):
         return self.res is not None and self.res.success and not self.jumped
 
 
+class _ContinuationSettings(NamedTuple):
+    """The options of one :func:`continuation` run: newton's, and its own."""
+
+    options: dict
+    max_change: object
+    max_halvings: int
+    verbose: object
+
+
 class _Continuation:
     """One :func:`continuation` run: the path of solutions and those at the requested values."""
 
-    def __init__(self, function, options, max_change, max_halvings, verbose):
-        self.function, self.options, self.verbose = function, options, verbose
-        self.max_change, self.max_halvings = max_change, max_halvings
-        self.done, self.xs, self.results = [], [], []
-        self.path_p, self.path_x = [], []
-
-    def start(self, p, first):
-        """Record the solution ``first`` at the first value ``p``."""
+    def __init__(self, function, settings, p, first):
+        """Start from the solution ``first`` at the first value ``p``."""
+        self.function, self.settings = function, settings
         self.done, self.xs, self.results = [p], [first.x.copy()], [first]
         self.path_p, self.path_x = [p], [first.x.copy()]
 
@@ -1528,11 +1532,11 @@ class _Continuation:
     def _jumped(self, res, guess):
         """Whether the converged ``res`` moved more than ``max_change`` from its prediction."""
         path_x = self.path_x
-        if res.success and self.max_change is not None and len(self.path_p) >= 2:
+        if res.success and self.settings.max_change is not None and len(self.path_p) >= 2:
             # no prediction to compare with before the second point
             size = max(float(np.max(np.abs(path_x[-1]))),
                        float(np.max(np.abs(res.x))), np.finfo(float).tiny)
-            return float(np.max(np.abs(res.x - guess))) > self.max_change * size
+            return float(np.max(np.abs(res.x - guess))) > self.settings.max_change * size
         return False
 
     def correct(self, p):
@@ -1541,7 +1545,7 @@ class _Continuation:
         if p == self.path_p[-1]:            # the sub-step is below round-off
             return correction
         for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
-            res = _attempt(lambda xv, _p=p: self.function(xv, _p), guess, (), self.options)
+            res = _attempt(lambda xv, _p=p: self.function(xv, _p), guess, (), self.settings.options)
             correction = _Correction(res, self._jumped(res, guess), bounded)
             if correction.ok:
                 break
@@ -1551,7 +1555,7 @@ class _Continuation:
         """Add the solution at ``p`` to the path; whether it is the one at ``target``."""
         self.path_p.append(p)
         self.path_x.append(res.x.copy())
-        if self.verbose:
+        if self.settings.verbose:
             print(f"continuation p={p:g} nit={res.nit}")
         if p == target:
             self.done.append(target)
@@ -1563,7 +1567,7 @@ class _Continuation:
     def _halved(self, level, step, tried):
         """The next sub-step level, at least one halving and short of ``tried``."""
         level += 1
-        while level <= self.max_halvings and abs(step) * 0.5**level >= tried:
+        while level <= self.settings.max_halvings and abs(step) * 0.5**level >= tried:
             level += 1
         return level
 
@@ -1573,7 +1577,7 @@ class _Continuation:
         # halves the sub-step; an accepted one doubles the next (at most to
         # the requested step), so a stretch needing short sub-steps does not
         # use up the halving budget while every sub-step succeeds.
-        path_p, max_halvings = self.path_p, self.max_halvings
+        path_p, max_halvings = self.path_p, self.settings.max_halvings
         step = target - path_p[-1]
         level = 0
         p = target
@@ -1703,8 +1707,7 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                               last_param=None,
                               message=f"no solution at the first value {params[0]:g}: "
                                       f"{first.message}")
-    run = _Continuation(function, options, max_change, max_halvings, verbose)
-    run.start(params[0], first)
+    run = _Continuation(function, _ContinuationSettings(options, max_change, max_halvings, verbose), params[0], first)
     for target in params[1:]:
         if target == run.path_p[-1]:            # a repeated value: nothing to solve
             run.repeat(target)
