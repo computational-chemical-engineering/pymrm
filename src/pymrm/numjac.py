@@ -477,6 +477,14 @@ def _normalise_axes(axes, name, ndims):
     return sorted(set(out))
 
 
+def _block_pattern(ndims, blocks):
+    """Index pattern with ``slice(None)`` on the block axes and ``0`` elsewhere."""
+    dep_block = ndims * [0]
+    for axis in blocks:
+        dep_block[axis] = slice(None)
+    return dep_block
+
+
 def stencil_block_diagonals(
     ndims=1, axes_diagonals=(), axes_blocks=None, periodic_axes=()
 ):
@@ -516,9 +524,7 @@ def stencil_block_diagonals(
     else:
         blocks = _normalise_axes(axes_blocks, "axes_blocks", ndims)
 
-    dep_block = ndims * [0]
-    for axis in blocks:
-        dep_block[axis] = slice(None)
+    dep_block = _block_pattern(ndims, blocks)
     band_axes = [axis for axis in diagonals if axis not in blocks]
     if not band_axes:
         return [(tuple(dep_block), tuple(dep_block), blocks, periodic)]
