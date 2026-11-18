@@ -1483,12 +1483,18 @@ def _continuation_predictions(path_p, path_x, p):
         yield path_x[-1] + ratio * (path_x[-1] - path_x[-2]), abs(ratio) <= _MAX_SECANT_RATIO
         if abs(ratio) <= _MAX_SECANT_RATIO:
             return
+    guess = _earlier_secant(path_p, path_x, step)
+    yield (path_x[-1].copy(), False) if guess is None else (guess, True)
+
+
+def _earlier_secant(path_p, path_x, step):
+    """The secant over ``step`` from the most recent solution before the last two that lies within the
+    bound, None when there is none."""
     for k in range(len(path_p) - 3, -1, -1):
         base = path_p[-1] - path_p[k]
         if base != 0 and abs(step) <= _MAX_SECANT_RATIO * abs(base):
-            yield path_x[-1] + (step / base) * (path_x[-1] - path_x[k]), True
-            return
-    yield path_x[-1].copy(), False
+            return path_x[-1] + (step / base) * (path_x[-1] - path_x[k])
+    return None
 
 
 class _Correction(NamedTuple):
