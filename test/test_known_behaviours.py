@@ -60,3 +60,31 @@ def test_newton_user_solver_reusing_its_buffer_matches_fresh_output():
     assert fresh.status == reused.status == 0
     assert (reused.nit, reused.nfev) == (fresh.nit, fresh.nfev)
     np.testing.assert_array_equal(reused.x, fresh.x)
+
+
+def test_newton_empty_guess_raises_value_error():
+    """maintainer-note-c2 item 3: newton on n = 0 raises ValueError.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    with pytest.raises(ValueError):
+        newton(lambda x: (np.zeros(0), csc_array((0, 0))), np.zeros(0))
+
+
+@pytest.mark.parametrize("dense", [False, True])
+def test_newton_accepts_a_bool_sparse_residual(dense):
+    """maintainer-note-c2 item 3: a bool sparse residual is accepted and gives the float residual's x.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    def make(dtype):
+        def function(x):
+            g = csc_array((x > 0.5).astype(float).reshape(-1, 1)).astype(dtype)
+            return g, (np.eye(2) if dense else csc_array(np.eye(2)))
+        return function
+
+    x0 = np.array([1.2, 0.3])
+    as_float = newton(make(float), x0)
+    as_bool = newton(make(bool), x0)
+    assert as_float.status == as_bool.status == 0
+    assert as_bool.x.tobytes() == as_float.x.tobytes()
