@@ -732,9 +732,8 @@ class _NewtonRun:
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
         tol = self.tol
-        y = self.x_flat / self.d
         if self.relative:
-            limit = self.tol_vec + self.rtol * np.abs(y)
+            limit = self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)
             converged = bool(np.all(np.abs(dy) <= limit))
             with np.errstate(divide="ignore", invalid="ignore"):
                 excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
