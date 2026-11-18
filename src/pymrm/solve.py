@@ -1537,13 +1537,12 @@ class _Continuation:
 
     def _jumped(self, res, guess):
         """Whether the converged ``res`` moved more than ``max_change`` from its prediction."""
-        path_x = self.path_x
-        if res.success and self.settings.max_change is not None and len(self.path_p) >= 2:
-            # no prediction to compare with before the second point
-            size = max(float(np.max(np.abs(path_x[-1]))),
-                       float(np.max(np.abs(res.x))), np.finfo(float).tiny)
-            return float(np.max(np.abs(res.x - guess))) > self.settings.max_change * size
-        return False
+        if not res.success or self.settings.max_change is None:
+            return False
+        if len(self.path_p) < 2:            # no prediction to compare with before the second point
+            return False
+        size = max(float(np.max(np.abs(self.path_x[-1]))), float(np.max(np.abs(res.x))), np.finfo(float).tiny)
+        return float(np.max(np.abs(res.x - guess))) > self.settings.max_change * size
 
     def correct(self, p):
         """Newton at ``p`` from each prediction in turn: the last :class:`_Correction`."""
