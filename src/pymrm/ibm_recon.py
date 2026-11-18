@@ -43,6 +43,7 @@ neighbouring solid are never used.
 
 from dataclasses import dataclass
 import math
+from typing import NamedTuple
 import warnings
 import numpy as np
 from scipy.ndimage import label as _cc_label
@@ -477,6 +478,32 @@ class _Fit:
     p: int
 
 
+class _CrossingFit(NamedTuple):
+    """Accepted reconstruction of one crossing."""
+
+    alpha: float
+    stencil: np.ndarray
+    weights: np.ndarray
+    degree: int
+    cond: float
+    moment_res: float
+    radius: float
+    unresolved: bool
+
+
+class _CrossingArrays(NamedTuple):
+    """Per-crossing results of one side, in crossing order."""
+
+    alpha: np.ndarray
+    stencil: list
+    weights: list
+    degree: np.ndarray
+    cond: np.ndarray
+    moment_res: np.ndarray
+    radius: np.ndarray
+    unresolved: np.ndarray
+
+
 @dataclass
 class _SideGeometry:
     """Geometry of one side: same-side cells, search tree and local cell sizes."""
@@ -571,14 +598,6 @@ class _Reconstructor:
         cap1 = opts.radius_factor * opts.rings * geo.h_char
         self.cap2 = opts.length_scale_factor * opts.length_scale  # possibly inf
         self.r0 = np.minimum(cap1, self.cap2)
-        self.alpha = np.zeros(npnt)
-        self.stencil = [None] * npnt
-        self.weights = [None] * npnt
-        self.degree_used = np.full(npnt, -2, dtype=np.intp)
-        self.cond = np.zeros(npnt)
-        self.moment_res = np.zeros(npnt)
-        self.radius_used = self.r0.copy()
-        self.unresolved = np.zeros(npnt, dtype=bool)
 
     def _truncate(self, group, cands, n_max):
         """Truncate each candidate set to its n_max nearest cells."""
@@ -610,21 +629,19 @@ class _Reconstructor:
             u_scaled[i] = geo.u_dir[k] / geo.hvec[k]
         return Y, qinv, u_scaled
 
-    def _record(self, group, trunc, fit, ok):
-        """Store the accepted fits of a batch; return the accepted crossings."""
-        accepted = []
+    @staticmethod
+    def _record(group, trunc, fit, ok):
+        """Records of the accepted fits of a batch, keyed by crossing."""
+        accepted = {}
         for i, k in enumerate(group):
             if not ok[i]:
                 continue
             c = trunc[i]
-            self.alpha[k] = fit.a[i, 0]
-            self.stencil[k] = c
-            self.weights[k] = fit.a[i, 1:1 + c.size].copy()
-            self.degree_used[k] = fit.p
-            self.cond[k] = fit.cnd[i]
-            self.moment_res[k] = fit.mres[i]
-            self.radius_used[k] = fit.radii[k]
-            accepted.append(k)
+            accepted[k] = _CrossingFit(
+                alpha=fit.a[i, 0], stencil=c,
+                weights=fit.a[i, 1:1 + c.size].copy(), degree=fit.p,
+                cond=fit.cnd[i], moment_res=fit.mres[i],
+                radius=fit.radii[k], unresolved=False)
         return accepted
 
     def _solve_group(self, p, group, cands, radii):
@@ -639,19 +656,20 @@ class _Reconstructor:
              (wnorm <= opts.weight_norm_max)
         return self._record(group, trunc, _Fit(a, cnd, mres, radii, p), ok)
 
+    def _eligible(self, p, active, cands, p_arr):
+        """Crossings of *active* at degree *p* with enough candidate points."""
+        M = _n_monomials(self.geo.ndim_s, int(p))
+        min_pts = math.ceil(self.opts.min_points_factor * (M - 1))
+        return [k for k in active
+                if p_arr[k] == p and cands[k].size >= min_pts]
+
     def attempt(self, active, cands, radii, p_arr):
-        """Batched GFD attempt; returns indices accepted (and records them)."""
-        accepted = []
+        """Batched GFD attempt; returns the records of the accepted crossings."""
+        accepted = {}
         for p in np.unique(p_arr[active]):
-            if p < 1:
-                continue
-            M = _n_monomials(self.geo.ndim_s, int(p))
-            min_pts = math.ceil(self.opts.min_points_factor * (M - 1))
-            group = [k for k in active
-                     if p_arr[k] == p and cands[k].size >= min_pts]
-            if not group:
-                continue
-            accepted.extend(self._solve_group(p, group, cands, radii))
+            group = self._eligible(p, active, cands, p_arr) if p >= 1 else []
+            if group:
+                accepted.update(self._solve_group(p, group, cands, radii))
         return accepted
 
     def _enlarge(self, active, cand0, p_target):
@@ -660,39 +678,44 @@ class _Reconstructor:
         r1 = np.minimum(self.opts.enlarge_factor * r0, self.cap2)
         grow = [k for k in sorted(active)
                 if p_target[k] >= 1 and r1[k] > r0[k] * (1 + 1e-12)]
-        if grow:
-            cand1 = list(cand0)
-            for k in grow:
-                cand1[k] = self.geo.gather(k, r1[k])
-            for k in self.attempt(grow, cand1, r1, p_target):
-                active.discard(k)
+        if not grow:
+            return {}
+        cand1 = list(cand0)
+        for k in grow:
+            cand1[k] = self.geo.gather(k, r1[k])
+        accepted = self.attempt(grow, cand1, r1, p_target)
+        active.difference_update(accepted)
+        return accepted
 
     def _demote(self, active, cand0, p_target):
         """Stage 3: demote the degree step by step at the original radius."""
         p_cur = p_target.copy()
+        records = {}
         while active and np.any(p_cur[sorted(active)] > 1):
             p_cur = np.maximum(p_cur - 1, 1)
             sub = [k for k in sorted(active) if p_target[k] >= 1]
-            for k in self.attempt(sub, cand0, self.r0, p_cur):
-                active.discard(k)
+            accepted = self.attempt(sub, cand0, self.r0, p_cur)
+            active.difference_update(accepted)
+            records.update(accepted)
+        return records
 
     def select(self):
-        """Stages 1 to 3; return the set of crossings still unresolved."""
+        """Stages 1 to 3; return the crossings still unresolved and the records."""
         geo = self.geo
         cand0 = [geo.gather(k, self.r0[k]) for k in range(self.npnt)]
         active = set(range(self.npnt))
 
         # Stage 1: target degree at the initial radius.
         p_target = self.opts.degree_target.astype(np.intp)
-        for k in self.attempt(sorted(active), cand0, self.r0, p_target):
-            active.discard(k)
+        records = self.attempt(sorted(active), cand0, self.r0, p_target)
+        active.difference_update(records)
         if active:
-            self._enlarge(active, cand0, p_target)
-        self._demote(active, cand0, p_target)
-        return active
+            records.update(self._enlarge(active, cand0, p_target))
+        records.update(self._demote(active, cand0, p_target))
+        return active, records
 
     def _two_point(self, k):
-        """Two-point normal formula for crossing k; True on axis fallback."""
+        """Two-point normal formula for crossing k; (axis fallback, record)."""
         geo = self.geo
         ndim_s = geo.ndim_s
         x_cut = np.array([geo.x_c[a][geo.seed_multi[a][k]]
@@ -710,66 +733,90 @@ class _Reconstructor:
                 nrm = 1.0
             s = float((x_cut - geo.x_gamma[k]) @ (u_ax / nrm))
             deg = -1
-            self.unresolved[k] = True
-        self.alpha[k] = -1.0 / s
-        self.stencil[k] = np.array([geo.seeds[k]], dtype=np.intp)
-        self.weights[k] = np.array([1.0 / s])
-        self.degree_used[k] = deg
-        self.cond[k] = 1.0
-        self.moment_res[k] = 0.0
-        return fallback
+        return fallback, _CrossingFit(
+            alpha=-1.0 / s, stencil=np.array([geo.seeds[k]], dtype=np.intp),
+            weights=np.array([1.0 / s]), degree=deg, cond=1.0,
+            moment_res=0.0, radius=self.r0[k], unresolved=fallback)
 
     def finalize(self, active):
         """Final stage: two-point normal formula from the cut cell.
 
-        Returns the number of crossings that fell back to the axis direction.
+        Returns the records of the crossings and the number of crossings that
+        fell back to the axis direction.
         """
+        records = {}
         n_axis_fallback = 0
         for k in sorted(active):
-            if self._two_point(k):
+            fallback, records[k] = self._two_point(k)
+            if fallback:
                 n_axis_fallback += 1
-        return n_axis_fallback
+        return records, n_axis_fallback
 
-    def sparse_operator(self, n_spatial_cells):
+    def sparse_operator(self, stencil, weights, n_spatial_cells):
         """Assemble the sparse reconstruction matrix D."""
         npnt = self.npnt
         if npnt:
             rows = np.concatenate(
-                [np.full(self.stencil[k].size, k, dtype=np.intp)
+                [np.full(stencil[k].size, k, dtype=np.intp)
                  for k in range(npnt)])
-            cols = np.concatenate(self.stencil)
-            data = np.concatenate(self.weights)
+            cols = np.concatenate(stencil)
+            data = np.concatenate(weights)
         else:
             rows = cols = np.empty(0, dtype=np.intp)
             data = np.empty(0)
         return coo_array((data, (rows, cols)),
                          shape=(npnt, n_spatial_cells)).tocsr()
 
-    def diagnostics(self, n_spatial_cells):
+    def diagnostics(self, records, n_spatial_cells):
         """Operator and per-crossing diagnostics of the side."""
         npnt = self.npnt
-        stencil, weights = self.stencil, self.weights
-        D = self.sparse_operator(n_spatial_cells)
+        f = _crossing_arrays(records, npnt, self.r0)
+        stencil, weights = f.stencil, f.weights
+        D = self.sparse_operator(stencil, weights, n_spatial_cells)
         n_stencil = np.array([0 if stencil[k] is None else stencil[k].size
                               for k in range(npnt)], dtype=np.intp)
         weight_norm = self.geo.h_char * (
-            np.abs(self.alpha)
+            np.abs(f.alpha)
             + np.array([np.abs(weights[k]).sum() if npnt else 0.0
                         for k in range(npnt)]))
         return {
-            "alpha": self.alpha, "D": D, "degree": self.degree_used,
-            "n_stencil": n_stencil, "radius": self.radius_used,
-            "cond": self.cond, "moment_residual": self.moment_res,
-            "weight_norm": weight_norm, "unresolved": self.unresolved,
+            "alpha": f.alpha, "D": D, "degree": f.degree,
+            "n_stencil": n_stencil, "radius": f.radius,
+            "cond": f.cond, "moment_residual": f.moment_res,
+            "weight_norm": weight_norm, "unresolved": f.unresolved,
         }
+
+
+def _crossing_arrays(records, npnt, r0):
+    """Per-crossing arrays from the records (crossings never recorded keep the start values)."""
+    alpha = np.zeros(npnt)
+    stencil = [None] * npnt
+    weights = [None] * npnt
+    degree = np.full(npnt, -2, dtype=np.intp)
+    cond = np.zeros(npnt)
+    moment_res = np.zeros(npnt)
+    radius = r0.copy()
+    unresolved = np.zeros(npnt, dtype=bool)
+    for k, fit in records.items():
+        alpha[k] = fit.alpha
+        stencil[k] = fit.stencil
+        weights[k] = fit.weights
+        degree[k] = fit.degree
+        cond[k] = fit.cond
+        moment_res[k] = fit.moment_res
+        radius[k] = fit.radius
+        unresolved[k] = fit.unresolved
+    return _CrossingArrays(alpha, stencil, weights, degree, cond, moment_res,
+                           radius, unresolved)
 
 
 def _build_recon_side(ibm, side, grid, opts):
     """Select stencils and compute GFD weights for one side of the interface."""
     geo = _side_geometry(ibm, side, grid, opts.connectivity)
     recon = _Reconstructor(geo, opts)
-    active = recon.select()
-    n_axis_fallback = recon.finalize(active)
+    active, records = recon.select()
+    fallback_records, n_axis_fallback = recon.finalize(active)
+    records.update(fallback_records)
 
     if n_axis_fallback:
         warnings.warn(
@@ -780,7 +827,7 @@ def _build_recon_side(ibm, side, grid, opts):
             RuntimeWarning, stacklevel=3,
         )
 
-    return recon.diagnostics(ibm.n_spatial_cells)
+    return recon.diagnostics(records, ibm.n_spatial_cells)
 
 
 def construct_ibm_normal_derivative(ibm, sdf, x_c, *, degree=2,
