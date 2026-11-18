@@ -788,11 +788,11 @@ class _NewtonRun:
         measured = near or last_it or crit.relative
         if measured:
             be = crit.backward_error(ev, self.x_flat)
-        # An unmeasured be is nan and passes the gate. That is never decisive: the gate is read only with
+        # An unmeasured be (nan) passes the gate. That is never decisive: the gate is read only with
         # converged or stagnant (_stop_status, gate_failed); both imply near, or the relative test, which
         # always measures.
         backward_tol = crit.backward_tol
-        gate = backward_tol is None or np.isnan(be) or be <= backward_tol
+        gate = backward_tol is None or not measured or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
         return _Step(ev, lin_solve, row_scale, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
                      converged or last_it)
