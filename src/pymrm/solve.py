@@ -27,7 +27,7 @@ _NEAR = 100.0         # steps within _NEAR times the tolerance are taken in full
 _STAGNATION_WINDOW = 5
 _STAGNATION_RATIO = 1.0  # a step no smaller than the smallest of the window
 _ARMIJO_C = 1.0e-4
-_UNTESTED = float("nan")  # theta of a step no monotonicity test measured
+_UNTESTED = float("nan")  # theta of a step no monotonicity test measured (a measured theta can be nan too)
 _BACKWARD_WEIGHT = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
@@ -320,8 +320,9 @@ class _Bounds:
         A component counts as held when its full step crosses the bound genuinely
         and ``trial`` equals the hold point ``bound + sign (1 - tau) dist`` exactly.
         That covers the components project held and also any that landed exactly on
-        the hold point by themselves: the equality test cannot tell them apart
-        (``test_known_behaviours.py::test_bounds_commit_marks_a_component_that_project_did_not_hold``).
+        the hold point by themselves: the equality test cannot tell them apart.
+        ``test_bounds_commit_marks_a_component_that_project_did_not_hold`` in
+        ``test/test_known_behaviours.py`` pins this.
         """
         held = np.zeros(x.shape, dtype=bool)
         for sign, mask, bound, dist, over in self._sides(x, dx):
@@ -571,14 +572,14 @@ def _slide(window, s, use_stagnation):
 
 
 class _Criterion(NamedTuple):
-    """When a Newton step counts as converged, and the backward error reported at statuses 3 and maxfev.
+    """When a Newton step counts as converged; also the source of every backward error a result reports.
 
     Built once in :func:`newton`, never written.
     """
 
     d: np.ndarray            # scale of each unknown (ones without ``scale``)
-    tol: object              # step tolerance: |dy|_inf < tol, or per unknown in the relative test
-    rtol: float
+    tol: object              # the user's tol: |dy|_inf < tol; an array of it selects the relative test (as tol_vec)
+    rtol: float              # relative part of the per-unknown limit tol_vec + rtol |x / d|
     tol_vec: object          # tol per unknown, for the relative test (None without it)
     relative: bool           # the per-unknown test with rtol, else |dy|_inf < tol
     zero_step_converges: bool    # False only for damping="none" with backward_tol=None
@@ -706,6 +707,8 @@ class _NewtonRun:
         result = self.finish(status, end, extra)
         return kind(result.message, result)
 
+    # -- the start of the run ---------------------------------------------------------------
+
     def solve(self, guard_guess):
         """Evaluate at the initial guess and iterate; the result of :func:`newton`."""
         residual = self.residual
@@ -728,11 +731,11 @@ class _NewtonRun:
     def iterate(self, ev):
         """Newton steps from ``ev`` (at x) until a stop: the result.
 
-        Two orders, by ``mode``. Plain (``"none"``, the 2.5.0 iteration) takes the full or
-        bound-shortened step first; the absolute test is decided on dy before the step, and
-        only the relative test, which reads x, is made again at the new x. Damped tests at x
-        first, then stops with the full step or searches for a damped one. Both call the
-        callback and refresh before the next evaluation.
+        Two orders, by ``mode``. Plain (``"none"``, the 2.5.0 iteration) decides the absolute
+        test on dy at x, takes the full or bound-shortened step, then makes the relative test,
+        which reads x, again at the new x. Damped decides at x, then stops with the full step
+        or searches. Both call the callback and refresh after every step they take, the last
+        included, and before the next evaluation.
         """
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED)
         window = []          # step norms of the recent full steps at the floor
@@ -851,8 +854,9 @@ class _NewtonRun:
         """The damped step of the iteration ``s``: a ``_Found``.
 
         Guarded mode takes the full step (shortened only by the bounds far from the
-        solution) if its residual is usable, else searches from a quarter of it. The
-        monotone and Armijo searches start from four times the last damping.
+        solution) if its residual is usable, else runs the monotone search from a quarter
+        of it. The monotone and Armijo searches start from four times the last damping, at
+        most 1 and lam_max.
         """
         bnd = self.bnd
         lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx)) if bnd.active else 1.0
@@ -1274,9 +1278,9 @@ def newton(
     lin = _LinearSolver(solver, lin_solver_kwargs, row_scaling)
 
     mode = _damping_mode(damping, callback, lin)
-    # The damping="none" compatibility path. lin.legacy (also without row scaling) factorises as
-    # pymrm 2.5.0 did; zero_step_converges is False only there with backward_tol=None, where a
-    # zero step counts as converged only if it passes the step test, as before 3.0.0.
+    # The damping="none" compatibility path: there, without row scaling, lin.legacy factorises as
+    # pymrm 2.5.0 did, and with backward_tol=None zero_step_converges is False, so a zero step
+    # converges only if it passes the step test, as before 3.0.0.
     lin.legacy = mode == "none" and not row_scaling
     zero_step_converges = mode != "none" or backward_tol is not None
 
