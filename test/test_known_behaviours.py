@@ -14,6 +14,7 @@ from scipy.sparse.linalg import splu
 import pymrm.solve
 from pymrm import NumJac, continuation, pseudo_transient
 from pymrm.helpers import _csc_abs_matvec
+from pymrm.numjac import expand_dependencies, generate_sparsity_pattern
 from pymrm.solve import _Bounds, newton
 
 
@@ -243,3 +244,16 @@ def test_csc_abs_matvec_equals_abs_matmul_bitwise(index_dtype, n):
     result = _csc_abs_matvec(jac, v)
     assert jac.indices.dtype == index_dtype
     assert result.tobytes() == (abs(jac) @ v).tobytes()
+
+
+def test_generate_sparsity_pattern_accepts_a_one_shot_iterator():
+    """maintainer-note-c2 item 13: an iterator of dependencies gives the pattern of the list.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    deps = expand_dependencies((5, 2), (5, 2), [(0, 0), (1, 0), (-1, 0)])
+    rows, cols = generate_sparsity_pattern((5, 2), (5, 2), list(deps))
+    rows_iter, cols_iter = generate_sparsity_pattern((5, 2), (5, 2), iter(deps))
+    assert len(rows) > 0
+    np.testing.assert_array_equal(rows_iter, rows)
+    np.testing.assert_array_equal(cols_iter, cols)
