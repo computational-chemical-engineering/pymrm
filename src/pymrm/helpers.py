@@ -82,11 +82,19 @@ def unwrap_bc_coeff(shape, bc_coeff, axis=0):
 
     a = np.array(bc_coeff)
     if a.ndim == (lgth_shape - 1):
-        a = np.expand_dims(a, axis=axis)
+        a = _insert_axis(a, axis)
     elif a.ndim != lgth_shape:
         shape_a = (1,) * (lgth_shape - a.ndim) + a.shape
         a = a.reshape(shape_a)
     return a
+
+
+def _insert_axis(a, axis):
+    """``np.expand_dims(a, axis)`` for one in-range integer axis, without its argument handling."""
+    if isinstance(axis, (int, np.integer)) and -a.ndim - 1 <= axis <= a.ndim:
+        pos = axis + a.ndim + 1 if axis < 0 else axis
+        return a.reshape(a.shape[:pos] + (1,) + a.shape[pos:])
+    return np.expand_dims(a, axis=axis)
 
 
 def _bc_coeff(shape, bc_side, key, axis):
@@ -175,7 +183,11 @@ def _boundary_face_indices(geo, cell_idx, face_idx):
 
 
 def _on_bc(value, geo):
-    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)``."""
+    """``value`` broadcast over the boundary shape and flattened to ``(n0, n2)`` (a read-only view)."""
+    if type(value) is np.ndarray and value.shape == geo.shape_bc:
+        view = value.reshape(geo.shape_bc_d)
+        view.flags.writeable = False     # as np.broadcast_to returns
+        return view
     return np.broadcast_to(value, geo.shape_bc).reshape(geo.shape_bc_d)
 
 

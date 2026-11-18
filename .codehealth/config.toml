@@ -18,7 +18,11 @@ public_api = true
 # The base and self-test worktrees lack the untracked, generated src/pymrm/_version.py: copy the
 # main checkout's. Every tier uses the suite venv (pymrm_suite/.venv, two levels above the git dir)
 # and PYTHONPATH=src so it imports the tree under test, not the editable install.
-prefix = 'test -f src/pymrm/_version.py || cp {gitdir}/../src/pymrm/_version.py src/pymrm/_version.py;'
+# Optimize lane c1-opt (2026-11-17): every tier command gets a new, empty numba cache directory (under the
+# benchmark run's fresh TMPDIR, which the gate deletes), so a
+# cache=True kernel is always measured cold and never leaves files in the (gitignored) src/pymrm/__pycache__,
+# which the benchmark tree-write check cannot see. The warm-cache gain is measured outside the gate.
+prefix = '''test -f src/pymrm/_version.py || cp {gitdir}/../src/pymrm/_version.py src/pymrm/_version.py; export NUMBA_CACHE_DIR="${TMPDIR:-/tmp}/codehealth-numba-$$-$(date +%s%N)";'''
 
 [gate.env]
 PYTHONHASHSEED = "0"
@@ -44,6 +48,8 @@ cadence = "step"
 timeout = 1200
 detect_exit = [1, 124]
 coverage = true
+# Optimize lane c1-opt: bitwise (binary output; a non-bitwise step needs a tolerance from the user first).
+tolerance = { rel = 0.0, abs = 0.0, ulp = 0 }
 outputs = ["asserts.bin"]
 cmd = 'CODEHEALTH_RECORD={out}/asserts.bin PYTHONPATH="src:.codehealth${PYTHONPATH:+:$PYTHONPATH}" "$CODEHEALTH_PY" -m pytest -q -p no:cacheprovider -p assert_recorder -n 8 --dist loadgroup test'
 
@@ -63,6 +69,9 @@ name = "bench-tvd"
 kind = "benchmark"
 cadence = "step"
 timeout = 900
+# Optimize lane c1-opt: primary for the ConvFluxTVD / compute_boundary_values steps.
+primary = true
+min_speedup = 1.03
 max_slowdown = 0.03
 metric = "both"
 cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py tvd'

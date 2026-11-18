@@ -1,0 +1,7 @@
+id = "opt-o1b-cache-guard"
+approved_by = "user (speed-up lane go, 2026-11-17); fix of a review finding on O1 (think review of perf/c1-opt)"
+reason = "O1 follow-up: @njit(cache=True) raises at import where no cache directory is writable (read-only package dir, no writable HOME); _njit_cached falls back to plain njit there. Same names, signatures and results."
+changed = [
+  "src/pymrm/numjac.py:iterate_over_entries",
+  "src/pymrm/numjac.py:group_columns_by_non_overlap_numba",
+]
