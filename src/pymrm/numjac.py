@@ -125,6 +125,25 @@ def _normalize_dependency(dep, shape_in, shape_out):
     return index_in, index_out, fixed_axes, periodic_axes
 
 
+def _expand_dependency(dep, shape_in, shape_out):
+    """Expand one normalised dependency into the list of explicit ``(idx_in, idx_out, fixed, periodic)``."""
+    idx_in, idx_out, fixed_axes, periodic_axes = dep
+    if idx_out is None:
+        if len(fixed_axes) > 0:
+            raise ValueError(
+                "Fixed axes are not allowed when the out-index is None."
+            )
+        idx_out = (0,) * len(shape_out)
+    in_expanded = _expand_index(idx_in, shape_in)  # list of tuples
+    out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
+
+    return [
+        (idx_in, idx_out, fixed_axes, periodic_axes)
+        for idx_out in out_expanded
+        for idx_in in in_expanded
+    ]
+
+
 def expand_dependencies(shape_in, shape_out, dependencies):
     """Expand compact dependency definitions into fully explicit tuples.
 
@@ -153,19 +172,8 @@ def expand_dependencies(shape_in, shape_out, dependencies):
 
     # Now expand reference and dependent indices
     expanded_deps = []
-    for idx_in, idx_out, fixed_axes, periodic_axes in normalized_deps:
-        if idx_out is None:
-            if len(fixed_axes) > 0:
-                raise ValueError(
-                    "Fixed axes are not allowed when the out-index is None."
-                )
-            idx_out = (0,) * len(shape_out)
-        in_expanded = _expand_index(idx_in, shape_in)  # list of tuples
-        out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
-
-        for idx_out in out_expanded:
-            for idx_in in in_expanded:
-                expanded_deps.append((idx_in, idx_out, fixed_axes, periodic_axes))
+    for dep in normalized_deps:
+        expanded_deps.extend(_expand_dependency(dep, shape_in, shape_out))
 
     return expanded_deps
 
