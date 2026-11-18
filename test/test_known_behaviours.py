@@ -125,3 +125,28 @@ def test_newton_dense_splu_key_raises_without_damping_and_works_when_guarded():
         newton(function, np.ones(3), damping="none", lin_solver_kwargs=kwargs)
     result = newton(function, np.ones(3), damping="guarded", lin_solver_kwargs=kwargs)
     assert result.status == 0
+
+
+def _raising_after_the_first_call():
+    """sqrt(2) residual that evaluates once and raises ValueError at every later point."""
+    calls = []
+
+    def function(x):
+        calls.append(1)
+        if len(calls) > 1:
+            raise ValueError("bad trial point")
+        return np.array([x[0]**2 - 2]), csc_array([[2 * x[0]]])
+    return function
+
+
+def test_newton_monotone_error_at_the_first_trial_point_depends_on_maxfev():
+    """maintainer-note-c2 item 6: a ValueError at the first trial point gives status 2 or raises.
+
+    With maxfev=1 that iteration is the last: status 2 and a message naming ValueError. With
+    maxfev=2 the ValueError propagates. Pins current behaviour; a deliberate change updates this test.
+    """
+    result = newton(_raising_after_the_first_call(), np.ones(1), damping="monotone", maxfev=1)
+    assert result.status == 2
+    assert "ValueError" in result.message
+    with pytest.raises(ValueError):
+        newton(_raising_after_the_first_call(), np.ones(1), damping="monotone", maxfev=2)
