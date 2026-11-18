@@ -505,10 +505,11 @@ class _SearchCtx(NamedTuple):
 
 
 class _Found(NamedTuple):
-    """The step a damped search found (``trial.ev`` None: the damping failed) and the last theta it measured."""
+    """The step a damped search found and the last theta it measured."""
 
     trial: _Trial
     theta: float
+    failed: bool         # no usable step: ``trial`` is the fallback and its ``ev`` is None
 
 
 def _lam_min(near):
@@ -824,7 +825,7 @@ class _NewtonRun:
         try:
             found = self._search(s, lam_prev)
             t = found.trial
-            if t.ev is None:
+            if found.failed:
                 return self._damping_failed(s, t.clipped, it)
             ev = t.ev
             if self._take(s, t, found.theta):
@@ -848,17 +849,17 @@ class _NewtonRun:
         """
         bnd = self.bnd
         lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx)) if bnd.active else 1.0
+        if self.mode == "guarded":
+            full = 1.0 if s.near else lam_max
+            t = self._trial(s, full)
+            if t.ev is not None:
+                return _Found(t, _UNTESTED, False)
+            # An unusable full step at lam_max need not be evaluated again by the fallback.
+            return self._monotone_search(s, min(0.25 * full, lam_max), lam_max, t if full == lam_max else None)
         lam = min(min(1.0, 4.0 * lam_prev), lam_max)
         if self.mode == "armijo":
             return self._armijo_search(s, lam, lam_max)
-        if self.mode != "guarded":
-            return self._monotone_search(s, lam, lam_max, None)
-        full = 1.0 if s.near else lam_max
-        t = self._trial(s, full)
-        if t.ev is not None:
-            return _Found(t, _UNTESTED)
-        # An unusable full step at lam_max need not be evaluated again by the fallback.
-        return self._monotone_search(s, min(0.25 * full, lam_max), lam_max, t if full == lam_max else None)
+        return self._monotone_search(s, lam, lam_max, None)
 
     def _monotone_search(self, s, lam, lam_max, at_lam_max):
         """Shorten lam until the simplified Newton step contracts (``_contraction``), else the fallback.
@@ -877,9 +878,10 @@ class _NewtonRun:
             else:
                 theta, lam_next = self._contraction(s, t, ctx.dy_rms)
                 if lam_next is None:
-                    return _Found(t, theta)
+                    return _Found(t, theta, False)
                 lam = lam_next
-        return _Found(self._fallback(s, lam_max, at_lam_max, None), theta)
+        t = self._fallback(s, lam_max, at_lam_max, None)
+        return _Found(t, theta, t.ev is None)
 
     def _contraction(self, s, t, dy_rms):
         """Theta of the simplified Newton step at ``t`` and the next lam; None if ``t`` passes the test.
@@ -918,11 +920,12 @@ class _NewtonRun:
                 lam *= 0.25
                 continue
             if phi <= (1.0 - _ARMIJO_C * lam) * ctx.phi0:
-                return _Found(t, _UNTESTED)
+                return _Found(t, _UNTESTED, False)
             if phi < best_phi:
                 best, best_phi = t, phi
             lam *= 0.5
-        return _Found(self._fallback(s, lam_max, at_lam_max, best), _UNTESTED)
+        t = self._fallback(s, lam_max, at_lam_max, best)
+        return _Found(t, _UNTESTED, t.ev is None)
 
     def _fallback(self, s, lam_max, at_lam_max, best):
         """The step when no trial passed: ``best`` evaluated again if usable, else the bounded full step.
