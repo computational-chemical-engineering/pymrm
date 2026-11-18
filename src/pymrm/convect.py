@@ -862,6 +862,8 @@ class ConvFluxTVD:
     def _fill_interior_faces(self, c, ext, v_t, face, band):
         """Fill the interior faces of ``face`` and ``band``; return the boundary upwind weights."""
         n0, n1, n2 = self._shape_t
+        if n1 <= 1:
+            return None, None
         up_0, up_1 = self._boundary_terms(self._e_up, self._ext_up, ext)
         up = (self._m_up @ c.ravel() + up_0 + up_1).reshape(self._shape_f_t)
         pos = v_t[:, 1:-1, :] > 0
@@ -900,6 +902,35 @@ class ConvFluxTVD:
         inner[:, -1, 2] += g_right * self._up_right[0]
         inner[:, -1, 1] += g_right * self._up_right[1]
         return g_left, g_right
+
+    def _boundary_jacobians(self, v_t, g_left, g_right):
+        """Jacobians of the flux with respect to the external vectors, ``[left, right]``."""
+        n_f = math.prod(self._shape_f_t)
+        v_flat = v_t.ravel()
+        on_bnd = np.zeros(n_f)
+        on_bnd[self._faces_left.ravel()] = 1.0
+        on_bnd[self._faces_right.ravel()] = 1.0
+        scale_bnd = csr_array((v_flat * on_bnd, (np.arange(n_f), np.arange(n_f))), shape=(n_f, n_f))
+        out = []
+        for i, g, rows, cols in (
+            (0, g_left, "_faces_second", "_faces_left"),
+            (1, g_right, "_faces_penult", "_faces_right"),
+        ):
+            jac_bc = scale_bnd @ self._e_face[i]
+            if g is not None:
+                r, k = getattr(self, rows).ravel(), getattr(self, cols).ravel()
+                chain = csr_array(((v_flat[r] * g.ravel()), (r, k)), shape=(n_f, n_f))
+                jac_bc = jac_bc + chain @ self._e_up[i]
+            out.append(jac_bc.asformat(self.format))
+        return out
+
+    def _velocity_jacobian(self, v_in, face):
+        """Jacobian of the flux with respect to ``v``: the face values in the columns of ``v``."""
+        n_f = math.prod(self._shape_f_t)
+        v_cols = create_staggered_array(np.arange(v_in.size).reshape(v_in.shape), self.shape,
+                                        self.axis, x_f=self._x_f, x_c=self._x_c).ravel()
+        return _sparse_array((face.ravel(), (np.arange(n_f), v_cols)),
+                             shape=(n_f, v_in.size), format=self.format)
 
     def __call__(self, c, v, d=None, jac_v=False):
         """Evaluate the face fluxes and their Jacobians.
@@ -953,10 +984,7 @@ class ConvFluxTVD:
         face[:, 0, :], face[:, n1, :] = face_bnd[:, 0, :], face_bnd[:, n1, :]
         band = np.zeros((n0, n1 + 1, 4, n2))       # d c_f / d c, before the velocity
         band[:, 0], band[:, n1] = self._band_bnd[:, 0], self._band_bnd[:, 1]
-        g_left = g_right = None
-
-        if n1 > 1:
-            g_left, g_right = self._fill_interior_faces(c, ext, v_t, face, band)
+        g_left, g_right = self._fill_interior_faces(c, ext, v_t, face, band)
 
         flux = (v_t * face).reshape(self.shape_f)
         data = (band * v_t[:, :, None, :]).ravel()[self._take]
@@ -965,27 +993,7 @@ class ConvFluxTVD:
         out = [flux, jac]
 
         if self._with_d:
-            n_f = math.prod(self._shape_f_t)
-            v_flat = v_t.ravel()
-            on_bnd = np.zeros(n_f)
-            on_bnd[self._faces_left.ravel()] = 1.0
-            on_bnd[self._faces_right.ravel()] = 1.0
-            scale_bnd = csr_array((v_flat * on_bnd, (np.arange(n_f), np.arange(n_f))), shape=(n_f, n_f))
-            for i, g, rows, cols in (
-                (0, g_left, "_faces_second", "_faces_left"),
-                (1, g_right, "_faces_penult", "_faces_right"),
-            ):
-                jac_bc = scale_bnd @ self._e_face[i]
-                if g is not None:
-                    r, k = getattr(self, rows).ravel(), getattr(self, cols).ravel()
-                    chain = csr_array(((v_flat[r] * g.ravel()), (r, k)), shape=(n_f, n_f))
-                    jac_bc = jac_bc + chain @ self._e_up[i]
-                out.append(jac_bc.asformat(self.format))
-
+            out.extend(self._boundary_jacobians(v_t, g_left, g_right))
         if jac_v:
-            n_f = math.prod(self._shape_f_t)
-            v_cols = create_staggered_array(np.arange(v_in.size).reshape(v_in.shape), self.shape,
-                                            self.axis, x_f=self._x_f, x_c=self._x_c).ravel()
-            out.append(_sparse_array((face.ravel(), (np.arange(n_f), v_cols)),
-                                     shape=(n_f, v_in.size), format=self.format))
+            out.append(self._velocity_jacobian(v_in, face))
         return tuple(out)
