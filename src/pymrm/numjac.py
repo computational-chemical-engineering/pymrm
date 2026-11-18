@@ -657,6 +657,18 @@ def _resolve_shapes(shape, shape_in, shape_out):
     )
 
 
+def _dense_1d_shape(shape, stencil, kwargs):
+    """``shape`` as a tuple if the default stencil on it gives a large dense 1-D Jacobian, else ``None``."""
+    if shape is None or kwargs:
+        return None
+    if stencil is not stencil_block_diagonals:
+        return None
+    shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
+    if len(shape_t) != 1:
+        return None
+    return shape_t if shape_t[0] >= DENSE_1D_WARNING_SIZE else None
+
+
 class NumJac:
     """Numerical Jacobian evaluator based on grouped finite differences.
 
@@ -720,17 +732,16 @@ class NumJac:
         self.eps_jac = eps_jac
         self.format = format
 
-        if shape is not None and stencil is stencil_block_diagonals and not kwargs:
-            shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
-            if len(shape_t) == 1 and shape_t[0] >= DENSE_1D_WARNING_SIZE:
-                warnings.warn(
-                    f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
-                    f"({shape_t[0]} function evaluations per call). For a field on a grid "
-                    f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
-                    "dense coupling is intended.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+        shape_t = _dense_1d_shape(shape, stencil, kwargs)
+        if shape_t is not None:
+            warnings.warn(
+                f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
+                f"({shape_t[0]} function evaluations per call). For a field on a grid "
+                f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
+                "dense coupling is intended.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Initialize stencil
         self.init_stencil(stencil, **kwargs)
