@@ -431,7 +431,11 @@ class _Eval(NamedTuple):
 
 
 class _Step(NamedTuple):
-    """One iteration's Newton step and its tests, read-only for the phases of the iteration."""
+    """One iteration's Newton step and its tests, read-only for the rest of the iteration.
+
+    ``report``: an error at a trial point is reported (status 2), not raised; the old
+    iteration evaluated there only after its last step.
+    """
 
     ev: _Eval
     lin_solve: object
@@ -445,7 +449,7 @@ class _Step(NamedTuple):
     stagnant: bool
     be: float
     last_it: bool
-    last: bool
+    report: bool
 
 
 class _Carry(NamedTuple):
@@ -605,38 +609,32 @@ class _NewtonRun:
     nfact: int = 0
     history: list = field(default_factory=list)
 
-    def _call(self, xv, guard, last):
-        """``function(xv, *args)`` as ``(g_raw, jac)``; None if guarded and recoverable."""
-        if not guard:
-            g_raw, jac = self.function(xv, *self.args)
-            return g_raw, jac
+    # -- evaluation and the end of the run ------------------------------------------------
+
+    def _evaluate(self, xv, guard, report):
+        """``function(xv, *args)`` as an ``_Eval``, finite or not; None if ``guard`` and it raised a recoverable error.
+
+        With ``report`` any other error becomes ``_LastEvaluationFailed`` (status 2) instead of propagating.
+        """
+        self.nfev += 1
         try:
             g_raw, jac = self.function(xv, *self.args)
-        except self.recoverable:
+        except (self.recoverable if guard else ()):
             return None
         except Exception as exc:
-            if last:
+            if report:
                 # The old iteration never evaluated here: report, do not raise.
                 raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
             raise
-        return g_raw, jac
-
-    def _evaluate(self, xv, guard, last):
-        """Residual (flat) and Jacobian at ``xv``, finite or not; None if guarded and recoverable."""
-        self.nfev += 1
-        out = self._call(xv, guard, last)
-        if out is None:
-            return None
-        g_raw, jac = out
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
         g_flat = g_raw.reshape(-1)
         if sparse.issparse(jac) and jac.format not in ("csr", "csc", "coo", "bsr", "dia"):
             jac = jac.tocsc()      # lil, dok: no .data array of the stored values
         return _Eval(g_raw, g_flat, jac)
 
-    def evaluate(self, xv, guard, last):
-        """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
-        ev = self._evaluate(xv, guard, last)
+    def _usable(self, xv, guard, report):
+        """``_evaluate``, None unless the residual and Jacobian are finite."""
+        ev = self._evaluate(xv, guard, report)
         if ev is None or not _is_finite(ev):
             return None
         return ev
@@ -671,22 +669,24 @@ class _NewtonRun:
             # The guess is a prediction (continuation, pseudo_transient): one of
             # ``recoverable`` there marks it unusable, like a non-finite residual.
             try:
-                ev = self._evaluate(self.x, guard=False, last=False)
+                ev = self._evaluate(self.x, guard=False, report=False)
             except self.recoverable as exc:
                 raise self._breakdown(_Status.NON_FINITE, _End(None, float("nan"), float("nan")),
                                       f"{type(exc).__name__} at the initial guess ({exc})")
         else:
-            ev = self._evaluate(self.x, guard=False, last=False)
+            ev = self._evaluate(self.x, guard=False, report=False)
         if not _is_finite(ev):
             raise self._breakdown(_Status.NON_FINITE, _End(ev, float("nan"), float("nan")), "at the initial guess")
         return self.iterate(ev)
+
+    # -- one iteration ----------------------------------------------------------------------
 
     def iterate(self, ev):
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED, 1.0)
         window = []          # step norms of the recent full steps at the floor
         maxfev = int(self.maxfev)
         for it in range(maxfev):
-            s = self._newton_step_and_tests(carry.ev, carry.step_inf, it == maxfev - 1, window)
+            s = self._newton_step(carry.ev, carry.step_inf, it == maxfev - 1, window)
             out = self._plain_step(s) if self.mode == "none" else self._damped_step(s, carry, it)
             if isinstance(out, OptimizeResult):
                 return out
@@ -733,14 +733,13 @@ class _NewtonRun:
             converged = converged or step_inf == 0.0
         return converged, excess
 
-    def _newton_step_and_tests(self, ev, prev_step, last_it, window):
+    def _newton_step(self, ev, prev_step, last_it, window):
         """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
         lin_solve, r, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
         dy = dx / self.d
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
         near = converged or (self.refresh is None and excess < _NEAR)
-        last = converged or last_it
 
         # The verdict uses the residual at x, before the step: no evaluation
         # beyond those of plain Newton. Near a solution the step only improves it.
@@ -751,7 +750,8 @@ class _NewtonRun:
         backward_tol = self.backward_tol
         gate = backward_tol is None or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
-        return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it, last)
+        return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
+                     converged or last_it)
 
     def _plain_step(self, s):
         """Plain (or bound-shortened) step; callback and refresh before the
@@ -776,7 +776,7 @@ class _NewtonRun:
         if s.last_it:
             # plain Newton does not evaluate after its last step
             return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
-        ev_new = self.evaluate(self.x, guard=False, last=False)
+        ev_new = self._usable(self.x, guard=False, report=False)
         if ev_new is None:
             raise self._breakdown(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
         return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
@@ -849,7 +849,7 @@ class _NewtonRun:
         x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
         trial = x_flat - lam * dx
         clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        return _Trial(trial, self.evaluate(trial.reshape(self.shape), guard=True, last=s.last), lam, clipped)
+        return _Trial(trial, self._usable(trial.reshape(self.shape), guard=True, report=s.report), lam, clipped)
 
     def _find_step(self, s, lam_next):
         """The ``_Found`` step of this iteration, the damped search starting from ``lam_next``."""
@@ -888,7 +888,7 @@ class _NewtonRun:
                 at_lam_max = t
             if v.accepted is not None:
                 return _SearchEnd(v.accepted, at_lam_max, v.theta)
-        return _SearchEnd(self._restore_best(v.best, ctx.phi0, s.last), at_lam_max, v.theta)
+        return _SearchEnd(self._restore_best(v.best, ctx.phi0, s.report), at_lam_max, v.theta)
 
     def _judge(self, t, ctx, v):
         """The ``_Verdict`` on the trial ``t``: a quarter lam if it is unusable, else the mode's test."""
@@ -928,12 +928,12 @@ class _NewtonRun:
         lam = min(0.5 * lam, max(mu, 0.1 * lam))
         return _Verdict(None, lam, theta, v.best)
 
-    def _restore_best(self, best, phi0, last):
+    def _restore_best(self, best, phi0, report):
         """The best Armijo trial if it decreased the residual, re-evaluated; else None."""
         if best is None or not best.phi < phi0:
             return None
         t = best.trial
-        ev_t = self.evaluate(t.x.reshape(self.shape), guard=True, last=last)  # restore model state
+        ev_t = self._usable(t.x.reshape(self.shape), guard=True, report=report)  # restore model state
         if ev_t is not None:
             return _Trial(t.x, ev_t, t.lam, t.clipped)
         return None
@@ -944,7 +944,7 @@ class _NewtonRun:
             return self._trial(s, lam_max)
         t = at_lam_max
         if t.ev is not None:
-            t = _Trial(t.x, self.evaluate(t.x.reshape(self.shape), guard=True, last=s.last), lam_max, t.clipped)
+            t = _Trial(t.x, self._usable(t.x.reshape(self.shape), guard=True, report=s.report), lam_max, t.clipped)
         return t
 
     def _accept(self, s, found):
@@ -952,7 +952,7 @@ class _NewtonRun:
         t = found.trial
         ev = t.ev
         if self._take(s, t, found.theta):
-            ev = self.evaluate(self.x, guard=True, last=s.last)
+            ev = self._usable(self.x, guard=True, report=s.report)
             if ev is None:
                 raise self._breakdown(_Status.NON_FINITE, _End(t.ev, s.step_inf, float("nan")),
                                       "after the callback or refresh")
