@@ -5,7 +5,7 @@ that a fix flips it.
 """
 import numpy as np
 import pytest
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array, dia_array
 from scipy.sparse.linalg import splu
 
 from pymrm import NumJac
@@ -88,3 +88,24 @@ def test_newton_accepts_a_bool_sparse_residual(dense):
     as_bool = newton(make(bool), x0)
     assert as_float.status == as_bool.status == 0
     assert as_bool.x.tobytes() == as_float.x.tobytes()
+
+
+_TRIDIAGONAL = np.diag([3.0, 3.0, 3.0]) + np.diag([1.0, 1.0], 1) + np.diag([1.0, 1.0], -1)
+
+
+def _cubic_chain(matrix_type):
+    """A tridiagonal linear term plus a cubic, with its Jacobian in the sparse type ``matrix_type``."""
+    def function(x):
+        return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), matrix_type(_TRIDIAGONAL + np.diag(3 * x**2))
+    return function
+
+
+@pytest.mark.xfail(strict=True, raises=AttributeError, reason="maintainer-note-c2 item 4: dia_array Jacobian")
+@pytest.mark.parametrize("damping", ["monotone", "armijo"])
+def test_newton_dia_array_jacobian_matches_csc(damping):
+    """maintainer-note-c2 item 4: a dia_array Jacobian under damping converges to the csc_array result."""
+    x0 = np.ones(3)
+    expected = newton(_cubic_chain(csc_array), x0, damping=damping)
+    result = newton(_cubic_chain(dia_array), x0, damping=damping)
+    assert expected.status == result.status == 0
+    np.testing.assert_allclose(result.x, expected.x, rtol=1e-12)
