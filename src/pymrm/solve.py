@@ -760,32 +760,32 @@ class _NewtonRun:
                      converged or last_it)
 
     def _plain_step(self, s):
-        """Plain (or bound-shortened) step; callback and refresh before the
-        next evaluation, as the callers of the undamped iteration expect."""
-        x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
+        """Plain (or bound-shortened) step, callback and refresh, then stop or evaluate at the new x.
+
+        The callback and refresh come before the next evaluation, as the callers of the
+        undamped iteration expect. The result, or the ``_Carry``.
+        """
+        bnd = self.bnd
         lam = 1.0
         if not s.near and bnd.active:
-            lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
+            lam = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx))
         t = self._trial(s, lam, evaluate=False)
         self._take(s, t, _UNTESTED)
-        return self._plain_verdict(s, t)
-
-    def _plain_verdict(self, s, t):
-        """Stop after a plain step, or evaluate at the new ``x``: the result or the ``_Carry``."""
-        converged, step_inf, be = s.converged, s.step_inf, s.be
-        if self.relative and step_inf > 0.0:
+        converged = s.converged
+        if self.relative and s.step_inf > 0.0:
             # The relative test uses x after the step (and the callback).
             converged = bool(np.all(np.abs(s.dy) <= self._relative_limit()))
         status = _stop_status(s, converged)
         if status is not None:
             return self._final(s, status, t.clipped)
+        gate_failed = converged and not s.gate
         if s.last_it:
             # plain Newton does not evaluate after its last step
-            return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
-        ev_new = self._usable(self.x, guard=False, report=False)
-        if ev_new is None:
-            raise self._breakdown(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
-        return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
+            return self._exhausted(_Carry(s.ev, s.step_inf, s.be, gate_failed, t.clipped, t.lam, _UNTESTED, 1.0))
+        ev = self._usable(self.x, guard=False, report=False)
+        if ev is None:
+            raise self._breakdown(_Status.NON_FINITE, _End(s.ev, s.step_inf, float("nan")), "after a full step")
+        return _Carry(ev, s.step_inf, s.be, gate_failed, t.clipped, t.lam, _UNTESTED, 1.0)
 
     def _take(self, s, t, theta):
         """Take the step to the trial ``t``, then the callback and refresh; whether one of them ran."""
