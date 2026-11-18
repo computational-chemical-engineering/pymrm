@@ -715,7 +715,7 @@ class _Reconstructor:
         return active, records
 
     def _two_point(self, k):
-        """Two-point normal formula for crossing k; (axis fallback, record)."""
+        """Two-point normal formula for crossing k; its record (``unresolved`` marks the axis fallback)."""
         geo = self.geo
         ndim_s = geo.ndim_s
         x_cut = np.array([geo.x_c[a][geo.seed_multi[a][k]]
@@ -733,7 +733,7 @@ class _Reconstructor:
                 nrm = 1.0
             s = float((x_cut - geo.x_gamma[k]) @ (u_ax / nrm))
             deg = -1
-        return fallback, _CrossingFit(
+        return _CrossingFit(
             alpha=-1.0 / s, stencil=np.array([geo.seeds[k]], dtype=np.intp),
             weights=np.array([1.0 / s]), degree=deg, cond=1.0,
             moment_res=0.0, radius=self.r0[k], unresolved=fallback)
@@ -747,8 +747,8 @@ class _Reconstructor:
         records = {}
         n_axis_fallback = 0
         for k in sorted(active):
-            fallback, records[k] = self._two_point(k)
-            if fallback:
+            records[k] = self._two_point(k)
+            if records[k].unresolved:
                 n_axis_fallback += 1
         return records, n_axis_fallback
 
