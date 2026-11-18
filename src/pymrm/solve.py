@@ -578,6 +578,11 @@ class _Criterion(NamedTuple):
     tol_vec: object          # tol per unknown, for the relative test (None without it)
     relative: bool           # the per-unknown test with rtol, else |dy|_inf < tol
     zero_step_converges: bool    # False only for damping="none" with backward_tol=None
+    # the backward-error gate
+    backward_tol: object     # largest backward error a converged step may have (None: no gate)
+    field_scale: object      # ``scale`` per unknown, or None: the fields' largest |x|
+    x0_size: float           # largest finite |x| of the initial guess
+    shape: tuple
 
     def relative_limit(self, x_flat):
         """Per unknown, the largest scaled step the relative test accepts at ``x_flat``."""
@@ -598,6 +603,13 @@ class _Criterion(NamedTuple):
             converged = converged or step_inf == 0.0
         return converged, excess
 
+    def backward_error(self, ev, x_flat):
+        """The backward error of ``ev``, evaluated at ``x_flat``; nan unless its Jacobian is a matrix."""
+        if not _is_matrix(ev.jac):
+            return float("nan")
+        return _backward_error(ev.g, ev.jac, x_flat,
+                               _field_reference(x_flat, self.shape, self.field_scale, self.x0_size))
+
 
 @dataclass(eq=False, slots=True)
 class _NewtonRun:
@@ -610,8 +622,6 @@ class _NewtonRun:
     x_flat: np.ndarray
     shape: tuple
     n: int
-    x0_size: float
-    d_user: object
     crit: _Criterion
     lin: _LinearSolver
     mode: str
@@ -620,7 +630,6 @@ class _NewtonRun:
     maxfev: object
     callback: object
     refresh: object
-    backward_tol: object
     verbose: object
     nfev: int = 0
     nfact: int = 0
@@ -655,12 +664,6 @@ class _NewtonRun:
         if ev is None or not _is_finite(ev):
             return None
         return ev
-
-    def backward_error(self, g_flat, jac):
-        if not _is_matrix(jac):
-            return float("nan")
-        return _backward_error(g_flat, jac, self.x_flat,
-                               _field_reference(self.x_flat, self.shape, self.d_user, self.x0_size))
 
     def finish(self, status, end, extra=""):
         """The result of the run ending with ``status`` at ``end``."""
@@ -756,8 +759,8 @@ class _NewtonRun:
         be = float("nan")
         measured = near or last_it or crit.relative
         if measured:
-            be = self.backward_error(ev.g, ev.jac)
-        backward_tol = self.backward_tol
+            be = crit.backward_error(ev, self.x_flat)
+        backward_tol = crit.backward_tol
         gate = backward_tol is None or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
         return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
@@ -967,13 +970,14 @@ class _NewtonRun:
         extra = f"{_lam_min(s.near):g} at iteration {it}"
         if clipped:
             extra += f"; {clipped} components held by a bound"
-        return self.finish(_Status.DAMPING_FAILED, _End(s.ev, s.step_inf, self.backward_error(s.ev.g, s.ev.jac)), extra)
+        return self.finish(_Status.DAMPING_FAILED,
+                           _End(s.ev, s.step_inf, self.crit.backward_error(s.ev, self.x_flat)), extra)
 
     def _exhausted(self, carry):
         """The result after ``maxfev`` iterations without convergence."""
         ev, step_inf, be = carry.ev, carry.step_inf, carry.be
         if self.mode != "none":
-            be = self.backward_error(ev.g, ev.jac)     # ev is at x after a damped step
+            be = self.crit.backward_error(ev, self.x_flat)     # ev is at x after a damped step
         if carry.gate_failed:
             return self.finish(_Status.BACKWARD_ERROR, _End(ev, step_inf, be), f"{be:.2e} after maxfev iterations")
         if carry.clipped:
@@ -1256,12 +1260,13 @@ def newton(
         bnd.enforce_initial(x_flat)
     use_stagnation = stagnation and refresh is None
     crit = _Criterion(d=d, tol=tol, rtol=rtol, tol_vec=tol_vec, relative=relative,
-                      zero_step_converges=zero_step_converges)
+                      zero_step_converges=zero_step_converges, backward_tol=backward_tol,
+                      field_scale=d_user, x0_size=x0_size, shape=shape)
 
     run = _NewtonRun(function=function, args=args, recoverable=recoverable, x=x, x_flat=x_flat,
-                     shape=shape, n=n, x0_size=x0_size, d_user=d_user, crit=crit, lin=lin, mode=mode,
+                     shape=shape, n=n, crit=crit, lin=lin, mode=mode,
                      bnd=bnd, use_stagnation=use_stagnation, maxfev=maxfev,
-                     callback=callback, refresh=refresh, backward_tol=backward_tol, verbose=verbose)
+                     callback=callback, refresh=refresh, verbose=verbose)
     return run.solve(_guard_guess)
 
 
