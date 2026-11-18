@@ -40,3 +40,18 @@ Read after the seed playbook of the refactor-loop skill (cce-code-health). Evide
 Gate failures to expect: wall-time benchmarks under machine load (use metric "both"; re-gate once only
 when the failing benchmark does not run the changed code), literals (a dropped string literal), and
 coverage (numba-compiled functions are invisible to coverage: leave them).
+
+## Refactor recipes (c2 evidence, python@1)
+
+| id | when | when not | evidence |
+|---|---|---|---|
+| state-to-locals | a class talks between methods through mutable fields (class_state smell) | the field is a counter the caller reads (nfev, nfact): leave it; never hide state in nonlocal, aliases or appends | _NewtonRun 54 -> 2, _Continuation 5 -> 0, _PseudoTransient 4 -> 0; reviews R5-R8 KEEP |
+| introduce-parameter-object | positional tuples read across methods; > 4 params that form one concept (settings, a correction) | a grouping that exists only for the score (coupling C9 skipped) | 4/4 accepted |
+| remove-dict-as-struct | a dict with fixed literal keys used as a struct | its keys are public API; needs an interface plan (literals_removed) | newton `state` dict, S6 |
+| reorder-bumps | AVOID as a step's only change: moving a plain statement so two if-blocks become adjacent lowers bumps without making the code clearer (R8 on B2) | - | 1 accepted, reviewer: metric-only |
+
+Limits met in c2: a file above 1000 nloc gets a large_file smell that fails the gate (solve.py sits at 1000);
+do not pack lines to fit. Differential harnesses (notes/fuzz_*.py, base vs head bit for bit with line coverage)
+backed every solve.py step; reviewers found no difference they missed.
+Bench timing: before codehealth 2847f98, wall medians sat on a 50 ms grid with a head-second bias (bench-newton
+0.96-0.98 per step, 1.000 over a 5-step range); re-pinned 2026-11-18.
