@@ -569,6 +569,36 @@ def _slide(window, s, use_stagnation):
         window.clear()
 
 
+class _Criterion(NamedTuple):
+    """When a Newton step counts as converged. Built once in :func:`newton`, never written."""
+
+    d: np.ndarray            # scale of each unknown (ones without ``scale``)
+    tol: object
+    rtol: float
+    tol_vec: object          # tol per unknown, for the relative test (None without it)
+    relative: bool           # the per-unknown test with rtol, else |dy|_inf < tol
+    zero_step_converges: bool    # False only for damping="none" with backward_tol=None
+
+    def relative_limit(self, x_flat):
+        """Per unknown, the largest scaled step the relative test accepts at ``x_flat``."""
+        return self.tol_vec + self.rtol * np.abs(x_flat / self.d)
+
+    def step_test(self, dy, step_inf, x_flat):
+        """Whether the step ``dy`` (scaled) at ``x_flat`` meets the tolerance, and by how much it exceeds it."""
+        tol = self.tol
+        if self.relative:
+            limit = self.relative_limit(x_flat)
+            converged = bool(np.all(np.abs(dy) <= limit))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
+        else:
+            converged = step_inf < tol
+            excess = step_inf / tol if tol > 0 else (0.0 if step_inf == 0 else np.inf)
+        if self.zero_step_converges:
+            converged = converged or step_inf == 0.0
+        return converged, excess
+
+
 @dataclass(eq=False, slots=True)
 class _NewtonRun:
     """One :func:`newton` solve: the problem, its settings and the iteration counters."""
@@ -582,14 +612,9 @@ class _NewtonRun:
     n: int
     x0_size: float
     d_user: object
-    d: np.ndarray
+    crit: _Criterion
     lin: _LinearSolver
     mode: str
-    legacy_exact: bool
-    relative: bool
-    tol: object
-    rtol: float
-    tol_vec: object
     bnd: _Bounds
     use_stagnation: bool
     maxfev: object
@@ -715,31 +740,13 @@ class _NewtonRun:
             raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")
         return solve, r, dx
 
-    def _relative_limit(self):
-        """Per unknown, the largest scaled step the relative test accepts at the current x."""
-        return self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)
-
-    def _step_test(self, dy, step_inf):
-        """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
-        tol = self.tol
-        if self.relative:
-            limit = self._relative_limit()
-            converged = bool(np.all(np.abs(dy) <= limit))
-            with np.errstate(divide="ignore", invalid="ignore"):
-                excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
-        else:
-            converged = step_inf < tol
-            excess = step_inf / tol if tol > 0 else (0.0 if step_inf == 0 else np.inf)
-        if not self.legacy_exact:
-            converged = converged or step_inf == 0.0
-        return converged, excess
-
     def _newton_step(self, ev, prev_step, last_it, window):
         """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
+        crit = self.crit
         lin_solve, r, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
-        dy = dx / self.d
+        dy = dx / crit.d
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
-        converged, excess = self._step_test(dy, step_inf)
+        converged, excess = crit.step_test(dy, step_inf, self.x_flat)
         near = converged or (self.refresh is None and excess < _NEAR)
 
         # The verdict uses the residual at x, before the step: no evaluation
@@ -747,7 +754,7 @@ class _NewtonRun:
         # The relative test always measures it: plain mode tests again at the new x
         # and needs a measured gate there.
         be = float("nan")
-        measured = near or last_it or self.relative
+        measured = near or last_it or crit.relative
         if measured:
             be = self.backward_error(ev.g, ev.jac)
         backward_tol = self.backward_tol
@@ -769,9 +776,10 @@ class _NewtonRun:
         t = self._trial(s, lam, evaluate=False)
         self._take(s, t, _UNTESTED)
         converged = s.converged
-        if self.relative and s.step_inf > 0.0:
+        crit = self.crit
+        if crit.relative and s.step_inf > 0.0:
             # The relative test uses x after the step (and the callback).
-            converged = bool(np.all(np.abs(s.dy) <= self._relative_limit()))
+            converged = bool(np.all(np.abs(s.dy) <= crit.relative_limit(self.x_flat)))
         status = _stop_status(s, converged)
         if status is not None:
             return self._final(s, status, t.clipped)
@@ -861,7 +869,7 @@ class _NewtonRun:
         """
         lam = t.lam
         try:
-            dbar = np.asarray(s.lin_solve(self.lin.rhs(t.ev)), dtype=float).reshape(-1) / self.d
+            dbar = np.asarray(s.lin_solve(self.lin.rhs(t.ev)), dtype=float).reshape(-1) / self.crit.d
         except _LinearSolverFailed:
             dbar = np.full(self.n, np.inf)    # no test possible: reject the trial
         theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
@@ -952,7 +960,7 @@ class _NewtonRun:
         if clipped:
             return self.finish(_Status.ON_BOUND, _End(s.ev, step_inf, s.be), f"{clipped} components held by a bound")
         return self.finish(_Status.STALLED, _End(s.ev, step_inf, s.be),
-                           f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+                           f"|dx| = {step_inf:.2e} (tol {np.max(self.crit.tol):.1e})")
 
     def _damping_failed(self, s, clipped, it):
         """The result when no damped step was found (status 3)."""
@@ -1236,7 +1244,7 @@ def newton(
 
     mode = _damping_mode(damping, callback, lin)
     lin.legacy = mode == "none" and not row_scaling
-    legacy_exact = mode == "none" and backward_tol is None
+    zero_step_converges = mode != "none" or backward_tol is not None
 
     d_user = _scale_vector(scale, shape)
     d = np.ones(n) if d_user is None else d_user
@@ -1247,11 +1255,12 @@ def newton(
     if bnd.active:
         bnd.enforce_initial(x_flat)
     use_stagnation = stagnation and refresh is None
+    crit = _Criterion(d=d, tol=tol, rtol=rtol, tol_vec=tol_vec, relative=relative,
+                      zero_step_converges=zero_step_converges)
 
     run = _NewtonRun(function=function, args=args, recoverable=recoverable, x=x, x_flat=x_flat,
-                     shape=shape, n=n, x0_size=x0_size, d_user=d_user, d=d, lin=lin, mode=mode,
-                     legacy_exact=legacy_exact, relative=relative, tol=tol, rtol=rtol,
-                     tol_vec=tol_vec, bnd=bnd, use_stagnation=use_stagnation, maxfev=maxfev,
+                     shape=shape, n=n, x0_size=x0_size, d_user=d_user, crit=crit, lin=lin, mode=mode,
+                     bnd=bnd, use_stagnation=use_stagnation, maxfev=maxfev,
                      callback=callback, refresh=refresh, backward_tol=backward_tol, verbose=verbose)
     return run.solve(_guard_guess)
 
