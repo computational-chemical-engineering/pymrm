@@ -175,16 +175,16 @@ class _LinearSolver:
                 raise _SingularJacobian(str(exc)) from exc
             return (lambda rhs: lu.solve(np.asarray(rhs, dtype=float), trans="T")), None
         a = jac if _is_canonical_csc(jac) else sparse.csc_array(jac)
-        r = _row_scale(a) if self.row_scaling else None
-        if r is not None:
-            a = sparse.csc_array(sparse.diags_array(r) @ a)
+        row_scale = _row_scale(a) if self.row_scaling else None
+        if row_scale is not None:
+            a = sparse.csc_array(sparse.diags_array(row_scale) @ a)
         try:
             lu = linalg.splu(a, **options)
         except RuntimeError as exc:
             raise _SingularJacobian(str(exc)) from exc
-        if r is None:
+        if row_scale is None:
             return lu.solve, None
-        return (lambda rhs: lu.solve(r * rhs)), r
+        return (lambda rhs: lu.solve(row_scale * rhs)), row_scale
 
     def _direct_dense(self, jac):
         if self.legacy:
@@ -199,15 +199,15 @@ class _LinearSolver:
                     raise _SingularJacobian(str(exc)) from exc
             return solve, None
         a = np.asarray(jac, dtype=float)
-        r = _row_scale(a) if self.row_scaling else None
-        if r is not None:
-            a = r[:, None] * a
+        row_scale = _row_scale(a) if self.row_scaling else None
+        if row_scale is not None:
+            a = row_scale[:, None] * a
         lu, piv, _ = _dgetrf(a, overwrite_a=False)
         if (lu.diagonal() == 0.0).any():
             raise _SingularJacobian("exactly singular")
-        if r is None:
+        if row_scale is None:
             return (lambda rhs: _dgetrs(lu, piv, rhs)[0]), None
-        return (lambda rhs: _dgetrs(lu, piv, r * rhs)[0]), r
+        return (lambda rhs: _dgetrs(lu, piv, row_scale * rhs)[0]), row_scale
 
     def rhs(self, ev):
         """The right-hand side ``solve`` takes for the evaluation ``ev`` (as returned for a callable solver)."""
