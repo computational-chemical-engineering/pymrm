@@ -652,26 +652,34 @@ class _Residual:
 
 @dataclass(eq=False, slots=True)
 class _NewtonRun:
-    """One :func:`newton` solve: the problem, its settings and the iteration counters."""
+    """One :func:`newton` solve: its collaborators, its policy, the user's hooks and the iteration state.
 
+    The iteration writes only the state group (``x`` and ``x_flat`` in place, ``nfact``,
+    ``history``) and, through its collaborators, ``residual.nfev`` and ``bnd.held``.
+    """
+
+    # collaborators: the residual, the convergence criterion, the linear solver, the bounds
     residual: _Residual
-    x: np.ndarray
-    x_flat: np.ndarray
-    shape: tuple
-    n: int
     crit: _Criterion
     lin: _LinearSolver
-    mode: str
     bnd: _Bounds
-    use_stagnation: bool
+    # policy: damping mode, iteration limit, stagnation test, shape and size of x
+    mode: str
     maxfev: object
+    use_stagnation: bool
+    shape: tuple
+    n: int
+    # the user's hooks
     callback: object
     refresh: object
     verbose: object
+    # state: x and its flat view (one array, updated in place), factorisations, history
+    x: np.ndarray
+    x_flat: np.ndarray
     nfact: int = 0
     history: list = field(default_factory=list)
 
-    # -- evaluation and the end of the run ------------------------------------------------
+    # -- the end of the run -----------------------------------------------------------------
 
     def finish(self, status, end, extra=""):
         """The result of the run ending with ``status`` at ``end``."""
@@ -1256,6 +1264,9 @@ def newton(
     lin = _LinearSolver(solver, lin_solver_kwargs, row_scaling)
 
     mode = _damping_mode(damping, callback, lin)
+    # The damping="none" compatibility path. lin.legacy (also without row scaling) factorises as
+    # pymrm 2.5.0 did; zero_step_converges is False only there with backward_tol=None, where a
+    # zero step counts as converged only if it passes the step test, as before 3.0.0.
     lin.legacy = mode == "none" and not row_scaling
     zero_step_converges = mode != "none" or backward_tol is not None
 
