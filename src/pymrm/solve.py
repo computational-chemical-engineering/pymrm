@@ -1607,23 +1607,29 @@ def _capped(p, h, target):
     return target if abs(target - p) <= abs(h) else p + h
 
 
-def _continuation_failure(res, jumped, bounded):
-    """Why continuation stopped after the sub-step that gave ``res``."""
+def _failure_cause(res, jumped, bounded):
+    """The cause in :func:`_continuation_failure`, before the predictor suffix."""
     if res is None:
-        why = "the sub-step fell below round-off"
-    elif jumped:
+        return "the sub-step fell below round-off"
+    if jumped:
         why = "the corrector jumps to another solution branch"
         if bounded:
             why += "; probably a turning point (fold) of the solution branch"
-    elif res.status == 4 and res.nit == 0:
-        why = (f"the residual cannot be evaluated at the prediction ({res.message}); "
-               "it lies outside the residual's domain")
-    else:
-        why = f"the corrector fails ({res.message})"
-        if bounded:
-            why += ("; a turning point (fold) of the solution branch, or a "
-                    "corrector that cannot converge here (an inexact Jacobian, "
-                    "such as NumJac's eps_jac, or a tolerance below round-off)")
+        return why
+    if res.status == 4 and res.nit == 0:
+        return (f"the residual cannot be evaluated at the prediction ({res.message}); "
+                "it lies outside the residual's domain")
+    why = f"the corrector fails ({res.message})"
+    if bounded:
+        why += ("; a turning point (fold) of the solution branch, or a "
+                "corrector that cannot converge here (an inexact Jacobian, "
+                "such as NumJac's eps_jac, or a tolerance below round-off)")
+    return why
+
+
+def _continuation_failure(res, jumped, bounded):
+    """Why continuation stopped after the sub-step that gave ``res``."""
+    why = _failure_cause(res, jumped, bounded)
     if res is not None and not bounded:
         why += (" from the constant predictor (no earlier solution far enough "
                 "back for a secant)")
