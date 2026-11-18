@@ -44,24 +44,23 @@ def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=N
     return new_linear_indices
 
 
+def _pair_if_integers(dims):
+    """``(dims, dims)`` when ``dims`` is all integers, else the tuple of ``dims`` unchanged."""
+    dims = tuple(dims)
+    if all(isinstance(dim, numbers.Integral) for dim in dims):
+        return dims, dims
+    return dims
+
+
 def _parse_shape_offset(shape, new_shape, offset):
     """Normalise *shape*, *new_shape* and *offset* into ((rows), (cols)) form.
 
     This is a shared helper for :func:`update_csc_array_indices` and
     :func:`update_csr_array_indices`.
     """
-    shape = tuple(shape)
-    if all(isinstance(dim, numbers.Integral) for dim in shape):
-        shape = (shape, shape)
-    new_shape = tuple(new_shape)
-    if all(isinstance(dim, numbers.Integral) for dim in new_shape):
-        new_shape = (new_shape, new_shape)
-    if offset is None:
-        offset = (None, None)
-    else:
-        offset = tuple(offset)
-        if all(isinstance(dim, numbers.Integral) for dim in offset):
-            offset = (offset, offset)
+    shape = _pair_if_integers(shape)
+    new_shape = _pair_if_integers(new_shape)
+    offset = (None, None) if offset is None else _pair_if_integers(offset)
     return shape, new_shape, offset
 
 
