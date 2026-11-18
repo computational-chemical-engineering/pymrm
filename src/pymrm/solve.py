@@ -849,8 +849,10 @@ class _NewtonRun:
 
     def _trial(self, s, lam):
         """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
-        t = self._project(s, lam)
-        return _Trial(t.x, self.evaluate(t.x.reshape(self.shape), guard=True, last=s.last), lam, t.clipped)
+        x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
+        trial = x_flat - lam * dx
+        clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+        return _Trial(trial, self.evaluate(trial.reshape(self.shape), guard=True, last=s.last), lam, clipped)
 
     def _find_step(self, s, lam_next):
         """The ``_Found`` step of this iteration, the damped search starting from ``lam_next``."""
