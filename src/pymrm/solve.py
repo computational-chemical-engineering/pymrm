@@ -760,7 +760,7 @@ class _NewtonRun:
         lam = 1.0
         if not s.near and bnd.active:
             lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
-        t = self._project(s, lam)
+        t = self._trial(s, lam, evaluate=False)
         self._take(s, t, _UNTESTED)
         return self._plain_verdict(s, t)
 
@@ -811,7 +811,7 @@ class _NewtonRun:
 
     def _final_step(self, s, status):
         """Take the converged or stalled step without evaluating there, as plain Newton did."""
-        t = self._project(s, 1.0)
+        t = self._trial(s, 1.0, evaluate=False)
         self._take(s, t, float("nan"))
         return self._final(s, status, t.clipped)
 
@@ -837,19 +837,13 @@ class _NewtonRun:
             extra += f"; {clipped} components held by a bound"
         return self.finish(_Status.DAMPING_FAILED, _End(s.ev, s.step_inf, self.backward_error(s.ev.g, s.ev.jac)), extra)
 
-    def _project(self, s, lam):
-        """The trial point ``x - lam dx``, held inside the bounds, not evaluated."""
+    def _trial(self, s, lam, evaluate=True):
+        """The point ``x - lam dx`` held inside the bounds, and (if ``evaluate``) its usable evaluation."""
         x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
         trial = x_flat - lam * dx
         clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        return _Trial(trial, None, lam, clipped)
-
-    def _trial(self, s, lam):
-        """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
-        x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
-        trial = x_flat - lam * dx
-        clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        return _Trial(trial, self._usable(trial.reshape(self.shape), guard=True, report=s.report), lam, clipped)
+        ev = self._usable(trial.reshape(self.shape), guard=True, report=s.report) if evaluate else None
+        return _Trial(trial, ev, lam, clipped)
 
     def _find_step(self, s, lam_next):
         """The ``_Found`` step of this iteration, the damped search starting from ``lam_next``."""
