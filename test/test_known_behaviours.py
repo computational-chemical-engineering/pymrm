@@ -9,7 +9,7 @@ from scipy.sparse import csc_array, dia_array
 from scipy.sparse.linalg import splu
 
 from pymrm import NumJac
-from pymrm.solve import newton
+from pymrm.solve import _Bounds, newton
 
 
 @pytest.mark.xfail(strict=True, raises=TypeError, reason="maintainer-note-c2 item 1: NumJac int shape")
@@ -150,3 +150,19 @@ def test_newton_monotone_error_at_the_first_trial_point_depends_on_maxfev():
     assert "ValueError" in result.message
     with pytest.raises(ValueError):
         newton(_raising_after_the_first_call(), np.ones(1), damping="monotone", maxfev=2)
+
+
+def test_bounds_commit_marks_a_component_that_project_did_not_hold():
+    """maintainer-note-c2 item 7: _Bounds.commit finds held components by float equality.
+
+    For x = 1, lower = 0 and dx = 1.5 the step is limited to lam = 0.66 and lands at 0.01: project holds
+    no component, yet commit marks it held. Pins current behaviour; a deliberate change updates this test.
+    """
+    bounds = _Bounds(np.array([0.0]), None, 0.99)
+    x, dx = np.array([1.0]), np.array([1.5])
+    lam = bounds.max_step(x, dx)
+    assert lam == pytest.approx(0.66)
+    trial = x - lam * dx
+    assert bounds.project(trial, x, dx) == 0
+    bounds.commit(x, trial, dx)
+    assert bounds.held.tolist() == [True]
