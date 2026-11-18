@@ -8,11 +8,12 @@ import warnings
 
 import numpy as np
 import pytest
-from scipy.sparse import csc_array, dia_array
+from scipy.sparse import csc_array, dia_array, random as sparse_random
 from scipy.sparse.linalg import splu
 
 import pymrm.solve
 from pymrm import NumJac, continuation, pseudo_transient
+from pymrm.helpers import _csc_abs_matvec
 from pymrm.solve import _Bounds, newton
 
 
@@ -223,3 +224,22 @@ def test_newton_ignored_lin_solver_kwargs_warning_reports_the_callers_file():
     assert len(ignored) == 1
     assert ignored[0].category is RuntimeWarning
     assert ignored[0].filename == __file__
+
+
+@pytest.mark.parametrize("index_dtype", [np.int32, np.int64])
+@pytest.mark.parametrize("n", [7, 40])
+def test_csc_abs_matvec_equals_abs_matmul_bitwise(index_dtype, n):
+    """maintainer-note-c2 item 12: helpers._csc_abs_matvec(jac, v) equals abs(jac) @ v bitwise.
+
+    The helper calls a private scipy kernel (scipy >= 1.13). Pins current behaviour; a deliberate change
+    updates this test.
+    """
+    rng = np.random.default_rng(12)
+    jac = csc_array(sparse_random(n, n, density=0.3, random_state=1, format="csc"))
+    jac.data = rng.standard_normal(jac.data.size)
+    jac.indices = jac.indices.astype(index_dtype)
+    jac.indptr = jac.indptr.astype(index_dtype)
+    v = rng.standard_normal(n)
+    result = _csc_abs_matvec(jac, v)
+    assert jac.indices.dtype == index_dtype
+    assert result.tobytes() == (abs(jac) @ v).tobytes()
