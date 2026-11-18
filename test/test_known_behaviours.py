@@ -11,7 +11,7 @@ from scipy.sparse import csc_array, dia_array
 from scipy.sparse.linalg import splu
 
 import pymrm.solve
-from pymrm import NumJac, pseudo_transient
+from pymrm import NumJac, continuation, pseudo_transient
 from pymrm.solve import _Bounds, newton
 
 
@@ -192,3 +192,19 @@ def test_pseudo_transient_failure_message_reports_a_dt_below_every_dt_tried(monk
     assert len(tried) > 1
     assert reported < min(tried)
     assert min(tried) / reported == pytest.approx(4.0, rel=1e-2)
+
+
+def test_continuation_first_value_failure_returns_the_failed_result_only():
+    """maintainer-note-c2 item 9: when the first value fails, results = [first], params = [] and xs = [].
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    def function(x, p):
+        return np.array([x[0]**2 + 1.0]), csc_array([[2 * x[0]]])
+
+    result = continuation(function, np.ones(1), [0.0, 1.0, 2.0])
+    assert not result.success
+    assert len(result.results) == 1 and not result.results[0].success
+    assert result.params == [] and result.xs == []
+    assert result.last_param is None
+    assert "no solution at the first value" in result.message
