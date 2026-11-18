@@ -208,6 +208,10 @@ class _LinearSolver:
             return (lambda rhs: _dgetrs(lu, piv, rhs)[0]), None
         return (lambda rhs: _dgetrs(lu, piv, r * rhs)[0]), r
 
+    def rhs(self, ev):
+        """The right-hand side ``solve`` takes for the evaluation ``ev`` (as returned for a callable solver)."""
+        return ev.g_raw if self.kind == "callable" else ev.g
+
     def _iterative(self, jac):
         if not sparse.issparse(jac):
             raise ValueError(
@@ -704,12 +708,10 @@ class _NewtonRun:
         A singular Jacobian (5), a failed linear solve or a non-finite step (6) raise a breakdown
         reporting ``step_inf``, the last step norm.
         """
-        g_raw, g, jac = ev
         try:
-            solve, r = self.lin.factorize(jac)
+            solve, r = self.lin.factorize(ev.jac)
             self.nfact += 1
-            dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
-                            dtype=float).reshape(-1)
+            dx = np.asarray(solve(self.lin.rhs(ev)), dtype=float).reshape(-1)
         except _SingularJacobian as exc:
             raise self._breakdown(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))
         except _LinearSolverFailed as exc:
@@ -908,8 +910,7 @@ class _NewtonRun:
         """The trial if its simplified Newton step contracts, else a smaller lam."""
         dy, dy_rms, lam = ctx.dy, ctx.dy_rms, t.lam
         try:
-            rhs = t.ev.g_raw if self.lin.kind == "callable" else t.ev.g
-            dbar = np.asarray(ctx.lin_solve(rhs), dtype=float).reshape(-1) / self.d
+            dbar = np.asarray(ctx.lin_solve(self.lin.rhs(t.ev)), dtype=float).reshape(-1) / self.d
         except _LinearSolverFailed:
             dbar = np.full(self.n, np.inf)    # no test possible: reject the trial
         theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
