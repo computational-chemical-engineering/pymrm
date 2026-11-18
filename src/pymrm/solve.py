@@ -134,7 +134,8 @@ class _LinearSolver:
     def __init__(self, solver, kwargs, row_scaling):
         self.kwargs = dict(kwargs or {})
         self.row_scaling = row_scaling
-        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit (newton sets it)
+        # legacy (newton sets it for damping="none" without row scaling): factorise as spsolve
+        # and scipy.linalg.solve do, so that the plain iteration reproduces pymrm 2.5.0 bit for bit
         self.legacy = False
         self.kind = _solver_kind(solver)
         self.solver = solver
@@ -187,7 +188,7 @@ class _LinearSolver:
 
     def _direct_dense(self, jac):
         if self.legacy:
-            # scipy.linalg.solve detects structure (symmetric, triangular), as before
+            # scipy.linalg.solve, which detects structure (symmetric, triangular)
             a = np.asarray(jac)
             dense_kwargs = self.kwargs
 
@@ -302,8 +303,7 @@ class _Bounds:
         extinction tail overshoots its bound on every iteration, it would cap
         every step at ``_LAM_FLOOR`` and only halve the error of all other
         components. It is held again by :meth:`project` if it crosses again.
-        (Remembering every component ever held, not only the last step's, lost
-        two of 108 bounded Arrhenius pellets.)
+        Only the last accepted step's holds are excused, not every hold so far.
         """
         lam = 1.0
         for sign, mask, _, dist, over in self._sides(x, dx):
@@ -315,7 +315,14 @@ class _Bounds:
         return lam
 
     def commit(self, x, trial, dx):
-        """Record the components :meth:`project` held in the accepted ``trial``."""
+        """Record the components :meth:`project` held in the accepted ``trial``.
+
+        A component counts as held when its full step crosses the bound genuinely
+        and ``trial`` equals the hold point ``bound + sign (1 - tau) dist`` exactly.
+        That covers the components project held and also any that landed exactly on
+        the hold point by themselves (the equality test cannot tell them apart; a
+        test pins this, and a fix belongs to a behaviour change, not here).
+        """
         held = np.zeros(x.shape, dtype=bool)
         for sign, mask, bound, dist, over in self._sides(x, dx):
             genuine = mask & (over > _CROSS_RTOL * dist)
@@ -437,21 +444,25 @@ class _Eval(NamedTuple):
 class _Step(NamedTuple):
     """One iteration's Newton step and its tests, read-only for the rest of the iteration.
 
-    ``report``: an error at a trial point is reported (status 2), not raised; the old
-    iteration evaluated there only after its last step.
+    ``report``: an error at a trial point ends the run with status 2 instead of
+    propagating. It is set when the step converged or is the last one, where plain
+    Newton would not evaluate again.
     """
 
+    # the step: the evaluation at x, the factorised solve, its row scale, dx and dx / d
     ev: _Eval
     lin_solve: object
     r: object
     dx: np.ndarray
     dy: np.ndarray
+    # its tests at x: scaled step norm, step test, near the tolerance, backward-error gate, stagnation
     step_inf: float
     converged: bool
     near: bool
     gate: bool
     stagnant: bool
     be: float
+    # whether it may end the run
     last_it: bool
     report: bool
 
@@ -604,7 +615,7 @@ class _NewtonRun:
             return None
         except Exception as exc:
             if report:
-                # The old iteration never evaluated here: report, do not raise.
+                # Plain Newton would not evaluate here: end the run with status 2.
                 raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
             raise
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
@@ -639,7 +650,7 @@ class _NewtonRun:
     def _breakdown(self, status, end, extra, kind=NewtonBreakdown):
         """The exception that ends a run without a usable Newton step (statuses 4, 5 and 6), with its result.
 
-        These raise, as they did up to 2.5.0 (callers catch ValueError, LinAlgError or RuntimeError).
+        These raise; callers catch them as ValueError, LinAlgError or RuntimeError.
         """
         result = self.finish(status, end, extra)
         return kind(result.message, result)
@@ -663,7 +674,13 @@ class _NewtonRun:
     # -- one iteration ----------------------------------------------------------------------
 
     def iterate(self, ev):
-        """Newton steps from ``ev`` (at x) until a stop: the result."""
+        """Newton steps from ``ev`` (at x) until a stop: the result.
+
+        Two orders, by ``mode``. Plain (``"none"``, the 2.5.0 iteration) takes the full or
+        bound-shortened step first, then tests convergence at the new x, as the relative
+        test reads x. Damped tests at x first, then stops with the full step or searches
+        for a damped one. Both call the callback and refresh before the next evaluation.
+        """
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED)
         window = []          # step norms of the recent full steps at the floor
         maxfev = int(self.maxfev)
@@ -727,6 +744,8 @@ class _NewtonRun:
 
         # The verdict uses the residual at x, before the step: no evaluation
         # beyond those of plain Newton. Near a solution the step only improves it.
+        # The relative test always measures it: plain mode tests again at the new x
+        # and needs a measured gate there.
         be = float("nan")
         measured = near or last_it or self.relative
         if measured:
@@ -758,7 +777,7 @@ class _NewtonRun:
             return self._final(s, status, t.clipped)
         gate_failed = converged and not s.gate
         if s.last_it:
-            # plain Newton does not evaluate after its last step
+            # no evaluation after the last step: the result reports the residual at x before it
             return self._exhausted(_Carry(s.ev, s.step_inf, s.be, gate_failed, t.clipped, t.lam, _UNTESTED))
         ev = self._usable(self.x, guard=False, report=False)
         if ev is None:
@@ -769,7 +788,7 @@ class _NewtonRun:
         """Stop, or search a damped step, take it and evaluate there: the result or the ``_Carry``."""
         status = _stop_status(s, s.converged)
         if status is not None:
-            # Take the converged or stalled step without evaluating there, as plain Newton did
+            # Take the converged or stalled step without evaluating there, as plain Newton does
             # (status 8 only if that step is held by a bound).
             t = self._trial(s, 1.0, evaluate=False)
             self._take(s, t, float("nan"))
@@ -835,7 +854,11 @@ class _NewtonRun:
         return _Found(self._fallback(s, lam_max, at_lam_max, None), theta)
 
     def _contraction(self, s, t, dy_rms):
-        """Theta of the simplified Newton step at ``t`` and the next lam; None if ``t`` passes the test."""
+        """Theta of the simplified Newton step at ``t`` and the next lam; None if ``t`` passes the test.
+
+        Only damped modes get here, so ``lin.legacy`` (mode ``"none"``) is off and the
+        legacy dense ``_SingularJacobian`` cannot arise from ``s.lin_solve``.
+        """
         lam = t.lam
         try:
             dbar = np.asarray(s.lin_solve(self.lin.rhs(t.ev)), dtype=float).reshape(-1) / self.d
