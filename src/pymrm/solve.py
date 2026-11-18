@@ -415,9 +415,10 @@ def _damping_mode(damping, callback, lin):
 
 def _scale_vector(scale, shape):
     """``scale`` as a flat array of the unknowns' scales (None if not given), checked."""
-    d_user = None if scale is None else \
-        np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
-    if d_user is not None and not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
+    if scale is None:
+        return None
+    d_user = np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
+    if not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
         raise ValueError("scale must be finite and positive for every unknown.")
     return d_user
 
