@@ -62,3 +62,21 @@ do not pack lines to fit. Differential harnesses (notes/fuzz_*.py, base vs head 
 backed every solve.py step; reviewers found no difference they missed.
 Bench timing: before codehealth 2847f98, wall medians sat on a 50 ms grid with a head-second bias (bench-newton
 0.96-0.98 per step, 1.000 over a 5-step range); re-pinned 2026-11-18.
+
+## c2 closing lessons (2026-11-18)
+
+- Per-function metrics push over-fragmentation. After WO-c2-1..11, solve.py read health 9.2, but a blind review
+  (no scores shown) rated it 6/10, with the Newton core at 5: about 30 methods, 10 record types and about 20 calls per
+  iteration. A consolidation WO (WO-c2-12) took it to about 10 calls per iteration and still scored 6/10. Use a
+  blind review as the readability check, plan for it from the start, and stop splitting before the score asks for
+  it (decisions 42, 45).
+- Record objects cost time in numpy-light hot loops: about 1-2 us per NamedTuple per iteration. Measure the loop
+  with an interleaved in-process timer before you introduce a record type on newton's path (decision 39).
+- The gate rejects a helper-only step because "reference does not execute". Commit the new helper together with its
+  first caller (decision 41).
+- The literals check can force two steps into one commit: when step A stops reaching a literal and step B deletes
+  the scope that held it, commit A and B together. Never keep a dead literal only to satisfy the gate (decision 43).
+- Benchmarks run with a cold numba cache: the gate gives every timed run a fresh NUMBA_CACHE_DIR. An optimize step
+  that adds `njit(cache=True)` therefore costs about 1.6 pp cold on bench-newton (cache write) while it wins about
+  1.8x warm. Decide which definition a gate criterion means before you write it, and compare direct timings under
+  the same cache state (decision 46).
