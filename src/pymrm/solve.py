@@ -320,8 +320,8 @@ class _Bounds:
         A component counts as held when its full step crosses the bound genuinely
         and ``trial`` equals the hold point ``bound + sign (1 - tau) dist`` exactly.
         That covers the components project held and also any that landed exactly on
-        the hold point by themselves (the equality test cannot tell them apart; a
-        test pins this, and a fix belongs to a behaviour change, not here).
+        the hold point by themselves: the equality test cannot tell them apart
+        (``test_known_behaviours.py::test_bounds_commit_marks_a_component_that_project_did_not_hold``).
         """
         held = np.zeros(x.shape, dtype=bool)
         for sign, mask, bound, dist, over in self._sides(x, dx):
@@ -571,10 +571,13 @@ def _slide(window, s, use_stagnation):
 
 
 class _Criterion(NamedTuple):
-    """When a Newton step counts as converged. Built once in :func:`newton`, never written."""
+    """When a Newton step counts as converged, and the backward error reported at statuses 3 and maxfev.
+
+    Built once in :func:`newton`, never written.
+    """
 
     d: np.ndarray            # scale of each unknown (ones without ``scale``)
-    tol: object
+    tol: object              # step tolerance: |dy|_inf < tol, or per unknown in the relative test
     rtol: float
     tol_vec: object          # tol per unknown, for the relative test (None without it)
     relative: bool           # the per-unknown test with rtol, else |dy|_inf < tol
@@ -583,7 +586,7 @@ class _Criterion(NamedTuple):
     backward_tol: object     # largest backward error a converged step may have (None: no gate)
     field_scale: object      # ``scale`` per unknown, or None: the fields' largest |x|
     x0_size: float           # largest finite |x| of the initial guess
-    shape: tuple
+    shape: tuple             # shape of x, for the field reference of the backward error
 
     def relative_limit(self, x_flat):
         """Per unknown, the largest scaled step the relative test accepts at ``x_flat``."""
@@ -605,7 +608,10 @@ class _Criterion(NamedTuple):
         return converged, excess
 
     def backward_error(self, ev, x_flat):
-        """The backward error of ``ev``, evaluated at ``x_flat``; nan unless its Jacobian is a matrix."""
+        """The backward error of ``ev`` at ``x_flat``; nan unless its Jacobian is a matrix.
+
+        ``ev`` must be the evaluation at ``x_flat``.
+        """
         if not _is_matrix(ev.jac):
             return float("nan")
         return _backward_error(ev.g, ev.jac, x_flat,
@@ -723,9 +729,10 @@ class _NewtonRun:
         """Newton steps from ``ev`` (at x) until a stop: the result.
 
         Two orders, by ``mode``. Plain (``"none"``, the 2.5.0 iteration) takes the full or
-        bound-shortened step first, then tests convergence at the new x, as the relative
-        test reads x. Damped tests at x first, then stops with the full step or searches
-        for a damped one. Both call the callback and refresh before the next evaluation.
+        bound-shortened step first; the absolute test is decided on dy before the step, and
+        only the relative test, which reads x, is made again at the new x. Damped tests at x
+        first, then stops with the full step or searches for a damped one. Both call the
+        callback and refresh before the next evaluation.
         """
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED)
         window = []          # step norms of the recent full steps at the floor
@@ -772,8 +779,8 @@ class _NewtonRun:
 
         # The verdict uses the residual at x, before the step: no evaluation
         # beyond those of plain Newton. Near a solution the step only improves it.
-        # The relative test always measures it: plain mode tests again at the new x
-        # and needs a measured gate there.
+        # With the relative test the backward error is always measured: plain mode re-tests
+        # convergence at the new x and needs a measured gate there.
         be = float("nan")
         measured = near or last_it or crit.relative
         if measured:
