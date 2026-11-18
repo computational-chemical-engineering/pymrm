@@ -839,18 +839,20 @@ class ConvFluxTVD:
 
     def _external_vectors(self, d):
         """The external boundary vectors ``d`` as flat arrays, checked against ``shapes_d``."""
-        ext = [np.ones(1), np.ones(1)]
         if not self._with_d:
-            return ext
+            return [np.ones(1), np.ones(1)]
         if d is None:
             raise ValueError("built with shapes_d: pass d=(ext_left, ext_right)")
-        for i in range(2):
-            if self.shapes_d[i] is None:
-                continue
-            ext[i] = np.asarray(d[i], dtype=float).reshape(-1)
-            if ext[i].size != self._n_ext[i]:
-                raise ValueError(f"d[{i}] has {ext[i].size} values, shapes_d[{i}] needs {self._n_ext[i]}")
-        return ext
+        return [self._external_vector(d, i) for i in range(2)]
+
+    def _external_vector(self, d, i):
+        """Side ``i`` of the external vectors as a flat array of the size ``shapes_d[i]`` needs."""
+        if self.shapes_d[i] is None:
+            return np.ones(1)
+        vector = np.asarray(d[i], dtype=float).reshape(-1)
+        if vector.size != self._n_ext[i]:
+            raise ValueError(f"d[{i}] has {vector.size} values, shapes_d[{i}] needs {self._n_ext[i]}")
+        return vector
 
     @staticmethod
     def _boundary_terms(e, const, ext):
