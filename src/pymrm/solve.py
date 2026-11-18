@@ -28,7 +28,7 @@ _STAGNATION_WINDOW = 5
 _STAGNATION_RATIO = 1.0  # a step no smaller than the smallest of the window
 _ARMIJO_C = 1.0e-4
 _UNTESTED = float("nan")  # theta of a step no monotonicity test measured
-_BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
+_BACKWARD_WEIGHT = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
 # Exceptions that mark an evaluation point as unusable (``newton``'s default).
@@ -380,13 +380,13 @@ def _backward_error(g, jac, x, x_ref):
     """Componentwise backward error with a floor relative to the field scale.
 
     ``max_i |g_i| / (|J| (|x| + eta x_ref) + |J x - g|)_i`` with
-    ``eta = _BACKWARD_FLOOR``: the measure of
+    ``eta = _BACKWARD_WEIGHT``: the measure of
     :func:`pymrm.checks.residual_check`, except that components far below the
     scale of their field (a reaction dead zone, an absent species) are judged
     against that scale instead of against their own size.
     """
     jac = jac if sparse.issparse(jac) else np.asarray(jac, dtype=float)
-    v = np.abs(x) + _BACKWARD_FLOOR * x_ref
+    v = np.abs(x) + _BACKWARD_WEIGHT * x_ref
     if _is_canonical_csc(jac) and (v.dtype, v.shape) == (np.float64, jac.shape[1:]):
         weighted = _csc_abs_matvec(jac, v)  # abs(jac) @ v, the same floats without the copy
     else:
@@ -452,7 +452,7 @@ class _Step(NamedTuple):
     # the step: the evaluation at x, the factorised solve, its row scale, dx and dx / d
     ev: _Eval
     lin_solve: object
-    r: object
+    row_scale: object
     dx: np.ndarray
     dy: np.ndarray
     # its tests at x: scaled step norm, step test, near the tolerance, backward-error gate, stagnation
@@ -521,8 +521,8 @@ def _lam_min(near):
 def _search_context(s):
     """The ``_SearchCtx`` of the iteration ``s``, in every damped mode (its warnings are observable)."""
     dy_rms = _rms(s.dy)
-    r, jac = s.r, s.ev.jac
-    row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
+    row_scale, jac = s.row_scale, s.ev.jac
+    row = row_scale if row_scale is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
     phi0 = float(np.linalg.norm(row * s.ev.g))
     return _SearchCtx(dy_rms, row, phi0)
 
@@ -744,13 +744,13 @@ class _NewtonRun:
         return self._exhausted(carry)
 
     def _factorize(self, ev, step_inf):
-        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
+        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, row_scale, dx)``.
 
         A singular Jacobian (5), a failed linear solve or a non-finite step (6) raise a breakdown
         reporting ``step_inf``, the last step norm.
         """
         try:
-            solve, r = self.lin.factorize(ev.jac)
+            solve, row_scale = self.lin.factorize(ev.jac)
             self.nfact += 1
             dx = np.asarray(solve(self.lin.rhs(ev)), dtype=float).reshape(-1)
         except _SingularJacobian as exc:
@@ -759,12 +759,12 @@ class _NewtonRun:
             raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc), KrylovBreakdown)
         if not np.isfinite(dx).all():
             raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")
-        return solve, r, dx
+        return solve, row_scale, dx
 
     def _newton_step(self, ev, prev_step, last_it, window):
         """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
         crit = self.crit
-        lin_solve, r, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
+        lin_solve, row_scale, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
         dy = dx / crit.d
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = crit.step_test(dy, step_inf, self.x_flat)
@@ -781,7 +781,7 @@ class _NewtonRun:
         backward_tol = crit.backward_tol
         gate = backward_tol is None or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
-        return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
+        return _Step(ev, lin_solve, row_scale, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
                      converged or last_it)
 
     def _plain_step(self, s):
@@ -820,7 +820,7 @@ class _NewtonRun:
             # Take the converged or stalled step without evaluating there, as plain Newton does
             # (status 8 only if that step is held by a bound).
             t = self._trial(s, 1.0, evaluate=False)
-            self._take(s, t, float("nan"))
+            self._take(s, t, _UNTESTED)
             return self._final(s, status, t.clipped)
         try:
             found = self._search(s, lam_prev)
