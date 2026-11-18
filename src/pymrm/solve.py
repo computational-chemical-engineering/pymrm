@@ -108,11 +108,12 @@ def _row_scale(jac):
 
 def _solver_kind(solver):
     """The kind of linear solver ``solver`` names or is."""
-    if solver is None or (isinstance(solver, str) and solver in ("spsolve", "lu")):
+    named = solver if isinstance(solver, str) else None     # a solver given by name
+    if solver is None or named in ("spsolve", "lu"):
         return "direct"
-    if isinstance(solver, str) and solver in ("cg", "bicgstab"):
+    if named in ("cg", "bicgstab"):
         return solver
-    if isinstance(solver, str) and solver == "splu":
+    if named == "splu":
         return "splu"
     if hasattr(solver, "factorize"):
         return "factorize"
