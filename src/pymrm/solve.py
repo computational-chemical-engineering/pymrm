@@ -7,7 +7,8 @@ from typing import NamedTuple
 
 import numpy as np
 from scipy import sparse
-from scipy.linalg import LinAlgWarning, lu_factor, lu_solve, solve as dense_solve
+from scipy.linalg import solve as dense_solve
+from scipy.linalg.lapack import dgetrf as _dgetrf, dgetrs as _dgetrs
 from scipy.optimize import Bounds, OptimizeResult
 from scipy.sparse import linalg
 
@@ -198,14 +199,12 @@ class _LinearSolver:
         r = _row_scale(a) if self.row_scaling else None
         if r is not None:
             a = r[:, None] * a
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", LinAlgWarning)
-            factor = lu_factor(a, check_finite=False)
-        if (factor[0].diagonal() == 0.0).any():
+        lu, piv, _ = _dgetrf(a, overwrite_a=False)
+        if (lu.diagonal() == 0.0).any():
             raise _SingularJacobian("exactly singular")
         if r is None:
-            return (lambda rhs: lu_solve(factor, rhs, check_finite=False)), None
-        return (lambda rhs: lu_solve(factor, r * rhs, check_finite=False)), r
+            return (lambda rhs: _dgetrs(lu, piv, rhs)[0]), None
+        return (lambda rhs: _dgetrs(lu, piv, r * rhs)[0]), r
 
     def _iterative(self, jac):
         if not sparse.issparse(jac):
