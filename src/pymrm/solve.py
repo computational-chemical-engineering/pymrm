@@ -38,7 +38,7 @@ class _Status(IntEnum):
 
     CONVERGED = 0
     STALLED = 1
-    MAXFEV = 2
+    NOT_CONVERGED = 2
     DAMPING_FAILED = 3
     NON_FINITE = 4
     SINGULAR = 5
@@ -48,15 +48,15 @@ class _Status(IntEnum):
 
 
 _MESSAGES = {
-    0: "Converged",
-    1: "Converged to the stagnation floor",
-    2: "Did not converge",
-    3: "Damping fell below its minimum",
-    4: "Non-finite residual",
-    5: "Singular Jacobian",
-    6: "Linear solver failed",
-    7: "Step criterion met but the backward error is above backward_tol",
-    8: "Stopped on a bound",
+    _Status.CONVERGED: "Converged",
+    _Status.STALLED: "Converged to the stagnation floor",
+    _Status.NOT_CONVERGED: "Did not converge",
+    _Status.DAMPING_FAILED: "Damping fell below its minimum",
+    _Status.NON_FINITE: "Non-finite residual",
+    _Status.SINGULAR: "Singular Jacobian",
+    _Status.SOLVER_FAILED: "Linear solver failed",
+    _Status.BACKWARD_ERROR: "Step criterion met but the backward error is above backward_tol",
+    _Status.ON_BOUND: "Stopped on a bound",
 }
 
 
@@ -826,7 +826,7 @@ class _NewtonRun:
                 return self._damping_failed(s, found.trial.clipped, it)
             return self._accept(s, found)
         except _LastEvaluationFailed as exc:
-            return self.finish(_Status.MAXFEV, _End(s.ev, s.step_inf, float("nan")),
+            return self.finish(_Status.NOT_CONVERGED, _End(s.ev, s.step_inf, float("nan")),
                                f"the residual at the last trial point raised {exc}")
 
     def _damping_failed(self, s, clipped, it):
@@ -966,7 +966,7 @@ class _NewtonRun:
             return self.finish(_Status.BACKWARD_ERROR, _End(ev, step_inf, be), f"{be:.2e} after maxfev iterations")
         if carry.clipped:
             return self.finish(_Status.ON_BOUND, _End(ev, step_inf, be), f"{carry.clipped} components held by a bound")
-        return self.finish(_Status.MAXFEV, _End(ev, step_inf, be))
+        return self.finish(_Status.NOT_CONVERGED, _End(ev, step_inf, be))
 
 
 def newton(
