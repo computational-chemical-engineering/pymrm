@@ -62,10 +62,17 @@ def _sparse_array(args, shape=None, format="csc"):
 
 
 def _csc_abs_matvec(jac, v):
-    # ``abs(jac) @ v`` for a canonical float64 csc_array ``jac`` and a float64 vector ``v`` of
-    # length jac.shape[1], without the checked copy that abs(jac) builds: ``@`` calls the same
-    # kernel on the same |entries| into a zeroed result, so the floats are the same.
-    if _csc_matvec is None:  # pragma: no cover
+    """``abs(jac) @ v`` without the checked copy that ``abs(jac)`` builds.
+
+    For a canonical float64 ``csc_array`` ``jac`` and a float64 vector ``v`` of length
+    ``jac.shape[1]`` (the caller checks both). scipy's ``@`` calls the same ``csc_matvec``
+    kernel on the same absolute entries into a zeroed result, so the floats are identical
+    (checked against scipy 1.18). Arrays that are inconsistent with their shape take the
+    checked route, which raises as before.
+    """
+    n_cols = jac.shape[1]
+    consistent = jac.indptr.size == n_cols + 1 and jac.indices.size == jac.data.size == jac.indptr[n_cols]
+    if _csc_matvec is None or not consistent:  # pragma: no cover
         return abs(jac) @ v
     result = np.zeros(jac.shape[0])
     _csc_matvec(*jac.shape, jac.indptr, jac.indices, np.abs(jac.data), v, result)
