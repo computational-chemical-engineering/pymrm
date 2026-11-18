@@ -2,6 +2,7 @@
 
 import math
 import warnings
+from typing import NamedTuple
 import numpy as np
 from scipy.sparse import csc_array, csr_array
 from .grid import generate_grid
@@ -606,6 +607,72 @@ def _normalised_positions(x_f, x_c):
     return x_norm
 
 
+class _ExternalShapes(NamedTuple):
+    """The ``shapes_d`` of a ConvFluxTVD with the sizes derived from it."""
+
+    shapes_d: tuple
+    with_d: bool
+    shapes_ext: tuple
+    n_ext: tuple
+
+
+def _external_shapes(shapes_d, ndim):
+    """Normalise ``shapes_d`` and derive the flag, the padded shapes and the sizes of the external vectors."""
+    if shapes_d is None:
+        shapes_d = (None, None)
+    shapes_d = tuple(shapes_d)
+    ones = (1,) * ndim
+    shapes_ext = tuple(ones if s is None else tuple(s) for s in shapes_d)
+    n_ext = tuple(math.prod(s) for s in shapes_ext)
+    return _ExternalShapes(shapes_d, any(s is not None for s in shapes_d), shapes_ext, n_ext)
+
+
+class _JacobianPattern(NamedTuple):
+    """Fixed sparsity pattern of the face Jacobian: band order, indices, indptr and shape."""
+
+    take: np.ndarray
+    indices: np.ndarray
+    indptr: np.ndarray
+    shape: tuple
+
+
+def _jacobian_pattern(shape_t, offsets, format):
+    """Fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1."""
+    n0, n1, n2 = shape_t
+    k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
+    cells = k + offsets.reshape(1, 1, -1, 1)
+    valid = (cells >= 0) & (cells < n1)
+    valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
+    i0 = np.arange(n0).reshape(-1, 1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, 1, -1)
+    rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
+    cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
+    rows, cols = rows[valid], cols[valid]
+    shape_jac = (n0 * (n1 + 1) * n2, n0 * n1 * n2)
+    tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
+                        shape=shape_jac, format=format)
+    tag.sort_indices()
+    # band entries in the order of jac.data
+    take = np.flatnonzero(valid)[tag.data.astype(np.intp) - 1]
+    return _JacobianPattern(take, tag.indices, tag.indptr, shape_jac)
+
+
+class _BoundaryFaces(NamedTuple):
+    """Flat indices of the boundary faces and of the interior faces next to them."""
+
+    left: np.ndarray
+    right: np.ndarray
+    second: np.ndarray
+    penult: np.ndarray
+
+
+def _boundary_faces(shape_f_t, n1):
+    """Flat face indices of faces 0 and n1, and of 1 and n1 - 1 (``None`` for a single cell)."""
+    f_t = np.arange(math.prod(shape_f_t)).reshape(shape_f_t)
+    second, penult = (f_t[:, 1, :], f_t[:, n1 - 1, :]) if n1 > 1 else (None, None)
+    return _BoundaryFaces(f_t[:, 0, :], f_t[:, n1, :], second, penult)
+
+
 class ConvFluxTVD:
     """TVD convective face flux with its exact Jacobians, for Newton solves.
 
@@ -691,13 +758,9 @@ class ConvFluxTVD:
         n0, n1, n2 = self._shape_t = geo.shape_t
         self._shape_f_t = geo.shape_f_t
 
-        if shapes_d is None:
-            shapes_d = (None, None)
-        self.shapes_d = tuple(shapes_d)
-        self._with_d = any(s is not None for s in self.shapes_d)
-        ones = (1,) * len(shape)
-        shapes_ext = tuple(ones if s is None else tuple(s) for s in self.shapes_d)
-        self._n_ext = tuple(math.prod(s) for s in shapes_ext)
+        ext = _external_shapes(shapes_d, len(shape))
+        self.shapes_d, self._with_d, self._n_ext = ext.shapes_d, ext.with_d, ext.n_ext
+        shapes_ext = ext.shapes_ext
 
         # Boundary faces: value maps with the outflow face set to its cell. As
         # the upwind point of the neighbouring face, an outflow boundary takes
@@ -719,29 +782,13 @@ class ConvFluxTVD:
         self._offsets = np.arange(-2, 2)
         self._build_boundary_stencils(x_f, x_c)
 
-        # fixed sparsity pattern: face k, cell k + o, for o = -2 .. 1
-        k = np.arange(n1 + 1).reshape(1, -1, 1, 1)
-        cells = k + self._offsets.reshape(1, 1, -1, 1)
-        valid = (cells >= 0) & (cells < n1)
-        valid = np.broadcast_to(valid, (n0, n1 + 1, 4, n2))
-        i0 = np.arange(n0).reshape(-1, 1, 1, 1)
-        i2 = np.arange(n2).reshape(1, 1, 1, -1)
-        rows = ((i0 * (n1 + 1) + k) * n2 + i2) + 0 * cells
-        cols = ((i0 * n1 + np.clip(cells, 0, n1 - 1)) * n2 + i2)
-        rows, cols = rows[valid], cols[valid]
-        shape_jac = (math.prod(self._shape_f_t), math.prod(self._shape_t))
-        tag = _sparse_array((np.arange(1, rows.size + 1, dtype=float), (rows, cols)),
-                            shape=shape_jac, format=format)
-        tag.sort_indices()
-        # band entries in the order of jac.data
-        self._take = np.flatnonzero(valid)[tag.data.astype(np.intp) - 1]
-        self._indices, self._indptr, self._shape_jac = tag.indices, tag.indptr, shape_jac
+        pattern = _jacobian_pattern(self._shape_t, self._offsets, format)
+        self._take, self._indices, self._indptr, self._shape_jac = pattern
 
         # boundary faces and the interior faces next to them, as flat face indices
-        f_t = np.arange(math.prod(self._shape_f_t)).reshape(self._shape_f_t)
-        self._faces_left, self._faces_right = f_t[:, 0, :], f_t[:, n1, :]
-        if n1 > 1:
-            self._faces_second, self._faces_penult = f_t[:, 1, :], f_t[:, n1 - 1, :]
+        faces = _boundary_faces(self._shape_f_t, n1)
+        self._faces_left, self._faces_right = faces.left, faces.right
+        self._faces_second, self._faces_penult = faces.second, faces.penult
 
     def _build_boundary_stencils(self, x_f, x_c):
         """Precompute the boundary-face bands and the normalised interior positions."""
