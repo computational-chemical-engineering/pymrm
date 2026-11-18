@@ -1491,6 +1491,20 @@ def _continuation_predictions(path_p, path_x, p):
     yield path_x[-1].copy(), False
 
 
+class _Correction(NamedTuple):
+    """One corrector attempt at a sub-step: the newton result (None below round-off), whether it
+    jumped to another branch, and whether its prediction was a secant within the bound."""
+
+    res: object
+    jumped: bool
+    bounded: bool
+
+    @property
+    def ok(self):
+        """Whether the sub-step is accepted: converged without a jump."""
+        return self.res is not None and self.res.success and not self.jumped
+
+
 class _Continuation:
     """One :func:`continuation` run: the path of solutions and those at the requested values."""
 
@@ -1522,16 +1536,16 @@ class _Continuation:
         return False
 
     def correct(self, p):
-        """Newton at ``p`` from each prediction in turn: ``(res, jumped, bounded)``."""
-        res, jumped, bounded = None, False, False
-        if p != self.path_p[-1]:            # else the sub-step is below round-off
-            function, options = self.function, self.options
-            for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
-                res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
-                jumped = self._jumped(res, guess)
-                if res.success and not jumped:
-                    break
-        return res, jumped, bounded
+        """Newton at ``p`` from each prediction in turn: the last :class:`_Correction`."""
+        correction = _Correction(None, False, False)
+        if p == self.path_p[-1]:            # the sub-step is below round-off
+            return correction
+        for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
+            res = _attempt(lambda xv, _p=p: self.function(xv, _p), guess, (), self.options)
+            correction = _Correction(res, self._jumped(res, guess), bounded)
+            if correction.ok:
+                break
+        return correction
 
     def _accept(self, p, res, target):
         """Add the solution at ``p`` to the path; whether it is the one at ``target``."""
@@ -1564,25 +1578,33 @@ class _Continuation:
         level = 0
         p = target
         while True:
-            res, jumped, bounded = self.correct(p)
-            if res is not None and res.success and not jumped:
-                if self._accept(p, res, target):
-                    return None
-                level = max(level - 1, 0)
-                h = step * 0.5**level
-                p = target if abs(target - p) <= abs(h) else p + h
+            correction = self.correct(p)
+            if not correction.ok:
+                # Halve until the sub-step is shorter than the one that failed: a
+                # failure at the capped last sub-step would otherwise be retried
+                # with the same prediction.
+                level = self._halved(level, step, abs(p - path_p[-1]))
+                if level > max_halvings or correction.res is None:
+                    return self._stopped(target, correction)
+                p = path_p[-1] + step * 0.5**level
                 continue
-            # Halve until the sub-step is shorter than the one that failed: a
-            # failure at the capped last sub-step would otherwise be retried
-            # with the same prediction.
-            level = self._halved(level, step, abs(p - path_p[-1]))
-            if level > max_halvings or res is None:
-                why = _continuation_failure(res, jumped, bounded)
-                return OptimizeResult(
-                    x=self.path_x[-1], success=False, params=self.done, xs=self.xs,
-                    results=self.results, last_param=path_p[-1],
-                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
-            p = path_p[-1] + step * 0.5**level
+            if self._accept(p, correction.res, target):
+                return None
+            level = max(level - 1, 0)
+            p = _capped(p, step * 0.5**level, target)
+
+    def _stopped(self, target, correction):
+        """The failure result of a march stopped on the way to ``target``."""
+        why = _continuation_failure(correction.res, correction.jumped, correction.bounded)
+        return OptimizeResult(
+            x=self.path_x[-1], success=False, params=self.done, xs=self.xs,
+            results=self.results, last_param=self.path_p[-1],
+            message=f"stopped at p = {self.path_p[-1]:g} on the way to {target:g}: {why}")
+
+
+def _capped(p, h, target):
+    """The next sub-step value ``p + h``, or ``target`` when it is at most ``h`` away."""
+    return target if abs(target - p) <= abs(h) else p + h
 
 
 def _continuation_failure(res, jumped, bounded):
