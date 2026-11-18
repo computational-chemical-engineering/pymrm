@@ -235,6 +235,33 @@ def _box_extent(index, parent, parent_shape):
     return starts, shape
 
 
+def _padded_index(index, parent, parent_shape):
+    """``index`` as a tuple with one entry per axis of the parent domain."""
+    index = index if isinstance(index, tuple) else (index,)
+    if len(index) > len(parent_shape):
+        raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
+    return index + (slice(None),) * (len(parent_shape) - len(index))
+
+
+def _flat_subdomain(parent_index, name, starts, shape):
+    """Local shape, offset and box of a subdomain in the region-major (flat) state."""
+    box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
+    flat = parent_index[box].ravel()
+    if np.any(np.diff(flat) != 1):
+        raise ValueError(
+            f"subdomain {name!r} is not contiguous in the region-major state; "
+            "with axis=None take a range along the first axis of the domain"
+        )
+    start = int(flat[0])
+    return (flat.size,), (start,), slice(start, start + flat.size)
+
+
+def _boxed_subdomain(parent_offset, starts, shape):
+    """Local shape, offset and box of a subdomain in a state concatenated along an axis."""
+    offset = tuple(o + s for o, s in zip(parent_offset, starts))
+    return shape, offset, tuple(slice(o, o + n) for o, n in zip(offset, shape))
+
+
 class _Placement(NamedTuple):
     """Where each domain sits in the state: axis, state shape, local shapes, offsets, boxes."""
 
@@ -447,26 +474,14 @@ class BlockLayout:
         if name in self.shapes:
             raise ValueError(f"name {name!r} is already used")
         parent_shape = self.shapes[parent]
-        index = index if isinstance(index, tuple) else (index,)
-        if len(index) > len(parent_shape):
-            raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
-        index = index + (slice(None),) * (len(parent_shape) - len(index))
+        index = _padded_index(index, parent, parent_shape)
         starts, shape = _box_extent(index, parent, parent_shape)
         if self.axis is None:
-            box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
-            flat = self.index(parent)[box].ravel()
-            if np.any(np.diff(flat) != 1):
-                raise ValueError(
-                    f"subdomain {name!r} is not contiguous in the region-major state; "
-                    "with axis=None take a range along the first axis of the domain"
-                )
-            start = int(flat[0])
-            self._local[name], self._offset[name] = (flat.size,), (start,)
-            self._box[name] = slice(start, start + flat.size)
+            local, offset, box = _flat_subdomain(self.index(parent), name, starts, shape)
         else:
-            offset = tuple(o + s for o, s in zip(self._offset[parent], starts))
-            self._local[name], self._offset[name] = shape, offset
-            self._box[name] = tuple(slice(o, o + n) for o, n in zip(offset, shape))
+            local, offset, box = _boxed_subdomain(self._offset[parent], starts, shape)
+        self._local[name], self._offset[name] = local, offset
+        self._box[name] = box
         self.shapes[name] = shape
         self._sizes[name] = math.prod(shape)
 
