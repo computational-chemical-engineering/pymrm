@@ -127,11 +127,11 @@ class _LinearSolver:
     # keyword arguments of scipy.sparse.linalg.splu
     _SPLU_KEYS = ("permc_spec", "diag_pivot_thresh", "relax", "panel_size", "options")
 
-    def __init__(self, solver, kwargs, row_scaling, legacy=False):
+    def __init__(self, solver, kwargs, row_scaling):
         self.kwargs = dict(kwargs or {})
         self.row_scaling = row_scaling
-        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit
-        self.legacy = legacy and not row_scaling
+        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit (newton sets it)
+        self.legacy = False
         self.kind = _solver_kind(solver)
         self.solver = solver
         self.splu_kwargs = {}
@@ -641,7 +641,7 @@ class _NewtonRun:
             jac = jac.tocsc()      # lil, dok: no .data array of the stored values
         return _Eval(g_raw, g_flat, jac)
 
-    def evaluate(self, xv, guard, last=False):
+    def evaluate(self, xv, guard, last):
         """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
         ev = self._evaluate(xv, guard, last)
         if ev is None or not _is_finite(ev):
@@ -786,7 +786,7 @@ class _NewtonRun:
         if s.last_it:
             # plain Newton does not evaluate after its last step
             return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
-        ev_new = self.evaluate(self.x, guard=False)
+        ev_new = self.evaluate(self.x, guard=False, last=False)
         if ev_new is None:
             return self.finish(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
         return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
@@ -1237,8 +1237,6 @@ def newton(
     with np.errstate(invalid="ignore"):
         x0_size = float(np.nanmax(np.abs(x_flat))) if n and np.any(np.isfinite(x_flat)) else 0.0
 
-    if lin_solver_kwargs is None:
-        lin_solver_kwargs = {}
     lin = _LinearSolver(solver, lin_solver_kwargs, row_scaling)
 
     mode = _damping_mode(damping, callback, lin)
