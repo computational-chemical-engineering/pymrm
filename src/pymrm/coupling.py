@@ -79,87 +79,53 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
 
 
-def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """Internal CSC implementation for :func:`update_csc_array_indices`."""
-    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
+def _update_compressed_indices(sparse_mat, parsed, major):
+    """Re-embed a compressed sparse matrix; ``major`` is 0 for CSR and 1 for CSC."""
+    shape, new_shape, offset = parsed
+    minor = 1 - major
 
     # Extract matrix data and original indices
     data = sparse_mat.data
-    row_indices = sparse_mat.indices  # Row indices (modifiable)
-    col_pointers = sparse_mat.indptr  # Column pointers
-    num_rows = sparse_mat.shape[0]  # Number of rows in the original matrix
-    num_cols = sparse_mat.shape[1]  # Number of columns in the original matrix
+    indices = sparse_mat.indices
+    pointers = sparse_mat.indptr
+    n_major = sparse_mat.shape[major]
+    n_minor = sparse_mat.shape[minor]
 
-    # Generate original linear row and column indices
-    original_linear_rows = row_indices
-    original_linear_cols = np.arange(num_cols)  # Columns as a sequential array
-
-    if (shape[0] is None) or (new_shape[0] is None):
-        new_row_indices = original_linear_rows
+    if (shape[minor] is None) or (new_shape[minor] is None):
+        new_indices = indices
     else:
-        new_row_indices = translate_indices_to_larger_array(
-            original_linear_rows, shape[0], new_shape[0], offset[0]
+        new_indices = translate_indices_to_larger_array(
+            indices, shape[minor], new_shape[minor], offset[minor]
         )
-        num_rows = np.prod(new_shape[0])
+        n_minor = math.prod(new_shape[minor])
 
-    if (shape[1] is None) or (new_shape[1] is None):
-        new_col_pointers = col_pointers
+    if (shape[major] is None) or (new_shape[major] is None):
+        new_pointers = pointers
     else:
-        new_col_indices = translate_indices_to_larger_array(
-            original_linear_cols, shape[1], new_shape[1], offset[1]
+        new_major = translate_indices_to_larger_array(
+            np.arange(n_major), shape[major], new_shape[major], offset[major]
         )
-        num_cols = math.prod(new_shape[1])
-        new_col_pointers = np.zeros(num_cols + 1, dtype=int)
-        new_col_pointers[new_col_indices + 1] = np.diff(col_pointers)
-        new_col_pointers = np.cumsum(new_col_pointers)
+        n_major = math.prod(new_shape[major])
+        new_pointers = np.zeros(n_major + 1, dtype=int)
+        new_pointers[new_major + 1] = np.diff(pointers)
+        new_pointers = np.cumsum(new_pointers)
 
     # Create a new sparse matrix with the corrected 2D shape
-    updated_mat = csc_array(
-        (data, new_row_indices, new_col_pointers), shape=(num_rows, num_cols)
-    )
+    array_cls = (csr_array, csc_array)[major]
+    dims = (n_major, n_minor) if major == 0 else (n_minor, n_major)
+    return array_cls((data, new_indices, new_pointers), shape=dims)
 
-    return updated_mat
+
+def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
+    """Internal CSC implementation for :func:`update_csc_array_indices`."""
+    parsed = _parse_shape_offset(shape, new_shape, offset)
+    return _update_compressed_indices(sparse_mat, parsed, 1)
 
 
 def update_csr_array_indices(sparse_mat, shape, new_shape, offset=None):
     """Update CSR matrix row/column indexing for embedding in a larger domain."""
-    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
-
-    # Extract matrix data and original indices
-    data = sparse_mat.data
-    col_indices = sparse_mat.indices    # Column indices
-    row_pointers = sparse_mat.indptr    # Row pointers
-    num_rows = sparse_mat.shape[0]
-    num_cols = sparse_mat.shape[1]
-
-    original_linear_cols = col_indices
-    original_linear_rows = np.arange(num_rows)
-
-    if (shape[1] is None) or (new_shape[1] is None):
-        new_col_indices = original_linear_cols
-    else:
-        new_col_indices = translate_indices_to_larger_array(
-            original_linear_cols, shape[1], new_shape[1], offset[1]
-        )
-        num_cols = math.prod(new_shape[1])
-
-    if (shape[0] is None) or (new_shape[0] is None):
-        new_row_pointers = row_pointers
-    else:
-        new_row_indices = translate_indices_to_larger_array(
-            original_linear_rows, shape[0], new_shape[0], offset[0]
-        )
-        num_rows = math.prod(new_shape[0])
-        new_row_pointers = np.zeros(num_rows + 1, dtype=int)
-        new_row_pointers[new_row_indices + 1] = np.diff(row_pointers)
-        new_row_pointers = np.cumsum(new_row_pointers)
-
-    # Create a new sparse matrix with the corrected 2D shape
-    updated_mat = csr_array(
-        (data, new_col_indices, new_row_pointers), shape=(num_rows, num_cols)
-    )
-
-    return updated_mat
+    parsed = _parse_shape_offset(shape, new_shape, offset)
+    return _update_compressed_indices(sparse_mat, parsed, 0)
 
 
 def update_array_indices(sparse_mat, shape, new_shape, offset=None):
