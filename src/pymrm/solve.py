@@ -719,11 +719,11 @@ class _NewtonRun:
             out = self._plain_step(s) if self.mode == "none" else self._damped_step(s, carry, it)
             if isinstance(out, OptimizeResult):
                 return out
-            carry = out
             # Report the iteration and update the stagnation window.
             if self.verbose:
-                print(f"newton it={it:3d} |dx|={carry.step_inf:.3e} lam={carry.lam:.3g} "
-                      f"theta={carry.theta:.3g} clipped={carry.clipped} nfev={self.nfev}")
+                print(f"newton it={it:3d} |dx|={out.step_inf:.3e} lam={out.lam:.3g} "
+                      f"theta={out.theta:.3g} clipped={out.clipped} nfev={self.nfev}")
+            carry = out
             _slide(window, s, self.use_stagnation)
         return self._exhausted(carry)
 
