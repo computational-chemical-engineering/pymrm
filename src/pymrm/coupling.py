@@ -601,6 +601,19 @@ class BlockLayout:
             format=format,
         )
 
+    def _block_side(self, block, side, name):
+        """Local shape and offset of domain ``name`` on one side of ``block`` (0 rows, 1 columns)."""
+        if name is None:
+            return None, None
+        self._check_name(name)
+        n = self._sizes[name]
+        if block.shape[side] != n:
+            kind = "rows" if side == 0 else "columns"
+            raise ValueError(
+                f"block has {block.shape[side]} {kind}, domain {name!r} has {n} unknowns"
+            )
+        return self._local[name], self._offset[name]
+
     def place(self, block, rows, cols):
         """Embed a domain-by-domain block into the full system.
 
@@ -632,19 +645,7 @@ class BlockLayout:
         KeyError
             If a name is unknown.
         """
-        sides = []
-        for side, name in ((0, rows), (1, cols)):
-            if name is None:
-                sides.append((None, None))
-                continue
-            self._check_name(name)
-            n = self._sizes[name]
-            if block.shape[side] != n:
-                kind = "rows" if side == 0 else "columns"
-                raise ValueError(
-                    f"block has {block.shape[side]} {kind}, domain {name!r} has {n} unknowns"
-                )
-            sides.append((self._local[name], self._offset[name]))
+        sides = [self._block_side(block, side, name) for side, name in ((0, rows), (1, cols))]
         (shape_r, offset_r), (shape_c, offset_c) = sides
         # Always pass explicit (rows, cols) pairs: an all-integer tuple would be
         # read as "same for rows and columns". The CSR/CSC pointer rebuild in
