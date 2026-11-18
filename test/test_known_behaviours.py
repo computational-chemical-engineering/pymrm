@@ -109,3 +109,19 @@ def test_newton_dia_array_jacobian_matches_csc(damping):
     result = newton(_cubic_chain(dia_array), x0, damping=damping)
     assert expected.status == result.status == 0
     np.testing.assert_allclose(result.x, expected.x, rtol=1e-12)
+
+
+def test_newton_dense_splu_key_raises_without_damping_and_works_when_guarded():
+    """maintainer-note-c2 item 5: a splu key in lin_solver_kwargs on a dense Jacobian.
+
+    With damping="none" the key reaches the dense solver and raises TypeError, with damping="guarded" the
+    solve succeeds. Neither case warns. Pins current behaviour; a deliberate change updates this test.
+    """
+    def function(x):
+        return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), _TRIDIAGONAL + np.diag(3 * x**2)
+
+    kwargs = {"permc_spec": "NATURAL"}
+    with pytest.raises(TypeError):
+        newton(function, np.ones(3), damping="none", lin_solver_kwargs=kwargs)
+    result = newton(function, np.ones(3), damping="guarded", lin_solver_kwargs=kwargs)
+    assert result.status == 0
