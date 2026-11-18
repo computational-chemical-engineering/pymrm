@@ -407,6 +407,44 @@ def group_columns_by_non_overlap_numba(indptr, indices):
     return g, groupnum
 
 
+class _Pattern(NamedTuple):
+    """Boolean sparsity pattern ``matrix`` and whether a symmetric reordering applies to it."""
+
+    matrix: csc_array
+    reorderable: bool
+
+
+def _boolean_pattern(args, shape):
+    """The boolean ``csc_array`` pattern of ``colgroup`` input: a sparse array or ``(rows, cols)`` arrays."""
+    if isinstance(args[0], sparray):
+        S = csc_array(args[0])
+        return _Pattern(csc_array((S.data != 0, S.indices, S.indptr), shape=S.shape), True)
+    if isinstance(args[0], np.ndarray) and isinstance(args[1], np.ndarray):
+        rows = args[0]
+        cols = args[1]
+        data = np.ones(rows.shape, dtype=np.bool_)
+        T = csc_array((data, (rows, cols)), shape=shape)
+        return _Pattern(T, shape[0] == shape[1])
+    raise ValueError(
+        "Input should be a sparse array, or two ndarrays containing row and col indices"
+    )
+
+
+def _reordered_groups(T, g, num_groups):
+    """Column groups of ``T`` after a reverse Cuthill-McKee ordering, if that needs fewer groups."""
+    # Form the reverse column minimum-degree ordering.
+    p = reverse_cuthill_mckee(T)
+    p = p[::-1]
+    T = T[:, p]
+    TT = T.transpose() @ T
+    g2, num_groups2 = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
+    # Use whichever packing required fewer groups.
+    if num_groups2 < num_groups:
+        q = np.argsort(p)
+        return g2[q], num_groups2
+    return g, num_groups
+
+
 def colgroup(*args, shape=None, try_reorder=True):
     """Group structurally independent columns for simultaneous perturbations.
 
@@ -425,36 +463,15 @@ def colgroup(*args, shape=None, try_reorder=True):
     tuple[numpy.ndarray, int]
         Column group labels and the number of groups.
     """
-    if isinstance(args[0], sparray):
-        S = csc_array(args[0])
-        T = csc_array((S.data != 0, S.indices, S.indptr), shape=S.shape)
-    elif isinstance(args[0], np.ndarray) and isinstance(args[1], np.ndarray):
-        rows = args[0]
-        cols = args[1]
-        data = np.ones(rows.shape, dtype=np.bool_)
-        T = csc_array((data, (rows, cols)), shape=shape)
-        if shape[0] != shape[1]:
-            try_reorder = False
-    else:
-        raise ValueError(
-            "Input should be a sparse array, or two ndarrays containing row and col indices"
-        )
+    pattern = _boolean_pattern(args, shape)
+    T = pattern.matrix
+    try_reorder = try_reorder and pattern.reorderable
 
     TT = T.transpose() @ T
     g, num_groups = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
 
     if try_reorder and num_groups > 1:
-        # Form the reverse column minimum-degree ordering.
-        p = reverse_cuthill_mckee(T)
-        p = p[::-1]
-        T = T[:, p]
-        TT = T.transpose() @ T
-        g2, num_groups2 = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
-        # Use whichever packing required fewer groups.
-        if num_groups2 < num_groups:
-            q = np.argsort(p)
-            g = g2[q]
-            num_groups = num_groups2
+        g, num_groups = _reordered_groups(T, g, num_groups)
 
     return g, num_groups
 
