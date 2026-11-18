@@ -3,7 +3,7 @@
 import warnings
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import numpy as np
 from scipy import sparse
@@ -1286,10 +1286,10 @@ class _March(NamedTuple):
     x: np.ndarray
     dt: float
     history: list
-    g_norm: float = None       # residual norm at x
-    g_prev: float = None       # residual norm before the last pseudo-time step
-    g_attempt: float = None    # residual norm at the last steady attempt
-    steady: object = None      # the last steady newton result
+    g_norm: Optional[float] = None       # residual norm at x
+    g_prev: Optional[float] = None       # residual norm before the last pseudo-time step
+    g_attempt: Optional[float] = None    # residual norm at the last steady attempt
+    steady_result: object = None      # the last steady newton result
 
 
 class _Stage(NamedTuple):
@@ -1316,8 +1316,9 @@ class _PseudoTransient:
     verbose: object
 
     def result(self, success, message, nsteps, s):
-        xr = s.steady.x if (success and s.steady is not None) else s.x
-        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps, history=s.history, steady=s.steady)
+        xr = s.steady_result.x if (success and s.steady_result is not None) else s.x
+        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps, history=s.history,
+                              steady=s.steady_result)
 
     def march(self, x, dt):
         """Pseudo-time steps from ``x`` with steady Newton attempts; the result of :func:`pseudo_transient`."""
@@ -1344,8 +1345,8 @@ class _PseudoTransient:
             return _Stage(self.result(False, "non-finite residual during the pseudo-time march", step, s), s)
         if not self._steady_due(step, s.g_norm, s.g_attempt):
             return _Stage(None, s)
-        s = s._replace(g_attempt=s.g_norm, steady=_attempt(self.function, s.x, self.args, self.steady))
-        if s.steady.success:
+        s = s._replace(g_attempt=s.g_norm, steady_result=_attempt(self.function, s.x, self.args, self.steady))
+        if s.steady_result.success:
             return _Stage(self.result(True, f"Converged by the steady Newton solve after {step} "
                                       "pseudo-time steps", step, s), s)
         return _Stage(None, s)
