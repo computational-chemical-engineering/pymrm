@@ -467,6 +467,16 @@ def colgroup(*args, shape=None, try_reorder=True):
 DENSE_1D_WARNING_SIZE = 100
 
 
+def _normalise_axes(axes, name, ndims):
+    """Sorted unique ``axes`` taken modulo ``ndims``; an axis outside ``-ndims <= axis < ndims`` raises."""
+    out = []
+    for axis in axes:
+        if not -ndims <= axis < ndims:
+            raise ValueError(f"{name}: axis {axis} out of range for ndims={ndims}")
+        out.append(axis % ndims)
+    return sorted(set(out))
+
+
 def stencil_block_diagonals(
     ndims=1, axes_diagonals=(), axes_blocks=None, periodic_axes=()
 ):
@@ -499,20 +509,12 @@ def stencil_block_diagonals(
     Jacobian stays exact.
     """
 
-    def _normalise(axes, name):
-        out = []
-        for axis in axes:
-            if not -ndims <= axis < ndims:
-                raise ValueError(f"{name}: axis {axis} out of range for ndims={ndims}")
-            out.append(axis % ndims)
-        return sorted(set(out))
-
-    diagonals = _normalise(axes_diagonals, "axes_diagonals")
-    periodic = _normalise(periodic_axes, "periodic_axes")
+    diagonals = _normalise_axes(axes_diagonals, "axes_diagonals", ndims)
+    periodic = _normalise_axes(periodic_axes, "periodic_axes", ndims)
     if axes_blocks is None:
         blocks = [] if (ndims == 1 and 0 in diagonals) else [ndims - 1]
     else:
-        blocks = _normalise(axes_blocks, "axes_blocks")
+        blocks = _normalise_axes(axes_blocks, "axes_blocks", ndims)
 
     dep_block = ndims * [0]
     for axis in blocks:
