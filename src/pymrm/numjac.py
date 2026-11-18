@@ -1,6 +1,7 @@
 """Numerical Jacobian construction with sparse stencil support."""
 
 import warnings
+from typing import NamedTuple
 
 import numpy as np
 from scipy.sparse import csc_array, csr_array, sparray
@@ -274,6 +275,42 @@ def iterate_over_entries(
     return current_idx
 
 
+class _Extent(NamedTuple):
+    """Relative extent of one dependency: ``shape_rel`` and the start positions in input and output."""
+
+    shape_rel: np.ndarray
+    idx_in: np.ndarray
+    idx_out: np.ndarray
+
+
+def _dependency_extent(dep, shape_in, shape_out):
+    """The ``_Extent`` of one expanded dependency, relative axes clipped at zero."""
+    idx_in, idx_out, fixed_axes, periodic_axes = dep
+    # Adjust idx_out and idx_in so that one of them starts at zero for relative indexing
+    # This reduces complexity when computing final positions.
+    idx_out_arr = np.maximum(-np.array(idx_in, dtype=np.int64), 0)
+    idx_in_arr = np.maximum(np.array(idx_in, dtype=np.int64), 0)
+    shape_rel = np.minimum(shape_in - idx_in_arr, shape_out - idx_out_arr)
+    for d in fixed_axes:
+        shape_rel[d] = 1
+        idx_out_arr[d] = idx_out[d]
+    for d in periodic_axes:
+        shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
+    return _Extent(np.maximum(shape_rel, 0), idx_in_arr, idx_out_arr)
+
+
+def _unique_pairs(primary, secondary):
+    """Unique ``(primary, secondary)`` pairs sorted by ``primary`` then ``secondary``, as two arrays."""
+    sorted_idx = np.unique(
+        np.concatenate(
+            (primary.reshape((1, -1)), secondary.reshape((1, -1))),
+            axis=0,
+        ),
+        axis=1,
+    )
+    return sorted_idx[0, :], sorted_idx[1, :]
+
+
 def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     """
     Generate row and column indices for the sparse matrix representation of a stencil pattern.
@@ -303,43 +340,17 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
             "Input and output shapes must have the same number of dimensions."
         )
 
-    # Estimate total number of non-zero elements needed
-    total_elements = 0
-    for dep in dependencies:
-        idx_in, idx_out, fixed_axes, periodic_axes = dep
-        idx_in_arr = np.array(idx_in, dtype=np.int64)
-        shape_rel = np.minimum(
-            shape_in + np.minimum(-idx_in_arr, 0), shape_out + np.minimum(idx_in_arr, 0)
-        )
-        for d in fixed_axes:
-            shape_rel[d] = 1
-        for d in periodic_axes:
-            shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
-        shape_rel = np.maximum(shape_rel, 0)
-        total_elements += np.prod(shape_rel)
+    extents = [_dependency_extent(dep, shape_in, shape_out) for dep in dependencies]
 
     # Preallocate arrays for row and col indices
+    total_elements = 0
+    for shape_rel, _, _ in extents:
+        total_elements += np.prod(shape_rel)
     row_indices = np.empty(total_elements, dtype=np.int64)
     col_indices = np.empty(total_elements, dtype=np.int64)
 
     entry_index = 0
-    for dep in dependencies:
-        idx_in, idx_out, fixed_axes, periodic_axes = dep
-        idx_in_arr = np.array(idx_in, dtype=np.int64)
-
-        # Adjust shape_rel for periodic and fixed axes
-        # Adjust idx_out and idx_in so that one of them starts at zero for relative indexing
-        # This reduces complexity when computing final positions.
-        idx_out_arr = np.maximum(-idx_in_arr, 0)
-        idx_in_arr = np.maximum(idx_in_arr, 0)
-        shape_rel = np.minimum(shape_in - idx_in_arr, shape_out - idx_out_arr)
-        for d in fixed_axes:
-            shape_rel[d] = 1
-            idx_out_arr[d] = idx_out[d]
-        for d in periodic_axes:
-            shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
-        shape_rel = np.maximum(shape_rel, 0)
-
+    for shape_rel, idx_in_arr, idx_out_arr in extents:
         # Fill row and col indices using the helper
         entry_index = iterate_over_entries(
             shape_in,
@@ -357,26 +368,10 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     # already in compressed-format order.
     if format == "csr":
         # Row-major: sort by (row, col) — optimal for CSR
-        sorted_idx = np.unique(
-            np.concatenate(
-                (row_indices.reshape((1, -1)), col_indices.reshape((1, -1))),
-                axis=0,
-            ),
-            axis=1,
-        )
-        row_indices = sorted_idx[0, :]
-        col_indices = sorted_idx[1, :]
+        row_indices, col_indices = _unique_pairs(row_indices, col_indices)
     else:
         # Column-major: sort by (col, row) — optimal for CSC (default)
-        sorted_idx = np.unique(
-            np.concatenate(
-                (col_indices.reshape((1, -1)), row_indices.reshape((1, -1))),
-                axis=0,
-            ),
-            axis=1,
-        )
-        col_indices = sorted_idx[0, :]
-        row_indices = sorted_idx[1, :]
+        col_indices, row_indices = _unique_pairs(col_indices, row_indices)
 
     return row_indices, col_indices
 
