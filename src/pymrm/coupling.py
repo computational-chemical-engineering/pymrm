@@ -257,8 +257,8 @@ def _flat_placement(sizes):
     return _Placement(None, (sum(sizes.values()),), local, offset, box)
 
 
-def _axis_placement(shapes, axis):
-    """Place the domains one after another along ``axis`` (all other axes shared)."""
+def _normalised_axis(shapes, axis):
+    """Common number of dimensions of the domains and ``axis`` as a non-negative int."""
     ndims = {len(shape) for shape in shapes.values()}
     if len(ndims) != 1:
         raise ValueError(
@@ -268,15 +268,26 @@ def _axis_placement(shapes, axis):
     ndim = ndims.pop()
     if not isinstance(axis, numbers.Integral) or not -ndim <= axis < ndim:
         raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
-    axis = int(axis) % ndim
-    first = next(iter(shapes.values()))
-    _check_shared_axes(shapes, first, axis)
+    return ndim, int(axis) % ndim
+
+
+def _stack_along_axis(shapes, ndim, axis):
+    """Offsets and boxes of the domains stacked along ``axis``, and the stacked length."""
     offset, box = {}, {}
     start = 0
     for name, shape in shapes.items():
         offset[name] = tuple(start if i == axis else 0 for i in range(ndim))
         box[name] = tuple(slice(o, o + s) for o, s in zip(offset[name], shape))
         start += shape[axis]
+    return offset, box, start
+
+
+def _axis_placement(shapes, axis):
+    """Place the domains one after another along ``axis`` (all other axes shared)."""
+    ndim, axis = _normalised_axis(shapes, axis)
+    first = next(iter(shapes.values()))
+    _check_shared_axes(shapes, first, axis)
+    offset, box, start = _stack_along_axis(shapes, ndim, axis)
     state_shape = tuple(start if i == axis else s for i, s in enumerate(first))
     return _Placement(axis, state_shape, dict(shapes), offset, box)
 
