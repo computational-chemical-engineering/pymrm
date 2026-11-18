@@ -3,12 +3,15 @@
 A pin asserts today's behaviour. An xfail asserts the correct behaviour and fails today, so
 that a fix flips it.
 """
+import re
+
 import numpy as np
 import pytest
 from scipy.sparse import csc_array, dia_array
 from scipy.sparse.linalg import splu
 
-from pymrm import NumJac
+import pymrm.solve
+from pymrm import NumJac, pseudo_transient
 from pymrm.solve import _Bounds, newton
 
 
@@ -166,3 +169,26 @@ def test_bounds_commit_marks_a_component_that_project_did_not_hold():
     assert bounds.project(trial, x, dx) == 0
     bounds.commit(x, trial, dx)
     assert bounds.held.tolist() == [True]
+
+
+def test_pseudo_transient_failure_message_reports_a_dt_below_every_dt_tried(monkeypatch):
+    """maintainer-note-c2 item 8: the failure message names a dt below the smallest dt tried.
+
+    The march shrinks dt by 4 after each failed try and reports the shrunk value after the last one.
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    tried = []
+    original = pymrm.solve._transient_residual
+
+    def spy(function, mass_matrix, x_old, dt):
+        tried.append(dt)
+        return original(function, mass_matrix, x_old, dt)
+
+    monkeypatch.setattr(pymrm.solve, "_transient_residual", spy)
+    result = pseudo_transient(lambda x: (np.ones(1), csc_array([[1.0]])), np.ones(1), dt=1e-3,
+                              newton_kwargs={"tol": 0.0, "maxfev": 2})
+    assert not result.success
+    reported = float(re.search(r"failed down to dt = (\S+)", result.message).group(1))
+    assert len(tried) > 1
+    assert reported < min(tried)
+    assert min(tried) / reported == pytest.approx(4.0, rel=1e-2)
