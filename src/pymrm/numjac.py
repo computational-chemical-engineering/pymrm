@@ -12,6 +12,21 @@ def _slice_to_list(slc, dim_size):
     return list(range(*slc.indices(dim_size)))
 
 
+def _expand_axis_element(v, dim_size):
+    """Expand one element of a list axis specification (int, slice or range) to a list of ints."""
+    if isinstance(v, int):
+        return [v]
+    if isinstance(v, slice):
+        return _slice_to_list(v, dim_size)
+    if isinstance(v, range):
+        return list(v)
+    raise ValueError(
+        "Unsupported element in list for axis expansion: {}".format(
+            type(v)
+        )
+    )
+
+
 def _expand_axis(axis_val, dim_size):
     """
     Expand a single axis value which could be:
@@ -30,18 +45,7 @@ def _expand_axis(axis_val, dim_size):
         # Could be a list of integers or slices
         expanded_list = []
         for v in axis_val:
-            if isinstance(v, int):
-                expanded_list.append(v)
-            elif isinstance(v, slice):
-                expanded_list.extend(_slice_to_list(v, dim_size))
-            elif isinstance(v, range):
-                expanded_list.extend(list(v))
-            else:
-                raise ValueError(
-                    "Unsupported element in list for axis expansion: {}".format(
-                        type(v)
-                    )
-                )
+            expanded_list.extend(_expand_axis_element(v, dim_size))
         return expanded_list
     elif isinstance(axis_val, range):
         return list(axis_val)
