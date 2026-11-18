@@ -647,7 +647,7 @@ class _NewtonRun:
         return _backward_error(g_flat, jac, self.x_flat,
                                _field_reference(self.x_flat, self.shape, self.d_user, self.x0_size))
 
-    def _outcome(self, status, end, extra):
+    def finish(self, status, end, extra=""):
         """The result of the run ending with ``status`` at ``end``."""
         ev = end.ev
         g_raw = None if ev is None else ev.g_raw
@@ -657,14 +657,13 @@ class _NewtonRun:
                               nit=len(self.history), nfev=self.nfev, nfact=self.nfact, fun=g_raw,
                               step_norm=end.step_norm, backward_error=end.be, history=self.history)
 
-    def finish(self, status, end, extra=""):
-        """The result of the run ending at ``end``, raised in a ``breakdown`` for the statuses 4, 5 and 6."""
-        result = self._outcome(status, end, extra)
-        if status in (_Status.NON_FINITE, _Status.SINGULAR, _Status.SOLVER_FAILED):
-            # No usable Newton step: raise, as these cases did up to 2.5.0
-            # (callers catch ValueError, LinAlgError or RuntimeError).
-            raise NewtonBreakdown(result.message, result)
-        return result
+    def _breakdown(self, status, end, extra, kind=NewtonBreakdown):
+        """The exception that ends a run without a usable Newton step (statuses 4, 5 and 6), with its result.
+
+        These raise, as they did up to 2.5.0 (callers catch ValueError, LinAlgError or RuntimeError).
+        """
+        result = self.finish(status, end, extra)
+        return kind(result.message, result)
 
     def solve(self, guard_guess):
         """Evaluate at the initial guess and iterate; the result of :func:`newton`."""
@@ -674,34 +673,13 @@ class _NewtonRun:
             try:
                 ev = self._evaluate(self.x, guard=False, last=False)
             except self.recoverable as exc:
-                return self.finish(_Status.NON_FINITE, _End(None, float("nan"), float("nan")),
-                                   f"{type(exc).__name__} at the initial guess ({exc})")
+                raise self._breakdown(_Status.NON_FINITE, _End(None, float("nan"), float("nan")),
+                                      f"{type(exc).__name__} at the initial guess ({exc})")
         else:
             ev = self._evaluate(self.x, guard=False, last=False)
         if not _is_finite(ev):
-            return self.finish(_Status.NON_FINITE, _End(ev, float("nan"), float("nan")), "at the initial guess")
+            raise self._breakdown(_Status.NON_FINITE, _End(ev, float("nan"), float("nan")), "at the initial guess")
         return self.iterate(ev)
-
-    def _newton_step(self, ev, step_inf):
-        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
-
-        A singular Jacobian, a failed linear solve or a non-finite step ends the
-        run: ``finish`` raises for the statuses 5 and 6.
-        """
-        g_raw, g, jac = ev
-        try:
-            solve, r = self.lin.factorize(jac)
-            self.nfact += 1
-            dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
-                            dtype=float).reshape(-1)
-        except _SingularJacobian as exc:
-            self.finish(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))     # raises
-        except _LinearSolverFailed as exc:
-            result = self._outcome(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc))
-            raise KrylovBreakdown(result.message, result)
-        if not np.isfinite(dx).all():
-            self.finish(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")     # raises
-        return solve, r, dx
 
     def iterate(self, ev):
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED, 1.0)
@@ -720,6 +698,26 @@ class _NewtonRun:
             _slide(window, s, self.use_stagnation)
         return self._exhausted(carry)
 
+    def _factorize(self, ev, step_inf):
+        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
+
+        A singular Jacobian (5), a failed linear solve or a non-finite step (6) raise a breakdown
+        reporting ``step_inf``, the last step norm.
+        """
+        g_raw, g, jac = ev
+        try:
+            solve, r = self.lin.factorize(jac)
+            self.nfact += 1
+            dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
+                            dtype=float).reshape(-1)
+        except _SingularJacobian as exc:
+            raise self._breakdown(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))
+        except _LinearSolverFailed as exc:
+            raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc), KrylovBreakdown)
+        if not np.isfinite(dx).all():
+            raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")
+        return solve, r, dx
+
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
         tol = self.tol
@@ -737,7 +735,7 @@ class _NewtonRun:
 
     def _newton_step_and_tests(self, ev, prev_step, last_it, window):
         """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
-        lin_solve, r, dx = self._newton_step(ev, prev_step)     # prev_step: the norm reported if it fails
+        lin_solve, r, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
         dy = dx / self.d
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
@@ -780,7 +778,7 @@ class _NewtonRun:
             return self._exhausted(_Carry(s.ev, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0))
         ev_new = self.evaluate(self.x, guard=False, last=False)
         if ev_new is None:
-            return self.finish(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
+            raise self._breakdown(_Status.NON_FINITE, _End(s.ev, step_inf, float("nan")), "after a full step")
         return _Carry(ev_new, step_inf, be, converged, t.clipped, t.lam, _UNTESTED, 1.0)
 
     def _take(self, s, t, theta):
@@ -956,8 +954,8 @@ class _NewtonRun:
         if self._take(s, t, found.theta):
             ev = self.evaluate(self.x, guard=True, last=s.last)
             if ev is None:
-                return self.finish(_Status.NON_FINITE, _End(t.ev, s.step_inf, float("nan")),
-                                   "after the callback or refresh")
+                raise self._breakdown(_Status.NON_FINITE, _End(t.ev, s.step_inf, float("nan")),
+                                      "after the callback or refresh")
         return _Carry(ev, s.step_inf, s.be, s.converged, t.clipped, t.lam, found.theta, found.lam_next)
 
     def _exhausted(self, carry):
