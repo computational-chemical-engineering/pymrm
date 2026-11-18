@@ -181,24 +181,34 @@ def _check_shared_axes(shapes, first, axis):
             )
 
 
+def _integer_slice(ix, dim):
+    """Unit slice of the integer ``ix`` (negative counts from the end), ``None`` if out of range."""
+    ix = int(ix) + (dim if ix < 0 else 0)
+    return slice(ix, ix + 1) if 0 <= ix < dim else None
+
+
+def _unit_step_extent(ix, dim):
+    """Start and length of the slice ``ix`` in an axis of length ``dim``, ``None`` unless a unit-step box."""
+    start, stop, step = ix.indices(dim)
+    return (start, stop - start) if step == 1 and stop > start else None
+
+
 def _box_extent(index, parent, parent_shape):
     """Start and shape of the unit-step box ``index`` in a domain of shape ``parent_shape``."""
     starts, shape = [], []
     for ix, dim in zip(index, parent_shape):
         if isinstance(ix, numbers.Integral):
-            ix = int(ix) + (dim if ix < 0 else 0)
-            if not 0 <= ix < dim:
+            ix = _integer_slice(ix, dim)
+            if ix is None:
                 raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
-            ix = slice(ix, ix + 1)
         if not isinstance(ix, slice):
             raise ValueError("a subdomain index holds integers and slices only")
-        start, stop, step = ix.indices(dim)
-        if step != 1 or stop <= start:
+        extent = _unit_step_extent(ix, dim)
+        if extent is None:
             raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
-        starts.append(start)
-        shape.append(stop - start)
-    shape = tuple(shape)
-    return starts, shape
+        starts.append(extent[0])
+        shape.append(extent[1])
+    return starts, tuple(shape)
 
 
 def _padded_index(index, parent, parent_shape):
