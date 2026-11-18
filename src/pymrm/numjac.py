@@ -139,9 +139,9 @@ def _expand_dependency(dep, shape_in, shape_out):
     out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
 
     return [
-        (idx_in, idx_out, fixed_axes, periodic_axes)
-        for idx_out in out_expanded
-        for idx_in in in_expanded
+        (each_in, each_out, fixed_axes, periodic_axes)
+        for each_out in out_expanded
+        for each_in in in_expanded
     ]
 
 
@@ -431,8 +431,8 @@ def _boolean_pattern(args, shape):
 
 
 def _reordered_groups(T, g, num_groups):
-    """Column groups of ``T`` after a reverse Cuthill-McKee ordering, if that needs fewer groups."""
-    # Form the reverse column minimum-degree ordering.
+    """Column groups of ``T`` after a Cuthill-McKee ordering, if that needs fewer groups."""
+    # scipy returns the reverse Cuthill-McKee order; reversing it gives the plain Cuthill-McKee order.
     p = reverse_cuthill_mckee(T)
     p = p[::-1]
     T = T[:, p]
@@ -479,7 +479,7 @@ def colgroup(*args, shape=None, try_reorder=True):
 DENSE_1D_WARNING_SIZE = 100
 
 
-def _normalise_axes(axes, name, ndims):
+def _normalize_axes(axes, name, ndims):
     """Sorted unique ``axes`` taken modulo ``ndims``; an axis outside ``-ndims <= axis < ndims`` raises."""
     out = []
     for axis in axes:
@@ -529,12 +529,12 @@ def stencil_block_diagonals(
     Jacobian stays exact.
     """
 
-    diagonals = _normalise_axes(axes_diagonals, "axes_diagonals", ndims)
-    periodic = _normalise_axes(periodic_axes, "periodic_axes", ndims)
+    diagonals = _normalize_axes(axes_diagonals, "axes_diagonals", ndims)
+    periodic = _normalize_axes(periodic_axes, "periodic_axes", ndims)
     if axes_blocks is None:
         blocks = [] if (ndims == 1 and 0 in diagonals) else [ndims - 1]
     else:
-        blocks = _normalise_axes(axes_blocks, "axes_blocks", ndims)
+        blocks = _normalize_axes(axes_blocks, "axes_blocks", ndims)
 
     dep_block = _block_pattern(ndims, blocks)
     band_axes = [axis for axis in diagonals if axis not in blocks]
