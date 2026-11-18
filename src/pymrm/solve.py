@@ -257,10 +257,7 @@ class _Bounds:
         self.lo_mask = None if lower is None else np.isfinite(lower)
         self.hi_mask = None if upper is None else np.isfinite(upper)
         self.held = None     # components a bound held in the last accepted step
-
-    @property
-    def active(self):
-        return self.lower is not None or self.upper is not None
+        self.active = lower is not None or upper is not None
 
     def enforce_initial(self, x):
         """Project an initial guess into the bounds, with a warning."""
