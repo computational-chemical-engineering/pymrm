@@ -353,14 +353,14 @@ def _field_reference(x, shape, scale, x0_size=0.0):
     if scale is not None:
         return np.abs(scale)
     ax = np.abs(x).reshape(shape)
-    largest = float(np.max(ax)) if x.size else 0.0
+    largest = float(ax.max()) if x.size else 0.0
     # The initial guess carries the problem's scale when the solution is ~0.
     floor = _GLOBAL_FLOOR * max(largest, x0_size)
     if len(shape) >= 2:
         # The floor also keeps a single-field state stored without a field
         # axis, (nz, nr), from being judged column by column; a trace field is
         # still judged far below its neighbours.
-        ref = np.maximum(np.max(ax.reshape(-1, shape[-1]), axis=0), floor)
+        ref = np.maximum(ax.reshape(-1, shape[-1]).max(axis=0), floor)
         return np.broadcast_to(ref, shape).reshape(-1)
     return np.full(x.size, max(largest, floor))
 
