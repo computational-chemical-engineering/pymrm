@@ -1522,7 +1522,7 @@ class _ContinuationSettings(NamedTuple):
     """The options of one :func:`continuation` run: newton's, and its own."""
 
     options: dict
-    max_change: object
+    max_change: Optional[float]
     max_halvings: int
     verbose: object
 
@@ -1729,7 +1729,8 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                               last_param=None,
                               message=f"no solution at the first value {params[0]:g}: "
                                       f"{first.message}")
-    run = _Continuation(function, _ContinuationSettings(options, max_change, max_halvings, verbose), params[0], first)
+    settings = _ContinuationSettings(options=options, max_change=max_change, max_halvings=max_halvings, verbose=verbose)
+    run = _Continuation(function, settings, params[0], first)
     return run.march(params[1:])
 
 
@@ -1752,12 +1753,12 @@ def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
         np.clip(values, lower_bounds, upper_bounds, out=values)
     else:
         if lower_bounds is not None:
-            _approach(values, values < lower_bounds, lower_bounds, factor)
+            _approach_bound(values, values < lower_bounds, lower_bounds, factor)
         if upper_bounds is not None:
-            _approach(values, values > upper_bounds, upper_bounds, factor)
+            _approach_bound(values, values > upper_bounds, upper_bounds, factor)
 
 
-def _approach(values, mask, bounds, factor):
+def _approach_bound(values, mask, bounds, factor):
     """In place: the ``mask`` entries of ``values`` past ``bounds``, moved by the approach rule."""
     if np.any(mask):
         b = np.broadcast_to(bounds, values.shape)
