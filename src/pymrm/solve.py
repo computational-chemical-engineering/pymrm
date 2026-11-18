@@ -1597,6 +1597,16 @@ class _Continuation:
             level = max(level - 1, 0)
             p = _capped(p, step * 0.5**level, target)
 
+    def march(self, targets):
+        """Reach each of ``targets`` in turn: the result of :func:`continuation`."""
+        for target in targets:
+            if target == self.path_p[-1]:            # a repeated value: nothing to solve
+                self.repeat(target)
+            elif (failed := self.reach(target)) is not None:
+                return failed
+        return OptimizeResult(x=self.path_x[-1], success=True, params=self.done, xs=self.xs, results=self.results,
+                              last_param=self.path_p[-1], message="Reached every parameter value")
+
     def _stopped(self, target, correction):
         """The failure result of a march stopped on the way to ``target``."""
         why = _continuation_failure(correction.res, correction.jumped, correction.bounded)
@@ -1708,15 +1718,7 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                               message=f"no solution at the first value {params[0]:g}: "
                                       f"{first.message}")
     run = _Continuation(function, _ContinuationSettings(options, max_change, max_halvings, verbose), params[0], first)
-    for target in params[1:]:
-        if target == run.path_p[-1]:            # a repeated value: nothing to solve
-            run.repeat(target)
-            continue
-        failed = run.reach(target)
-        if failed is not None:
-            return failed
-    return OptimizeResult(x=run.path_x[-1], success=True, params=run.done, xs=run.xs, results=run.results,
-                          last_param=run.path_p[-1], message="Reached every parameter value")
+    return run.march(params[1:])
 
 
 def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
