@@ -431,14 +431,6 @@ class _Eval(NamedTuple):
     jac: object
 
 
-class _Newton(NamedTuple):
-    """The factorised Jacobian and the Newton step it gives."""
-
-    lin_solve: object
-    r: object
-    dx: np.ndarray
-
-
 class _Step(NamedTuple):
     """One iteration's Newton step and its tests, read-only for the phases of the iteration."""
 
@@ -710,14 +702,14 @@ class _NewtonRun:
             raise KrylovBreakdown(result.message, result)
         if not np.isfinite(dx).all():
             self.finish(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")     # raises
-        return _Newton(solve, r, dx)
+        return solve, r, dx
 
     def iterate(self, ev):
         carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED, 1.0)
         window = []          # step norms of the recent full steps at the floor
         maxfev = int(self.maxfev)
         for it in range(maxfev):
-            s = self._measure(carry.ev, self._newton_step(carry.ev, carry.step_inf), it == maxfev - 1, window)
+            s = self._measure(carry.ev, carry.step_inf, it == maxfev - 1, window)
             out = self._plain_step(s) if self.mode == "none" else self._damped_step(s, carry, it)
             if isinstance(out, OptimizeResult):
                 return out
@@ -744,9 +736,10 @@ class _NewtonRun:
             converged = converged or step_inf == 0.0
         return converged, excess
 
-    def _measure(self, ev, newton, last_it, window):
-        """Step norm, convergence and stagnation tests and backward error of this iteration."""
-        dy = newton.dx if self.d_user is None else newton.dx / self.d     # d is all ones without a scale
+    def _measure(self, ev, prev_step, last_it, window):
+        """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
+        lin_solve, r, dx = self._newton_step(ev, prev_step)     # prev_step: the norm reported if it fails
+        dy = dx if self.d_user is None else dx / self.d     # d is all ones without a scale
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
         near = converged or (self.refresh is None and excess < _NEAR)
@@ -761,8 +754,7 @@ class _NewtonRun:
         backward_tol = self.backward_tol
         gate = backward_tol is None or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
-        return _Step(ev, newton.lin_solve, newton.r, newton.dx, dy, step_inf, converged, near, gate, stagnant, be,
-                     last_it, last)
+        return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it, last)
 
     def _plain_step(self, s):
         """Plain (or bound-shortened) step; callback and refresh before the
