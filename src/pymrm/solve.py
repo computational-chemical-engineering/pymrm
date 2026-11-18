@@ -788,6 +788,9 @@ class _NewtonRun:
         measured = near or last_it or crit.relative
         if measured:
             be = crit.backward_error(ev, self.x_flat)
+        # An unmeasured be is nan and passes the gate. That is never decisive: the gate is read only with
+        # converged or stagnant (_stop_status, gate_failed); both imply near, or the relative test, which
+        # always measures.
         backward_tol = crit.backward_tol
         gate = backward_tol is None or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
@@ -1598,7 +1601,8 @@ class _Continuation:
         """Whether the converged ``res`` moved more than ``max_change`` from its prediction."""
         if not res.success or self.settings.max_change is None:
             return False
-        if len(self.path_p) < 2:            # no prediction to compare with before the second point
+        # The first step's only prediction is the last solution itself (no secant yet): the test starts at the second.
+        if len(self.path_p) < 2:
             return False
         size = max(float(np.max(np.abs(self.path_x[-1]))), float(np.max(np.abs(res.x))), np.finfo(float).tiny)
         return float(np.max(np.abs(res.x - guess))) > self.settings.max_change * size
@@ -1694,7 +1698,7 @@ def _failure_cause(res, jumped, bounded):
         if bounded:
             why += "; probably a turning point (fold) of the solution branch"
         return why
-    if res.status == 4 and res.nit == 0:
+    if res.status == _Status.NON_FINITE and res.nit == 0:
         return (f"the residual cannot be evaluated at the prediction ({res.message}); "
                 "it lies outside the residual's domain")
     why = f"the corrector fails ({res.message})"
