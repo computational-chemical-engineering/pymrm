@@ -602,7 +602,7 @@ class _Criterion(NamedTuple):
     # the backward-error gate
     backward_tol: object     # largest backward error a converged step may have (None: no gate)
     field_scale: object      # ``scale`` per unknown, or None: the fields' largest |x|
-    x0_size: float           # largest finite |x| of the initial guess
+    x0_size: float           # largest |x| of the initial guess, ignoring nan (0 if none is finite)
     shape: tuple             # shape of x, for the field reference of the backward error
 
     def relative_limit(self, x_flat):
@@ -1062,8 +1062,8 @@ def newton(
 ):
     """Solve ``function(x) = 0`` with a (damped) Newton iteration.
 
-    Every iteration solves ``J dx = g`` with a direct sparse LU factorisation
-    and updates ``x <- x - lam dx``. With the default options the step length
+    Every iteration solves ``J dx = g`` (by default with a direct LU
+    factorisation; see ``solver``) and updates ``x <- x - lam dx``. With the default options the step length
     ``lam`` is 1 (plain Newton) unless the full step gives a non-finite
     residual, and convergence requires both a small step (``tol``) and a small
     backward error (``backward_tol``). For hard problems, ``damping``,
@@ -1115,8 +1115,9 @@ def newton(
     lin_solver_kwargs : dict, optional
         Keyword arguments for the linear solver. Direct solver: the ``splu``
         options (``permc_spec``, ``diag_pivot_thresh``, ``relax``,
-        ``panel_size``, ``options``), used for sparse Jacobians only; other
-        keys warn that they are ignored. ``'cg'``, ``'bicgstab'``: passed to
+        ``panel_size``, ``options``), used for sparse Jacobians only;
+        ``use_umfpack`` is accepted and ignored; other keys warn that they
+        are ignored. ``'cg'``, ``'bicgstab'``: passed to
         the Krylov solver. Callable ``solver``: passed to it. ``'splu'`` and a
         ``factorize`` object: not used.
     callback : callable, optional
@@ -1157,8 +1158,9 @@ def newton(
         ``(lower, upper)``; each side ``None``, a scalar, or an array that
         broadcasts against the shape of ``initial_guess`` (shape ``(nc,)``
         gives one bound per field, ``(nz, 1)`` one per cell). Use ``-np.inf``
-        or ``np.inf`` for unbounded components. A single scalar or array means
-        a lower bound. A full step that crosses a bound is shortened so that
+        or ``np.inf`` for unbounded components. A single scalar or array (also
+        a list such as ``[0, 1]``) means a lower bound; give both sides as a
+        tuple. A full step that crosses a bound is shortened so that
         it removes at most ``tau`` of the distance of that component to its
         bound (with a floor of 0.5 on ``lam``, below which the crossing
         components are held individually). A full step that lands inside the
