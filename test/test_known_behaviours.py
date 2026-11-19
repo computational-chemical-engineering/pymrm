@@ -18,7 +18,6 @@ from pymrm.numjac import expand_dependencies, generate_sparsity_pattern
 from pymrm.solve import _Bounds, newton
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError, reason="maintainer-note-c2 item 1: NumJac int shape")
 def test_numjac_int_shape_equals_tuple_shape():
     """maintainer-note-c2 item 1: NumJac(shape=100) builds the same Jacobian as NumJac(shape=(100,))."""
     c = np.linspace(1.0, 2.0, 100)
