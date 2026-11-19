@@ -11,6 +11,10 @@ Check the installed version: `python -c "import pymrm; print(pymrm.__version__)"
 
 Each entry: what goes wrong, how you notice, what to do.
 
+Gallery evidence is cited as "(gl 7, 41)": rows 7 and 41 of
+`docs/refresh-learnings.md` in the pymrm-gallery repository; the capital-letter
+codes (`A2.4`) are its catalogue IDs.
+
 ## P1. Boundary conditions use the OUTWARD normal
 
 `bc = ({"a", "b", "d"}, {"a", "b", "d"})` means `a * dc/dn + b * c = d` with `n`
@@ -100,6 +104,18 @@ carries its own value (tanks in series, a cell model, a CSTR cascade).
 - Old (exact workaround): put NO flux on the exit face (`{"a": 0, "b": 1,
   "d": 0}`) and add the outflow `v / dz_last` as a sink on the last cell with
   `construct_coefficient_matrix`.
+- Also for a convection-only PDE outlet (first-order upwind, no dispersion): the
+  zero-gradient dictionary and `{"outflow": True}` give the same profile except
+  in the last cell, so an interior comparison does not see the difference, but
+  the outlet face value is extrapolated. Measured: `J4.4` at 3200 cells, zero
+  gradient gives a face read of 45.49054320 and a last cell of 45.48778545, so
+  "face read against last-cell read" compares two different numbers; with
+  `outflow` both are 45.49054371 (gl 141, 149, 298).
+- `{"outflow": True}` marks a whole boundary, not one field. Streams that move in
+  opposite directions need one operator each (api-map, "Streams in opposite
+  directions") (gl 165).
+- Do: `{"outflow": True}` on every convection-only outlet, read with
+  `compute_boundary_values` under that same dictionary.
 
 ## P7. `newton` stops on an ABSOLUTE step
 
@@ -123,7 +139,25 @@ carries its own value (tanks in series, a cell model, a CSTR cascade).
   a relative step. `pymrm.checks.residual_check(fun, x)` judges a solution by
   a componentwise backward error (0.33 for the wrong root above, 4e-17 for the
   right one). An absolute residual threshold is not scale-free: it rejected
-  converged solves in other units in agent runs.
+  converged solves in other units in agent runs. Measured: `J3.5` reported that
+  its integrator "does not run at I = 0.125"; all 18 rejected steps had
+  `success=True`, with a scaled residual of 1e-6 to 2e-6 against the page's own
+  threshold of 1e-6 (gl 208).
+- The opposite trap: `tol` below the round-off floor of the discrete solution
+  never stops. Each iteration refactorises and the step jitters at the floor, so
+  the solve returns `success=False` at `maxfev` on a state that is converged.
+  Measured: `A2.4`, 1500 cells, `tol=1e-12` fails after 100 iterations and
+  `1e-10` converges in 2; `D1.1`, temperature near 680 K as an unknown, status 2
+  after 60 iterations at `1e-12`, 4 at `1e-10` (also `B1.3`, `J1.1`)
+  (gl 13, 57, 104, 275).
+  Do: `tol` above `cond * eps` times the largest unknown, or `stagnation=True`
+  with `backward_tol`, which ends a round-off stall with success (status 1).
+- Check `success` in every solve. `getattr(sol, "x", x0)` and a residual
+  threshold of your own accept a failed solve: the result always has `x`. On
+  `D1.1` a residual gate below 1e-6 accepted 3 of 899 solves that had stopped at
+  `maxfev`. A singular Jacobian raises `NewtonBreakdown` instead of returning
+  `success=False`, so a wrapper must catch it too; `solve_ivp`'s `status = -1`
+  is the same signal for a march stopped early (gl 26, 57, 139, 275).
 
 ## P8. Read outlet and wall values from the face
 
@@ -137,6 +171,40 @@ The operators transport the reconstructed FACE value. A hand-written outlet flux
   3.8e-3. The gallery once published an outlet metric 11.4 % low for reading half
   a cell short of the boundary.
 - Do: `c_in_face, _, c_out_face, _ = compute_boundary_values(c, x_f, x_c, bc)`.
+- Not only at outlets; every boundary read from cells differs from the operator:
+  - Dirichlet face: `construct_grad` uses the boundary value and the last two
+    cells, so `D (c_N - c_b) / (h/2)` is not the transported flux. `A3.3`
+    published a +3.8 % physical effect of a Dirichlet base that was entirely
+    this read; the face read gives -3.9e-5 (gl 87).
+  - Value in a boundary layer: `J3.4` read a "face" concentration from the first
+    cell, 5.8 mol/m3 below the face at 48 cells; the published deviation of 7.7
+    became 0.83 at the face (gl 199).
+  - Surface flux of a pellet: `eta = (dC/dn) / phi^2` with the face gradient
+    equals the volume average of the rate to round-off (`G1.8`: 6.3e-13); from
+    the last two cells it is 0.33 % off at phi = 1.07 and 16 % at phi = 45.5
+    (gl 31).
+  - Profile ends and cell means: first-order upwind with `v > 0` stores in cell
+    `i` the value at its downstream face, so ends read from cells put the
+    boundary one cell into the domain (`E1.1`: 1.5e-4 against 2.6e-8 from
+    faces) (gl 148).
+  - Linear extrapolation `1.5 c[-1] - 0.5 c[-2]` is second order but ignores
+    the boundary condition: `A2.6` -0.13 % against -3.5e-6 from the bc read
+    (gl 227).
+  - Volume means: cell weights are the exact volumes, differences of
+    `r**(nu + 1)`, not the midpoint rule (`J1.5`: midpoint weights of a sphere
+    sum to 0.999994 on 200 cells; the flux balance closes to 1.9e-15 with exact
+    volumes and the face flux, 2.1e-6 with midpoint weights) (gl 183).
+- A convergence order does not reveal it: at a Danckwerts outlet the last-cell
+  read is second order like the scheme, and only its error constant is larger
+  (`A2.1`, n = 1600: 2.2e-7 against 3.9e-8 at the face); above Pe = 1e4 the
+  outlet layer is thinner than a cell and the last-cell read turns first order
+  (gl 58).
+- A balance error that halves with each refinement is a reading error until
+  shown otherwise: `H1.4` published 3.5e-3 as "a genuine O(h) error" (2.0e-14
+  with face values and `outflow` outlets), `E2.1` 8.1e-6 (1.7e-12) (gl 35, 166).
+- Interior reads differ: in first-order upwind plug flow, centre values were
+  2.7 times closer to an independent integrator than downstream-face values
+  (`C2.1`). Measure an interior read before "correcting" it (gl 130, 140).
 
 ## P9. Clipped kinetics stall Newton
 
@@ -167,22 +235,58 @@ rate, because every held cell capped every later step at half its length.
   exact profile (the discretisation error). Check that reducing `eps` tenfold
   leaves the result unchanged. Keep `bounds` for unknowns the residual cannot
   accept beyond a limit (`T > 0`, arguments of `log`).
+- Give a dead-zone rate its exact derivative (`construct_coefficient_matrix` on
+  the diagonal), not `NumJac`: its derivative varies on the scale `eps`, far
+  below the differencing step. `B1.3`, `sqrt(c + eps) - sqrt(eps)`: 24 of 24
+  solves converge with the exact Jacobian, 4 of 24 with `NumJac` (status 8);
+  that regularisation errs by O(sqrt(eps)), so extrapolate in `eps` (gl 101,
+  110). Unregularised, a "success" at the default `tol` came with a late step
+  only 1.2 times below `tol` and an iterate of -3.7e-7 in the dead zone
+  (gl 102).
+- `np.clip` inside a residual has zero derivative where active: `J3.4`'s
+  "Factor is exactly singular" warnings, suppressed, were its clips, active in
+  accepted states. Remove clips; `ln c` as the unknown is then a choice, not a
+  necessity (c as unknown: 10 iterations, `ln c`: 35, on the pymrm test model)
+  (gl 198, 212).
+- A bound must not exclude the solution: `F3.5` with `bounds=(1e-12, inf)`
+  stopped "held by a bound" where the mid-film value is about `exp(-Ha/2)`; a
+  linear rate needs no bound (gl 273). A bound can exclude a spurious root:
+  `I1.2` without bounds converged with `success=True` to mole fractions of
+  -5.6e-3. Test bounds and damping separately and check the sign of the root
+  (gl 47).
+- Take the guess from the limit the equations reduce to: `H1.9` from a profile
+  linear in `ln Theta` took a first step of 1.8e3 and failed under every
+  damping; linear in `Theta` (exact in the Henry limit) `damping="monotone"`
+  converged all four feeds in 7 to 9 iterations (gl 42). A converged cold start
+  does not say which solution: on a folded branch (`B1.4`) it gave eta = 1.155
+  against 44.55 seeded (gl 110).
 
-## P10. Steady TVD by deferred correction stalls
+## P10. Steady TVD by deferred correction can stall
 
 Deferred correction (the limiter correction in the residual, the upwind
 Jacobian) is a fixed-point iteration, not Newton. For a steady problem it
-converges only slowly with minmod and not at all with van Leer, MUSCL or SMART:
-the upwind Jacobian underestimates how a limited face value responds to an
-odd-even error, so that error grows in the cells where the gradient ratio is far
-from 1 (a profile that is flat and then bends, behind an inlet).
+converges only slowly with minmod, and with van Leer, MUSCL or SMART it can fail
+to converge at all: the upwind Jacobian underestimates how a limited face value
+responds to an odd-even error in the cells where the gradient ratio is far
+from 1 (a profile that is flat and then bends, behind an inlet, in 2-D), and at
+omega = 1 the iteration locks into a period-two cycle (also on the test
+problem). The stall is not universal: on smooth steady 1-D profiles van Leer
+deferred correction converged in 4 to 34 sweeps to the Newton solution
+(`A2.4`: 7 sweeps, 1.4e-11; `B1.7`, `B2.2`), and on the 2-D Graetz pages van
+Leer converges under-relaxed (omega = 0.6: 23 to 49 sweeps) while at omega = 1
+it does not settle in 600 sweeps (`I1.3`) and is a period-two cycle (`A3.15`).
+On the test problem MUSCL needs omega <= 0.6 and SMART omega <= 0.5. Report a
+stall only where you measured one (gl 14, 50, 76, 118, 120).
 
 - Symptom: the residual drops a few decades, then stops at 1e-3 to 1e-1 and
   stays there, or a steady `newton` call with the deferred-correction model
   reports `success=False`; with minmod, hundreds of iterations.
 - Measured: 2-D Graetz problem (parabolic flow along x, diffusion across, wall
   value 0), 40 x 10 cells. After 300 deferred-correction iterations the residual
-  is 8e-8 for minmod, 4e-3 for van Leer and 3e-2 to 6e-2 for MUSCL. With the
+  is 8e-8 for minmod, 4e-3 for van Leer and 3e-2 to 6e-2 for MUSCL (the last
+  two are period-two cycles). Under-relaxed to residual 1e-12: van Leer takes
+  87, 37 and 41 sweeps at omega = 0.8, 0.7 and 0.6, MUSCL 70 at 0.6, SMART 219
+  at 0.5, and SMART still cycles at 0.6. With the
   exact Jacobian from `ConvFluxTVD` and `newton(..., damping="monotone")`, every
   limiter converges to 1e-12 in 5 to 12 steps. Passing the upwind Jacobian to
   `newton` instead: undamped it fails for every limiter; with
@@ -196,4 +300,22 @@ from 1 (a profile that is flat and then bends, behind an inlet).
   Jacobian with `NumJac` or finite differences: the limited face value reaches
   two cells upwind, and differencing across the limiter kinks stalls near 1e-7.
   Deferred correction remains fine inside an implicit time step with one or two
-  inner iterations and a small Courant number.
+  inner iterations and a small Courant number. If deferred correction is kept,
+  print the last sweep change and the full TVD residual, and check once against
+  `ConvFluxTVD` Newton. An omega that works for one limiter can cycle for
+  another.
+- Cost: Newton refactorises every iteration. Steady 1-D it is faster (`A2.8`:
+  0.010 s against 0.054 s); in a transient at Courant 0.5 deferred correction
+  is twice as fast (`A2.5`, gap 2e-9); on 1.2 million unknowns under-relaxed
+  deferred correction takes 11.5 s against 102 s, with Newton on a coarser grid
+  as its check (`I1.3`) (gl 50, 67, 71, 128).
+- Write the residual as the correction to the upwind solution,
+  `jac_up @ (c - c_up) + div @ (F_tvd(c) - F_up(c))`, where
+  `jac_up @ (c - c_up)` is the upwind residual only when the upwind problem is
+  linear and `c_up` is its solution: in full form the `D/dz^2` entries put the
+  residual floor near 4e-10 on 1600 cells and the exit depends on the BLAS
+  kernel; the correction form agrees with deferred correction to 1e-15 on
+  every kernel (`A2.1`). Both routes share one LU factorisation of `jac_up`,
+  so that agreement does not test the factorisation. A gap between two
+  solvers at small Pe on a fine grid is that floor, not a stall
+  (gl 13, 59, 118).
