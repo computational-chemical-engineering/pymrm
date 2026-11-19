@@ -153,9 +153,10 @@ stability of the reported state, and treat "no other branch found" without such
 a search as `insufficient evidence`.
 
 - Near a threshold a cold start lands on either branch by round-off (`D1.1`: 990.9,
-  411.5, failure, 992.1 C). Follow the branch from one cold solve instead; this corrects
-  "a fixed initial guess for each value" (gl 8).
-- Rerun under `OPENBLAS_CORETYPE=Sandybridge` and `Nehalem` (it reproduced four of four
+  411.5, failure, 992.1 C). Reproduce it along the branch from one cold solve at a safe value, and along a
+  second path (halved steps, or from the other end); name the branch by a state
+  criterion; a gap beyond the solver tolerance is path dependence (gl 8).
+- Rerun under `OPENBLAS_CORETYPE=Sandybridge` and `Nehalem` (OpenBLAS only; it reproduced four of four
   runner failures); a pre-asymptotic order moves with the environment (`J1.10`: 1.79,
   2.11) (gl 3, 9).
 - Never state, divide by, count or classify by value a round-off quantity (`J4.8`: 7e-12
@@ -219,13 +220,15 @@ interpolant reports the sampling. Test: root-find on the model
   exit) (gl 22, 182, 189).
 - Bisect well below the quoted margin (`C2.10`: +0.0078 from a 0.0156 bracket); an onset
   is the cusp (`B1.4`) (gl 21, 108).
-- Interpolation reads: `np.interp` before the first centre returns the first cell
-  (`B3.2`: 2.4e-2, 2.9e-5 at centres); times off the step grid; `t += dt` (gl 124, 125,
-  126, 133, 135).
+- Interpolation reads: `np.interp` before the first centre returns the first cell, so a
+  profile error is the half-cell gap (`B3.2`: 2.4e-2, 2.9e-5 at centres); observation
+  times off the step grid add a second-order read-off error to an observed order;
+  `t += dt` with a `t >= t0` filter drops the window edge (gl 124, 125, 126, 133, 135).
 - Band edges are roots (`A3.1`: [1.14, 1.24] was [1.126, 1.244]); a capped root scan
   hides roots; a flat noisy minimum resolves to `sqrt(2 dF/F'')` (gl 81, 138, 169).
-- A refined peak at a fixed step shows the step error (`I1.2`: 3.70 %, 3.36 %
-  extrapolated); node counts estimate an area (gl 48, 238).
+- A refined peak at a fixed step is still that step's value, with the integrator's own
+  error (`I1.2`: 3.70 %, 3.36 % extrapolated); a node count is a grid estimate of an
+  area, off in the last printed digit (`A3.7`) (gl 48, 238).
 
 ## 12. An error budget that measures the wrong axis
 
@@ -255,7 +258,7 @@ bounds) for each reported value.
 - A bisection predicate counting failure as "above" (`D2.2`: a 1937 K iterate); bracket
   ends where an inner loop diverges (gl 25, 34).
 - A defect may leave no solution: record nan, prove it by a second route (`A2.8`:
-  "28984") (gl 72).
+  the stopped iterate of an unchecked loop was published as "28984") (gl 72).
 - A minimiser on its bound (`C1.3`: rms 8.91 at k = 3000, 2.78 at the minimum);
   `success` barely below `tol` (gl 102, 193).
 - `newton` raises `NewtonBreakdown` on a singular Jacobian rather than return
