@@ -499,7 +499,8 @@ of the teaching objective.
 8. Newton knows nothing of dynamic stability: from a nearby guess it converges
    to an unstable steady state as fast as to a stable one (`B1.1`: the middle
    branch in 4 iterations). Show stability by time or pseudo-time marching, and
-   folds by continuation in the physical parameter (gl 18).
+   folds by continuation in the physical parameter. A pseudo-time march shows physical
+   stability only with the physical mass matrix (for example, the Lewis number) (gl 18).
 9. Locate a root (a threshold, a crossing, a length) with `find_roots` over a
    bracket that follows from the physics, and raise unless it finds exactly one
    (`E1.1`: `[L_mf, L_mf / (1 - delta_max)]` instead of hand constants). Where
@@ -564,8 +565,8 @@ Examples:
 
 - A defect protects a check only if it fails that check's tolerance. Under a 5 %
   tolerance a 1 % defect is invisible (`J4.6`: `k2 + 1 %`). Size the defect against the
-  tolerance, or tighten the tolerance to about 100 times the measured spread until the
-  defect fails it (gl 7).
+  tolerance, or tighten the tolerance, no further than about 100 times the measured
+  spread; if the defect still passes, enlarge it or label the metric structural (gl 7).
 - Measure a defect's effect as the difference between two solves that differ only by the
   defect, on the same grid. Against an external reference each solve adds its own
   discretisation error (`A2.8`: a far-field defect reported as 5.9e-7, the grid error,
@@ -595,7 +596,7 @@ Examples:
   fixed step count, 0.18 %, was the step error) (gl 82).
 - Report the order per case, not averaged, and check it at a second parameter value
   before explaining an excess. A thin reacting layer converges at orders between 2 and 3
-  on practical grids: bound such an order by [2, 3], and by [1.9, 2.1] only where the
+  on practical grids: bound such an order by [2, 3] (from `B1.1` and `B1.2`), and by [1.9, 2.1] only where the
   layer is resolved (`B1.1`: mean 2.35 was 2.96, 2.06, 2.03; the slab gives 2.0 at phi =
   1). Check the arithmetic: a ratio 2.29 at a 1.33x refinement is order 2.9 (`B1.2`) (gl
   19, 95).
