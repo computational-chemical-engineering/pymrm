@@ -104,8 +104,7 @@ def _cubic_chain(matrix_type):
     return function
 
 
-@pytest.mark.xfail(strict=True, raises=AttributeError, reason="maintainer-note-c2 item 4: dia_array Jacobian")
-@pytest.mark.parametrize("damping", ["monotone", "armijo"])
+@pytest.mark.parametrize("damping", ["none", "guarded", "monotone", "armijo"])
 def test_newton_dia_array_jacobian_matches_csc(damping):
     """maintainer-note-c2 item 4: a dia_array Jacobian under damping converges to the csc_array result."""
     x0 = np.ones(3)

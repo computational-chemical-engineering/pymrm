@@ -100,7 +100,10 @@ class _LastEvaluationFailed(Exception):
 def _row_scale(jac):
     """Reciprocal of the largest absolute entry of each row (1 for empty rows)."""
     if sparse.issparse(jac):
-        s = abs(jac).max(axis=1)
+        a = abs(jac)
+        if not hasattr(a, "max"):   # dia_array has no max: take it in CSR
+            a = sparse.csr_array(a)
+        s = a.max(axis=1)
         s = s.toarray() if sparse.issparse(s) else s
     else:
         s = np.max(np.abs(jac), axis=1)
