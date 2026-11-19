@@ -46,12 +46,13 @@ on a solve that reports convergence without first printing both numbers.
 - `newton`'s `tol` below `cond * eps` of the unknowns never stops: the steps
   jitter at the floor. `A2.4` (Pe = 0.1, 1500 cells): `tol=1e-12` fails after
   100 iterations, `tol=1e-10` converges in 2; `B1.3` on 800 cells hits `maxfev`
-  at `tol=1e-13` with a backward error of 8e-17. Use `tol` 1e-10 to 1e-12 with
-  `stagnation=True` and require `success` (gl 13, 104).
+  at `tol=1e-13` with a backward error of 8e-17. Use `tol` above cond*eps times the
+  largest unknown, or `stagnation=True`, and require `success` (gl 13, 104).
 - The floor depends on how the residual is written. Entries of `D/dz^2` = 1e6
   on order-one values leave 4e-10 on `A2.1`; the TVD residual as a correction
   to the upwind solution, `jac_up @ (c - c_up) + div @ (F_tvd(c) - F_up(c))`,
-  reaches 1e-15 on every BLAS kernel (gl 59).
+  lets Newton land on the deferred-correction state to 1e-15 with a shared LU
+  factorisation, on every BLAS kernel, when the upwind problem is linear (gl 59).
 - A value below the solver tolerance is a bound: `F3.2` printed -9.3e-58 and
   +3.5e-28 by two routes at `tol=1e-10`. The location of a flat extremum
   amplifies the tolerance (values 1e-9, argmax 5e-6): hold it to a value
@@ -61,7 +62,8 @@ on a solve that reports convergence without first printing both numbers.
   4.6e-10, rows of 4e8); bound the gap from it. A two-point wall gradient is
   first order (`B3.1`: 1.2e-2 against 2e-6) (gl 88, 93, 130).
 - Rerun under `OPENBLAS_CORETYPE=Sandybridge` and `Nehalem` to see another
-  machine's round-off on yours; it reproduced every gallery CI failure (gl 3).
+  machine's round-off on yours; it reproduced the four gallery CI failures tried (`F3.2`, `J4.1`, `J4.6`, `J5.3`)
+  where NumPy uses OpenBLAS (gl 3).
 
 ## Bracket before you root-find
 
@@ -128,7 +130,7 @@ steady 1-D Newton is about five times faster than van Leer deferred correction
 solve the same equations and deferred correction is twice as fast (`A2.5`, gap
 2e-9) (gl 67). On large steady 2-D grids the Jacobian LU has about four times
 the fill, and deferred correction on one upwind LU is 4 to 9 times faster, but
-only under-relaxed (omega = 0.6: 23 to 49 sweeps; omega = 1 does not converge).
+only under-relaxed (van Leer, omega = 0.6: 23 to 49 sweeps; omega = 1 does not converge).
 Use it there with Newton as the check on a coarser grid (`A3.15`, `I1.3`) (gl 50, 76).
 
 ## Refinement studies
