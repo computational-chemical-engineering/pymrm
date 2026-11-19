@@ -2,12 +2,17 @@
 
 import warnings
 from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import NamedTuple, Optional
 
 import numpy as np
 from scipy import sparse
-from scipy.linalg import LinAlgWarning, lu_factor, lu_solve, solve as dense_solve
+from scipy.linalg import solve as dense_solve
+from scipy.linalg.lapack import dgetrf as _dgetrf, dgetrs as _dgetrs
 from scipy.optimize import Bounds, OptimizeResult
 from scipy.sparse import linalg
+
+from .helpers import _csc_abs_matvec
 
 # What ``damping="auto"`` resolves to when neither a callback nor a callable
 # linear solver is passed.
@@ -18,27 +23,42 @@ _LAM_FLOOR = 0.5      # smallest damping a bound alone may impose
 _CROSS_RTOL = 1e-8    # a bound crossing shallower than this times the distance is round-off
 _LAM_MIN = 1.0e-4     # the damping search ends below this damping
 _LAM_NEAR = 0.2       # ... or below this one when the step is within _NEAR tolerances
-_ESCAPE = True        # then take the (bounded) full step if its residual is finite
 _NEAR = 100.0         # steps within _NEAR times the tolerance are taken in full
 _STAGNATION_WINDOW = 5
 _STAGNATION_RATIO = 1.0  # a step no smaller than the smallest of the window
 _ARMIJO_C = 1.0e-4
+_UNTESTED = float("nan")  # theta of a step no monotonicity test measured
 _BACKWARD_FLOOR = 1.0  # weight of the field scale in the backward error
 _GLOBAL_FLOOR = 1.0e-6  # smallest field scale, relative to the largest unknown
 
 # Exceptions that mark an evaluation point as unusable (``newton``'s default).
 _RECOVERABLE = (FloatingPointError, OverflowError, ZeroDivisionError)
 
+
+class _Status(IntEnum):
+    """Newton's status codes (``result.status`` stays a plain int)."""
+
+    CONVERGED = 0
+    STALLED = 1
+    NOT_CONVERGED = 2
+    DAMPING_FAILED = 3
+    NON_FINITE = 4
+    SINGULAR = 5
+    SOLVER_FAILED = 6
+    BACKWARD_ERROR = 7
+    ON_BOUND = 8
+
+
 _MESSAGES = {
-    0: "Converged",
-    1: "Converged to the stagnation floor",
-    2: "Did not converge",
-    3: "Damping fell below its minimum",
-    4: "Non-finite residual",
-    5: "Singular Jacobian",
-    6: "Linear solver failed",
-    7: "Step criterion met but the backward error is above backward_tol",
-    8: "Stopped on a bound",
+    _Status.CONVERGED: "Converged",
+    _Status.STALLED: "Converged to the stagnation floor",
+    _Status.NOT_CONVERGED: "Did not converge",
+    _Status.DAMPING_FAILED: "Damping fell below its minimum",
+    _Status.NON_FINITE: "Non-finite residual",
+    _Status.SINGULAR: "Singular Jacobian",
+    _Status.SOLVER_FAILED: "Linear solver failed",
+    _Status.BACKWARD_ERROR: "Step criterion met but the backward error is above backward_tol",
+    _Status.ON_BOUND: "Stopped on a bound",
 }
 
 
@@ -91,11 +111,12 @@ def _row_scale(jac):
 
 def _solver_kind(solver):
     """The kind of linear solver ``solver`` names or is."""
-    if solver is None or (isinstance(solver, str) and solver in ("spsolve", "lu")):
+    named = solver if isinstance(solver, str) else None     # a solver given by name
+    if solver is None or named in ("spsolve", "lu"):
         return "direct"
-    if isinstance(solver, str) and solver in ("cg", "bicgstab"):
+    if named in ("cg", "bicgstab"):
         return solver
-    if isinstance(solver, str) and solver == "splu":
+    if named == "splu":
         return "splu"
     if hasattr(solver, "factorize"):
         return "factorize"
@@ -110,11 +131,11 @@ class _LinearSolver:
     # keyword arguments of scipy.sparse.linalg.splu
     _SPLU_KEYS = ("permc_spec", "diag_pivot_thresh", "relax", "panel_size", "options")
 
-    def __init__(self, solver, kwargs, row_scaling, legacy=False):
+    def __init__(self, solver, kwargs, row_scaling):
         self.kwargs = dict(kwargs or {})
         self.row_scaling = row_scaling
-        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit
-        self.legacy = legacy and not row_scaling
+        # legacy: reproduce spsolve and scipy.linalg.solve of pymrm 2.5.0 bit for bit (newton sets it)
+        self.legacy = False
         self.kind = _solver_kind(solver)
         self.solver = solver
         self.splu_kwargs = {}
@@ -180,14 +201,16 @@ class _LinearSolver:
         r = _row_scale(a) if self.row_scaling else None
         if r is not None:
             a = r[:, None] * a
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", LinAlgWarning)
-            factor = lu_factor(a, check_finite=False)
-        if (factor[0].diagonal() == 0.0).any():
+        lu, piv, _ = _dgetrf(a, overwrite_a=False)
+        if (lu.diagonal() == 0.0).any():
             raise _SingularJacobian("exactly singular")
         if r is None:
-            return (lambda rhs: lu_solve(factor, rhs, check_finite=False)), None
-        return (lambda rhs: lu_solve(factor, r * rhs, check_finite=False)), r
+            return (lambda rhs: _dgetrs(lu, piv, rhs)[0]), None
+        return (lambda rhs: _dgetrs(lu, piv, r * rhs)[0]), r
+
+    def rhs(self, ev):
+        """The right-hand side ``solve`` takes for the evaluation ``ev`` (as returned for a callable solver)."""
+        return ev.g_raw if self.kind == "callable" else ev.g
 
     def _iterative(self, jac):
         if not sparse.issparse(jac):
@@ -239,10 +262,7 @@ class _Bounds:
         self.lo_mask = None if lower is None else np.isfinite(lower)
         self.hi_mask = None if upper is None else np.isfinite(upper)
         self.held = None     # components a bound held in the last accepted step
-
-    @property
-    def active(self):
-        return self.lower is not None or self.upper is not None
+        self.active = lower is not None or upper is not None
 
     def enforce_initial(self, x):
         """Project an initial guess into the bounds, with a warning."""
@@ -337,14 +357,14 @@ def _field_reference(x, shape, scale, x0_size=0.0):
     if scale is not None:
         return np.abs(scale)
     ax = np.abs(x).reshape(shape)
-    largest = float(np.max(ax)) if x.size else 0.0
+    largest = float(ax.max()) if x.size else 0.0
     # The initial guess carries the problem's scale when the solution is ~0.
     floor = _GLOBAL_FLOOR * max(largest, x0_size)
     if len(shape) >= 2:
         # The floor also keeps a single-field state stored without a field
         # axis, (nz, nr), from being judged column by column; a trace field is
         # still judged far below its neighbours.
-        ref = np.maximum(np.max(ax.reshape(-1, shape[-1]), axis=0), floor)
+        ref = np.maximum(ax.reshape(-1, shape[-1]).max(axis=0), floor)
         return np.broadcast_to(ref, shape).reshape(-1)
     return np.full(x.size, max(largest, floor))
 
@@ -358,12 +378,13 @@ def _backward_error(g, jac, x, x_ref):
     scale of their field (a reaction dead zone, an absent species) are judged
     against that scale instead of against their own size.
     """
-    if sparse.issparse(jac):
-        abs_jac = abs(jac)
+    jac = jac if sparse.issparse(jac) else np.asarray(jac, dtype=float)
+    v = np.abs(x) + _BACKWARD_FLOOR * x_ref
+    if _is_canonical_csc(jac) and (v.dtype, v.shape) == (np.float64, jac.shape[1:]):
+        weighted = _csc_abs_matvec(jac, v)  # abs(jac) @ v, the same floats without the copy
     else:
-        jac = np.asarray(jac, dtype=float)
-        abs_jac = np.abs(jac)
-    denominator = abs_jac @ (np.abs(x) + _BACKWARD_FLOOR * x_ref) + np.abs(jac @ x - g)
+        weighted = abs(jac) @ v
+    denominator = weighted + np.abs(jac @ x - g)
     denominator = np.where(denominator > 0.0, denominator, np.finfo(float).tiny)
     return float(np.max(np.abs(g) / denominator))
 
@@ -397,11 +418,144 @@ def _damping_mode(damping, callback, lin):
 
 def _scale_vector(scale, shape):
     """``scale`` as a flat array of the unknowns' scales (None if not given), checked."""
-    d_user = None if scale is None else \
-        np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
-    if d_user is not None and not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
+    if scale is None:
+        return None
+    d_user = np.array(np.broadcast_to(np.asarray(scale, dtype=float), shape)).ravel()
+    if not (np.all(np.isfinite(d_user)) and np.all(d_user > 0.0)):
         raise ValueError("scale must be finite and positive for every unknown.")
     return d_user
+
+
+class _Eval(NamedTuple):
+    """One evaluation: the residual as returned, flat, and the Jacobian."""
+
+    g_raw: object
+    g: np.ndarray
+    jac: object
+
+
+class _Step(NamedTuple):
+    """One iteration's Newton step and its tests, read-only for the rest of the iteration.
+
+    ``report``: an error at a trial point is reported (status 2), not raised; the old
+    iteration evaluated there only after its last step.
+    """
+
+    ev: _Eval
+    lin_solve: object
+    r: object
+    dx: np.ndarray
+    dy: np.ndarray
+    step_inf: float
+    converged: bool
+    near: bool
+    gate: bool
+    stagnant: bool
+    be: float
+    last_it: bool
+    report: bool
+
+
+class _Carry(NamedTuple):
+    """What an iteration hands to the next, to the verbose line and to ``_exhausted``."""
+
+    ev: _Eval
+    step_inf: float
+    be: float
+    gate_failed: bool
+    clipped: int
+    lam: float
+    theta: float
+
+
+class _End(NamedTuple):
+    """Where the run ends: the evaluation (None if there is none), the last step norm and the backward error."""
+
+    ev: _Eval
+    step_norm: float
+    be: float
+
+
+class _Trial(NamedTuple):
+    """The point ``x - lam dx`` after ``bnd.project`` and its evaluation (None: unusable or not evaluated)."""
+
+    x: np.ndarray
+    ev: _Eval
+    lam: float
+    clipped: int
+
+
+class _SearchCtx(NamedTuple):
+    """What the tests of a damped search compare with: the rms of the scaled step, the row weights and phi at x."""
+
+    dy_rms: float
+    row: object
+    phi0: float
+
+
+class _Found(NamedTuple):
+    """The step a damped search found (``trial.ev`` None: the damping failed) and the last theta it measured."""
+
+    trial: _Trial
+    theta: float
+
+
+def _lam_min(near):
+    """The damping below which the search ends."""
+    # Near the solution a failed test is usually round-off: search briefly.
+    return _LAM_NEAR if near else _LAM_MIN
+
+
+def _search_context(s):
+    """The ``_SearchCtx`` of the iteration ``s``, in every damped mode (its warnings are observable)."""
+    dy_rms = _rms(s.dy)
+    r, jac = s.r, s.ev.jac
+    row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
+    phi0 = float(np.linalg.norm(row * s.ev.g))
+    return _SearchCtx(dy_rms, row, phi0)
+
+
+def _phi(row, t):
+    """The scaled residual norm at the trial ``t``; None if ``t`` is unusable."""
+    return None if t.ev is None else float(np.linalg.norm(row * t.ev.g))
+
+
+def _stop_status(s, converged):
+    """0 if ``converged``, 1 if stalled, None to iterate on (both need the backward-error gate of ``s``)."""
+    if not s.gate:
+        return None
+    if converged:
+        return _Status.CONVERGED
+    if s.stagnant:
+        return _Status.STALLED
+    return None
+
+
+def _is_finite(ev):
+    """Whether the residual of ``ev`` and its Jacobian (if a matrix) are finite."""
+    finite = np.isfinite(ev.g).all()
+    if finite and _is_matrix(ev.jac):
+        data = ev.jac.data if sparse.issparse(ev.jac) else ev.jac
+        finite = np.isfinite(data).all()
+    return finite
+
+
+def _stalled(window, step_inf):
+    """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
+    return (len(window) >= _STAGNATION_WINDOW
+            and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
+
+
+def _slide(window, s, use_stagnation):
+    """Update the stagnation ``window`` (in place) after the iteration ``s``."""
+    if s.stagnant:
+        window.clear()      # the backward error did not pass: keep iterating
+    elif use_stagnation and s.near:
+        # The Newton step norm, damped or not: near the floor the damping
+        # test fails on round-off, and a damped step must not reset the window.
+        window.append(s.step_inf)
+    else:
+        window.clear()
 
 
 @dataclass(eq=False, slots=True)
@@ -435,74 +589,36 @@ class _NewtonRun:
     nfev: int = 0
     nfact: int = 0
     history: list = field(default_factory=list)
-    state: dict = field(default_factory=lambda: {"last": False, "ev": None, "step": float("nan"),
-                                                 "bad": None})
 
-    # Iteration state, set by ``iterate`` and the phases of an iteration.
-    ev: tuple = field(init=False)
-    lam_next: float = field(init=False)
-    window: list = field(init=False)
-    step_inf: float = field(init=False)
-    be: float = field(init=False)
-    gate_failed: bool = field(init=False)
-    clipped: int = field(init=False)
-    stopped: bool = field(init=False)
-    g_raw: object = field(init=False)
-    g: np.ndarray = field(init=False)
-    jac: object = field(init=False)
-    last_it: bool = field(init=False)
-    lin_solve: object = field(init=False)
-    r: object = field(init=False)
-    dx: np.ndarray = field(init=False)
-    dy: np.ndarray = field(init=False)
-    theta: float = field(init=False)
-    converged: bool = field(init=False)
-    near: bool = field(init=False)
-    at_floor: bool = field(init=False)
-    gate: bool = field(init=False)
-    stagnant: bool = field(init=False)
-    lam: float = field(init=False)
-    dy_rms: float = field(init=False)
-    row: object = field(init=False)
-    phi0: float = field(init=False)
-    best: tuple = field(init=False)
-    lam_min: float = field(init=False)
+    # -- evaluation and the end of the run ------------------------------------------------
 
-    def _call(self, xv, guard):
-        """``function(xv, *args)`` as ``(g_raw, jac)``; None if guarded and recoverable."""
-        if not guard:
-            g_raw, jac = self.function(xv, *self.args)
-            return g_raw, jac
+    def _evaluate(self, xv, guard, report):
+        """``function(xv, *args)`` as an ``_Eval``, finite or not; None if ``guard`` and it raised a recoverable error.
+
+        With ``report`` any other error becomes ``_LastEvaluationFailed`` (status 2) instead of propagating.
+        """
+        self.nfev += 1
         try:
             g_raw, jac = self.function(xv, *self.args)
-        except self.recoverable:
+        except (self.recoverable if guard else ()):
             return None
         except Exception as exc:
-            if self.state["last"]:
+            if report:
                 # The old iteration never evaluated here: report, do not raise.
                 raise _LastEvaluationFailed(f"{type(exc).__name__}: {exc}") from exc
             raise
-        return g_raw, jac
-
-    def evaluate(self, xv, guard):
-        """Residual (flat) and Jacobian at ``xv``; None if unusable and guarded."""
-        self.nfev += 1
-        out = self._call(xv, guard)
-        if out is None:
-            return None
-        g_raw, jac = out
         g_raw = g_raw.toarray() if sparse.issparse(g_raw) else np.array(g_raw, dtype=float)
         g_flat = g_raw.reshape(-1)
         if sparse.issparse(jac) and jac.format not in ("csr", "csc", "coo", "bsr", "dia"):
             jac = jac.tocsc()      # lil, dok: no .data array of the stored values
-        finite = np.isfinite(g_flat).all()
-        if finite and _is_matrix(jac):
-            data = jac.data if sparse.issparse(jac) else jac
-            finite = np.isfinite(data).all()
-        if not finite:
-            self.state["bad"] = g_raw
+        return _Eval(g_raw, g_flat, jac)
+
+    def _usable(self, xv, guard, report):
+        """``_evaluate``, None unless the residual and Jacobian are finite."""
+        ev = self._evaluate(xv, guard, report)
+        if ev is None or not _is_finite(ev):
             return None
-        return g_raw, g_flat, jac
+        return ev
 
     def backward_error(self, g_flat, jac):
         if not _is_matrix(jac):
@@ -510,26 +626,23 @@ class _NewtonRun:
         return _backward_error(g_flat, jac, self.x_flat,
                                _field_reference(self.x_flat, self.shape, self.d_user, self.x0_size))
 
-    def _outcome(self, status, ev, step_norm, be, extra):
-        """``(message, result)`` of the run ending with ``status``."""
-        if ev is None:
-            g_raw = self.state["bad"] if status == 4 else None
-        else:
-            g_raw = ev[0]
+    def finish(self, status, end, extra=""):
+        """The result of the run ending with ``status`` at ``end``."""
+        ev = end.ev
+        g_raw = None if ev is None else ev.g_raw
         message = _MESSAGES[status] + (f": {extra}" if extra else "")
-        result = OptimizeResult(x=self.x, success=status in (0, 1), status=status, message=message,
-                                nit=len(self.history), nfev=self.nfev, nfact=self.nfact, fun=g_raw,
-                                step_norm=step_norm, backward_error=be, history=self.history)
-        return message, result
+        return OptimizeResult(x=self.x, success=status in (_Status.CONVERGED, _Status.STALLED),
+                              status=int(status), message=message,
+                              nit=len(self.history), nfev=self.nfev, nfact=self.nfact, fun=g_raw,
+                              step_norm=end.step_norm, backward_error=end.be, history=self.history)
 
-    def finish(self, status, ev, step_norm, be, extra=""):
-        """The result of the run, raised in a ``breakdown`` for the statuses 4, 5 and 6."""
-        message, result = self._outcome(status, ev, step_norm, be, extra)
-        if status in (4, 5, 6):
-            # No usable Newton step: raise, as these cases did up to 2.5.0
-            # (callers catch ValueError, LinAlgError or RuntimeError).
-            raise NewtonBreakdown(message, result)
-        return result
+    def _breakdown(self, status, end, extra, kind=NewtonBreakdown):
+        """The exception that ends a run without a usable Newton step (statuses 4, 5 and 6), with its result.
+
+        These raise, as they did up to 2.5.0 (callers catch ValueError, LinAlgError or RuntimeError).
+        """
+        result = self.finish(status, end, extra)
+        return kind(result.message, result)
 
     def solve(self, guard_guess):
         """Evaluate at the initial guess and iterate; the result of :func:`newton`."""
@@ -537,84 +650,63 @@ class _NewtonRun:
             # The guess is a prediction (continuation, pseudo_transient): one of
             # ``recoverable`` there marks it unusable, like a non-finite residual.
             try:
-                ev = self.evaluate(self.x, guard=False)
+                ev = self._evaluate(self.x, guard=False, report=False)
             except self.recoverable as exc:
-                self.state["bad"] = None
-                return self.finish(4, None, float("nan"), float("nan"),
-                                   f"{type(exc).__name__} at the initial guess ({exc})")
+                raise self._breakdown(_Status.NON_FINITE, _End(None, float("nan"), float("nan")),
+                                      f"{type(exc).__name__} at the initial guess ({exc})")
         else:
-            ev = self.evaluate(self.x, guard=False)
-        if ev is None:
-            return self.finish(4, None, float("nan"), float("nan"), "at the initial guess")
-        try:
-            return self.iterate(ev)
-        except _LastEvaluationFailed as exc:
-            return self.finish(2, self.state["ev"], self.state["step"], float("nan"),
-                               f"the residual at the last trial point raised {exc}")
+            ev = self._evaluate(self.x, guard=False, report=False)
+        if not _is_finite(ev):
+            raise self._breakdown(_Status.NON_FINITE, _End(ev, float("nan"), float("nan")), "at the initial guess")
+        return self.iterate(ev)
 
-    def _newton_step(self, ev, step_inf):
-        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
-
-        A singular Jacobian, a failed linear solve or a non-finite step ends the
-        run: ``finish`` raises for the statuses 5 and 6.
-        """
-        g_raw, g, jac = ev
-        try:
-            solve, r = self.lin.factorize(jac)
-            self.nfact += 1
-            dx = np.asarray(solve(g_raw if self.lin.kind == "callable" else g),
-                            dtype=float).reshape(-1)
-        except _SingularJacobian as exc:
-            self.finish(5, ev, step_inf, float("nan"), str(exc))     # raises
-        except _LinearSolverFailed as exc:
-            raise KrylovBreakdown(*self._outcome(6, ev, step_inf, float("nan"), str(exc)))
-        if not np.isfinite(dx).all():
-            self.finish(6, ev, step_inf, float("nan"), "non-finite Newton step")     # raises
-        return solve, r, dx
+    # -- one iteration ----------------------------------------------------------------------
 
     def iterate(self, ev):
-        self.ev = ev
-        self.lam_next = 1.0
-        self.window = []          # step norms of the recent full steps at the floor
-        self.step_inf = float("nan")
-        self.be = float("nan")
-        self.gate_failed = False
-        self.clipped = 0
-        self.stopped = False      # a plain step ended the last iteration without evaluating
+        """Newton steps from ``ev`` (at x) until a stop: the result."""
+        carry = _Carry(ev, float("nan"), float("nan"), False, 0, 1.0, _UNTESTED)
+        window = []          # step norms of the recent full steps at the floor
         maxfev = int(self.maxfev)
         for it in range(maxfev):
-            ev = self.ev
-            self.g_raw, self.g, self.jac = ev
-            self.state["ev"] = ev
-            self.last_it = it == maxfev - 1
-            self.lin_solve, self.r, self.dx = self._newton_step(ev, self.step_inf)
-            self._measure()
-            self.theta = float("nan")
-            result = self._plain_step() if self.mode == "none" else self._damped_step(it)
-            if result is not None:
-                return result
-            if self.stopped:
-                break
+            s = self._newton_step(carry.ev, carry.step_inf, it == maxfev - 1, window)
+            out = self._plain_step(s) if self.mode == "none" else self._damped_step(s, carry.lam, it)
+            if isinstance(out, OptimizeResult):
+                return out
             # Report the iteration and update the stagnation window.
             if self.verbose:
-                print(f"newton it={it:3d} |dx|={self.step_inf:.3e} lam={self.lam:.3g} "
-                      f"theta={self.theta:.3g} clipped={self.clipped} nfev={self.nfev}")
-            if self.stagnant:
-                self.window.clear()      # the backward error did not pass: keep iterating
-            elif self.use_stagnation and self.at_floor:
-                # The Newton step norm, damped or not: near the floor the damping
-                # test fails on round-off, and a damped step must not reset the window.
-                self.window.append(self.step_inf)
-            else:
-                self.window.clear()
-        return self._exhausted()
+                print(f"newton it={it:3d} |dx|={out.step_inf:.3e} lam={out.lam:.3g} "
+                      f"theta={out.theta:.3g} clipped={out.clipped} nfev={self.nfev}")
+            carry = out
+            _slide(window, s, self.use_stagnation)
+        return self._exhausted(carry)
+
+    def _factorize(self, ev, step_inf):
+        """Factorise the Jacobian at ``ev`` and solve for the Newton step: ``(solve, r, dx)``.
+
+        A singular Jacobian (5), a failed linear solve or a non-finite step (6) raise a breakdown
+        reporting ``step_inf``, the last step norm.
+        """
+        try:
+            solve, r = self.lin.factorize(ev.jac)
+            self.nfact += 1
+            dx = np.asarray(solve(self.lin.rhs(ev)), dtype=float).reshape(-1)
+        except _SingularJacobian as exc:
+            raise self._breakdown(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))
+        except _LinearSolverFailed as exc:
+            raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc), KrylovBreakdown)
+        if not np.isfinite(dx).all():
+            raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), "non-finite Newton step")
+        return solve, r, dx
+
+    def _relative_limit(self):
+        """Per unknown, the largest scaled step the relative test accepts at the current x."""
+        return self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)
 
     def _step_test(self, dy, step_inf):
         """Whether the step ``dy`` (scaled) meets the tolerance, and by how much it exceeds it."""
         tol = self.tol
-        y = self.x_flat / self.d
         if self.relative:
-            limit = self.tol_vec + self.rtol * np.abs(y)
+            limit = self._relative_limit()
             converged = bool(np.all(np.abs(dy) <= limit))
             with np.errstate(divide="ignore", invalid="ignore"):
                 excess = float(np.max(np.where(dy == 0.0, 0.0, np.abs(dy) / limit)))
@@ -625,258 +717,237 @@ class _NewtonRun:
             converged = converged or step_inf == 0.0
         return converged, excess
 
-    def _stalled(self, step_inf):
-        """Whether ``step_inf`` is no smaller than the smallest step of a full window."""
-        window = self.window
-        return (len(window) >= _STAGNATION_WINDOW
-                and step_inf >= _STAGNATION_RATIO * min(window[-_STAGNATION_WINDOW:]))
-
-    def _measure(self):
-        """Step norm, convergence and stagnation tests and backward error of this iteration."""
-        dy = self.dx / self.d
+    def _newton_step(self, ev, prev_step, last_it, window):
+        """The Newton step at ``ev``, its norm, convergence and stagnation tests and backward error."""
+        lin_solve, r, dx = self._factorize(ev, prev_step)     # prev_step: the norm reported if it fails
+        dy = dx / self.d
         step_inf = float(np.abs(dy).max()) if self.n else 0.0
         converged, excess = self._step_test(dy, step_inf)
         near = converged or (self.refresh is None and excess < _NEAR)
-        self.state["step"] = step_inf
-        self.state["last"] = converged or self.last_it
 
         # The verdict uses the residual at x, before the step: no evaluation
         # beyond those of plain Newton. Near a solution the step only improves it.
         be = float("nan")
-        if near or self.last_it or self.relative:
-            be = self.backward_error(self.g, self.jac)
-        self.at_floor = near
+        measured = near or last_it or self.relative
+        if measured:
+            be = self.backward_error(ev.g, ev.jac)
         backward_tol = self.backward_tol
-        self.gate = backward_tol is None or np.isnan(be) or be <= backward_tol
-        self.stagnant = self.use_stagnation and self.at_floor and self._stalled(step_inf)
-        self.dy, self.step_inf, self.converged, self.near, self.be = dy, step_inf, converged, near, be
+        gate = backward_tol is None or np.isnan(be) or be <= backward_tol
+        stagnant = self.use_stagnation and near and _stalled(window, step_inf)
+        return _Step(ev, lin_solve, r, dx, dy, step_inf, converged, near, gate, stagnant, be, last_it,
+                     converged or last_it)
 
-    def _plain_step(self):
-        """Plain (or bound-shortened) step; callback and refresh before the
-        next evaluation, as the callers of the undamped iteration expect."""
-        x_flat, dx, bnd = self.x_flat, self.dx, self.bnd
-        lam = 1.0
-        if not self.near and bnd.active:
-            lam = max(_LAM_FLOOR, bnd.max_step(x_flat, dx))
-        trial = x_flat - lam * dx
-        self.clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        if bnd.active:
-            bnd.commit(x_flat, trial, dx)
-        x_flat[:] = trial
-        self.lam = lam
-        self.history.append({"step_norm": self.step_inf, "damping": lam, "theta": self.theta,
-                             "clipped": self.clipped})
-        if self.callback is not None:
-            self.callback(self.x, self.g_raw)
-        if self.refresh is not None:
-            self.refresh(self.x)
-        return self._plain_verdict()
+    def _plain_step(self, s):
+        """Plain (or bound-shortened) step, callback and refresh, then stop or evaluate at the new x.
 
-    def _plain_verdict(self):
-        """Stop after a plain step, or evaluate at the new ``x`` (None: iterate on)."""
-        converged, step_inf, be = self.converged, self.step_inf, self.be
-        if self.relative and step_inf > 0.0:
-            # The relative test uses x after the step (and the callback).
-            converged = bool(np.all(np.abs(self.dy) <= self.tol_vec + self.rtol * np.abs(self.x_flat / self.d)))
-        if converged and self.gate:
-            return self.finish(0, self.ev, step_inf, be)
-        if self.stagnant and self.gate:
-            if self.clipped:
-                return self.finish(8, self.ev, step_inf, be,
-                                   f"{self.clipped} components held by a bound")
-            return self.finish(1, self.ev, step_inf, be,
-                               f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
-        self.gate_failed = converged
-        if self.last_it:
-            self.stopped = True     # plain Newton does not evaluate after its last step
-            return None
-        ev_new = self.evaluate(self.x, guard=False)
-        if ev_new is None:
-            return self.finish(4, self.ev, step_inf, float("nan"), "after a full step")
-        self.ev = ev_new
-        return None
-
-    def _final_step(self, status, extra=""):
-        """Take the converged step without evaluating there, as plain Newton did."""
-        x_flat, dx, bnd, step_inf = self.x_flat, self.dx, self.bnd, self.step_inf
-        trial = x_flat - dx
-        n_clip = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        if bnd.active:
-            bnd.commit(x_flat, trial, dx)
-        x_flat[:] = trial
-        self.history.append({"step_norm": step_inf, "damping": 1.0, "theta": float("nan"),
-                             "clipped": n_clip})
-        if self.callback is not None:
-            self.callback(self.x, self.g_raw)
-        if self.refresh is not None:
-            self.refresh(self.x)
-        if status == 1 and n_clip:
-            return self.finish(8, self.ev, step_inf, self.be, f"{n_clip} components held by a bound")
-        return self.finish(status, self.ev, step_inf, self.be, extra)
-
-    def _damped_step(self, it):
-        """Stop, or find a damped step, accept it and evaluate there (None: iterate on)."""
-        step_inf = self.step_inf
-        if self.converged and self.gate:
-            return self._final_step(0)
-        if self.stagnant and self.gate:
-            # _final_step takes the stalled step and reports 8 only if that step is held
-            return self._final_step(1, f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
-        self.gate_failed = self.converged
-        accepted = self._find_step()
-        if accepted is None:
-            extra = f"{self.lam_min:g} at iteration {it}"
-            if self.clipped:
-                extra += f"; {self.clipped} components held by a bound"
-            return self.finish(3, self.ev, step_inf, self.backward_error(self.g, self.jac), extra)
-        return self._accept(accepted)
-
-    def _trial(self, lam):
-        """The trial point ``x - lam dx`` (held inside the bounds) and its evaluation."""
-        x_flat, dx, bnd = self.x_flat, self.dx, self.bnd
-        trial = x_flat - lam * dx
-        self.clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
-        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
-        return trial, ev_t
-
-    def _find_step(self):
-        """The accepted ``(trial, ev_t, lam)`` of this iteration, None if the damping failed."""
+        The callback and refresh come before the next evaluation, as the callers of the
+        undamped iteration expect. The result, or the ``_Carry``.
+        """
         bnd = self.bnd
-        accepted = None
-        lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, self.dx)) if bnd.active else 1.0
-        at_lam_max = None   # (trial, ev_t, clipped) of a trial at lam_max, if made
-        if self.mode == "guarded":
-            # Full step (shortened only by the bounds far from the solution).
-            lam = 1.0 if self.near else lam_max
-            trial, ev_t = self._trial(lam)
-            if lam == lam_max:
-                at_lam_max = (trial, ev_t, self.clipped)
-            if ev_t is not None:
-                return (trial, ev_t, lam)
-            self.lam_next = 0.25 * lam
-        accepted, at_lam_max = self._search(lam_max, at_lam_max)
-        escaped = False
-        if accepted is None:
-            accepted = self._restore_best()
-        if accepted is None and _ESCAPE:
-            accepted = self._escape(lam_max, at_lam_max)
-            escaped = accepted is not None
-        if accepted is not None:
-            self.lam_next = 1.0 if (escaped or self.mode == "guarded") else min(1.0, 4.0 * accepted[2])
-        return accepted
+        lam = 1.0
+        if not s.near and bnd.active:
+            lam = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx))
+        t = self._trial(s, lam, evaluate=False)
+        self._take(s, t, _UNTESTED)
+        converged = s.converged
+        if self.relative and s.step_inf > 0.0:
+            # The relative test uses x after the step (and the callback).
+            converged = bool(np.all(np.abs(s.dy) <= self._relative_limit()))
+        status = _stop_status(s, converged)
+        if status is not None:
+            return self._final(s, status, t.clipped)
+        gate_failed = converged and not s.gate
+        if s.last_it:
+            # plain Newton does not evaluate after its last step
+            return self._exhausted(_Carry(s.ev, s.step_inf, s.be, gate_failed, t.clipped, t.lam, _UNTESTED))
+        ev = self._usable(self.x, guard=False, report=False)
+        if ev is None:
+            raise self._breakdown(_Status.NON_FINITE, _End(s.ev, s.step_inf, float("nan")), "after a full step")
+        return _Carry(ev, s.step_inf, s.be, gate_failed, t.clipped, t.lam, _UNTESTED)
 
-    def _search(self, lam_max, at_lam_max):
-        """Damped search: monotonicity test or Armijo, from lam_next."""
-        lam = min(self.lam_next, lam_max)
-        self.dy_rms = _rms(self.dy)
-        r, jac = self.r, self.jac
-        self.row = r if r is not None else (_row_scale(jac) if _is_matrix(jac) else 1.0)
-        self.phi0 = float(np.linalg.norm(self.row * self.g))
-        self.best = None
-        # Near the solution a failed test is usually round-off: search briefly.
-        self.lam_min = lam_min = _LAM_NEAR if self.near else _LAM_MIN
-        test = self._armijo_test if self.mode == "armijo" else self._monotonicity_test
-        while lam >= lam_min:
-            trial, ev_t = self._trial(lam)
-            if lam == lam_max:
-                at_lam_max = (trial, ev_t, self.clipped)
-            if ev_t is None:
-                lam *= 0.25
-                continue
-            accepted, lam = test(trial, ev_t, lam)
-            if accepted is not None:
-                return accepted, at_lam_max
-        return None, at_lam_max
-
-    def _armijo_test(self, trial, ev_t, lam):
-        """``(accepted, lam)``: the trial if it decreases the scaled residual enough, else a halved lam."""
-        phi = float(np.linalg.norm(self.row * ev_t[1]))
-        if phi <= (1.0 - _ARMIJO_C * lam) * self.phi0:
-            return (trial, ev_t, lam), lam
-        best = self.best
-        if best is None or phi < best[0]:
-            self.best = (phi, trial, ev_t, lam, self.clipped)
-        lam *= 0.5
-        return None, lam
-
-    def _monotonicity_test(self, trial, ev_t, lam):
-        """``(accepted, lam)``: the trial if its simplified Newton step contracts, else a smaller lam."""
-        dy, dy_rms = self.dy, self.dy_rms
+    def _damped_step(self, s, lam_prev, it):
+        """Stop, or search a damped step, take it and evaluate there: the result or the ``_Carry``."""
+        status = _stop_status(s, s.converged)
+        if status is not None:
+            # Take the converged or stalled step without evaluating there, as plain Newton did
+            # (status 8 only if that step is held by a bound).
+            t = self._trial(s, 1.0, evaluate=False)
+            self._take(s, t, float("nan"))
+            return self._final(s, status, t.clipped)
         try:
-            rhs = ev_t[0] if self.lin.kind == "callable" else ev_t[1]
-            dbar = np.asarray(self.lin_solve(rhs), dtype=float).reshape(-1) / self.d
+            found = self._search(s, lam_prev)
+            t = found.trial
+            if t.ev is None:
+                return self._damping_failed(s, t.clipped, it)
+            ev = t.ev
+            if self._take(s, t, found.theta):
+                ev = self._usable(self.x, guard=True, report=s.report)
+                if ev is None:
+                    raise self._breakdown(_Status.NON_FINITE, _End(t.ev, s.step_inf, float("nan")),
+                                          "after the callback or refresh")
+        except _LastEvaluationFailed as exc:
+            return self.finish(_Status.NOT_CONVERGED, _End(s.ev, s.step_inf, float("nan")),
+                               f"the residual at the last trial point raised {exc}")
+        return _Carry(ev, s.step_inf, s.be, s.converged and not s.gate, t.clipped, t.lam, found.theta)
+
+    # -- the damped search ------------------------------------------------------------------
+
+    def _search(self, s, lam_prev):
+        """The damped step of the iteration ``s``: a ``_Found``.
+
+        Guarded mode takes the full step (shortened only by the bounds far from the
+        solution) if its residual is usable, else searches from a quarter of it. The
+        monotone and Armijo searches start from four times the last damping.
+        """
+        bnd = self.bnd
+        lam_max = max(_LAM_FLOOR, bnd.max_step(self.x_flat, s.dx)) if bnd.active else 1.0
+        lam = min(min(1.0, 4.0 * lam_prev), lam_max)
+        if self.mode == "armijo":
+            return self._armijo_search(s, lam, lam_max)
+        if self.mode != "guarded":
+            return self._monotone_search(s, lam, lam_max, None)
+        full = 1.0 if s.near else lam_max
+        t = self._trial(s, full)
+        if t.ev is not None:
+            return _Found(t, _UNTESTED)
+        # An unusable full step at lam_max need not be evaluated again by the fallback.
+        return self._monotone_search(s, min(0.25 * full, lam_max), lam_max, t if full == lam_max else None)
+
+    def _monotone_search(self, s, lam, lam_max, at_lam_max):
+        """Shorten lam until the simplified Newton step contracts (``_contraction``), else the fallback.
+
+        An unusable trial quarters lam. ``at_lam_max``: the trial at ``lam_max`` if already made.
+        """
+        ctx = _search_context(s)
+        lam_min = _lam_min(s.near)
+        theta = _UNTESTED
+        while lam >= lam_min:
+            t = self._trial(s, lam)
+            if lam == lam_max:
+                at_lam_max = t
+            if t.ev is None:
+                lam *= 0.25
+            else:
+                theta, lam_next = self._contraction(s, t, ctx.dy_rms)
+                if lam_next is None:
+                    return _Found(t, theta)
+                lam = lam_next
+        return _Found(self._fallback(s, lam_max, at_lam_max, None), theta)
+
+    def _contraction(self, s, t, dy_rms):
+        """Theta of the simplified Newton step at ``t`` and the next lam; None if ``t`` passes the test."""
+        lam = t.lam
+        try:
+            dbar = np.asarray(s.lin_solve(self.lin.rhs(t.ev)), dtype=float).reshape(-1) / self.d
         except _LinearSolverFailed:
             dbar = np.full(self.n, np.inf)    # no test possible: reject the trial
-        self.theta = theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
+        theta = _rms(dbar) / dy_rms if dy_rms > 0.0 else 0.0
         if not np.isfinite(theta):
-            lam *= 0.5
-            return None, lam
+            return theta, lam * 0.5
         if theta <= 1.0 - lam / 4.0:
-            return (trial, ev_t, lam), lam
-        mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * dy), 1.0e-300)
-        lam = min(0.5 * lam, max(mu, 0.1 * lam))
-        return None, lam
+            return theta, None
+        mu = 0.5 * dy_rms * lam**2 / max(_rms(dbar - (1.0 - lam) * s.dy), 1.0e-300)
+        return theta, min(0.5 * lam, max(mu, 0.1 * lam))
 
-    def _restore_best(self):
-        """The best Armijo trial if it decreased the residual, re-evaluated; else None."""
-        best = self.best
-        if best is None or not best[0] < self.phi0:
-            return None
-        _, trial, ev_t, lam, self.clipped = best
-        ev_t = self.evaluate(trial.reshape(self.shape), guard=True)  # restore model state
-        if ev_t is not None:
-            return (trial, ev_t, lam)
-        return None
+    def _armijo_search(self, s, lam, lam_max):
+        """Halve lam until the scaled residual decreases enough (Armijo), else the fallback.
 
-    def _escape(self, lam_max, at_lam_max):
-        """The (bounded) full step if its residual is finite, else None."""
-        lam = lam_max
-        if at_lam_max is not None:
-            trial, ev_t, self.clipped = at_lam_max
-            if ev_t is not None:
-                ev_t = self.evaluate(trial.reshape(self.shape), guard=True)
-        else:
-            trial, ev_t = self._trial(lam)
-        if ev_t is not None:
-            return (trial, ev_t, lam)
-        return None
+        An unusable trial quarters lam. ``best``: the trial with the smallest scaled
+        residual below that at x.
+        """
+        ctx = _search_context(s)
+        lam_min = _lam_min(s.near)
+        at_lam_max, best, best_phi = None, None, ctx.phi0
+        while lam >= lam_min:
+            t = self._trial(s, lam)
+            phi = _phi(ctx.row, t)
+            if lam == lam_max:
+                at_lam_max = t
+            if phi is None:
+                lam *= 0.25
+                continue
+            if phi <= (1.0 - _ARMIJO_C * lam) * ctx.phi0:
+                return _Found(t, _UNTESTED)
+            if phi < best_phi:
+                best, best_phi = t, phi
+            lam *= 0.5
+        return _Found(self._fallback(s, lam_max, at_lam_max, best), _UNTESTED)
 
-    def _accept(self, accepted):
-        """Take the accepted damped step, then the callback and refresh (None: iterate on)."""
+    def _fallback(self, s, lam_max, at_lam_max, best):
+        """The step when no trial passed: ``best`` evaluated again if usable, else the bounded full step.
+
+        The full step's ``ev`` is None unless its residual is finite; made before, it is
+        evaluated again (the model may hold a later trial's state).
+        """
+        if best is not None:
+            t = self._reevaluate(s, best)
+            if t.ev is not None:
+                return t
+        if at_lam_max is None:
+            return self._trial(s, lam_max)
+        if at_lam_max.ev is None:
+            return at_lam_max
+        return self._reevaluate(s, at_lam_max)
+
+    def _trial(self, s, lam, evaluate=True):
+        """The point ``x - lam dx`` held inside the bounds, and (if ``evaluate``) its usable evaluation."""
+        x_flat, dx, bnd = self.x_flat, s.dx, self.bnd
+        trial = x_flat - lam * dx
+        clipped = bnd.project(trial, x_flat, dx) if bnd.active else 0
+        ev = self._usable(trial.reshape(self.shape), guard=True, report=s.report) if evaluate else None
+        return _Trial(trial, ev, lam, clipped)
+
+    def _reevaluate(self, s, t):
+        """The trial ``t`` evaluated again (restoring the model state)."""
+        return _Trial(t.x, self._usable(t.x.reshape(self.shape), guard=True, report=s.report), t.lam, t.clipped)
+
+    # -- taking a step and the end of the iteration ----------------------------------------
+
+    def _take(self, s, t, theta):
+        """Take the step to the trial ``t``, then the callback and refresh; whether one of them ran."""
         x_flat, bnd = self.x_flat, self.bnd
-        trial, self.ev, lam = accepted
-        self.lam = lam
         if bnd.active:
-            bnd.commit(x_flat, trial, self.dx)
-        x_flat[:] = trial
-        self.history.append({"step_norm": self.step_inf, "damping": lam, "theta": self.theta,
-                             "clipped": self.clipped})
+            bnd.commit(x_flat, t.x, s.dx)
+        x_flat[:] = t.x
+        self.history.append({"step_norm": s.step_inf, "damping": t.lam, "theta": theta,
+                             "clipped": t.clipped})
         stale = False
         if self.callback is not None:
             # The callback may change x or model state: re-evaluate after it.
-            self.callback(self.x, self.g_raw)
+            self.callback(self.x, s.ev.g_raw)
             stale = True
         if self.refresh is not None:
             self.refresh(self.x)
             stale = True
-        if stale:
-            ev_new = self.evaluate(self.x, guard=True)
-            if ev_new is None:
-                return self.finish(4, self.ev, self.step_inf, float("nan"),
-                                   "after the callback or refresh")
-            self.ev = ev_new
-        return None
+        return stale
 
-    def _exhausted(self):
+    def _final(self, s, status, clipped):
+        """The result of a converged (0) or stalled run (1, or 8 if its last step is held by a bound)."""
+        step_inf = s.step_inf
+        if status == _Status.CONVERGED:
+            return self.finish(_Status.CONVERGED, _End(s.ev, step_inf, s.be))
+        if clipped:
+            return self.finish(_Status.ON_BOUND, _End(s.ev, step_inf, s.be), f"{clipped} components held by a bound")
+        return self.finish(_Status.STALLED, _End(s.ev, step_inf, s.be),
+                           f"|dx| = {step_inf:.2e} (tol {np.max(self.tol):.1e})")
+
+    def _damping_failed(self, s, clipped, it):
+        """The result when no damped step was found (status 3)."""
+        extra = f"{_lam_min(s.near):g} at iteration {it}"
+        if clipped:
+            extra += f"; {clipped} components held by a bound"
+        return self.finish(_Status.DAMPING_FAILED, _End(s.ev, s.step_inf, self.backward_error(s.ev.g, s.ev.jac)), extra)
+
+    def _exhausted(self, carry):
         """The result after ``maxfev`` iterations without convergence."""
-        ev, step_inf, be = self.ev, self.step_inf, self.be
+        ev, step_inf, be = carry.ev, carry.step_inf, carry.be
         if self.mode != "none":
-            be = self.backward_error(ev[1], ev[2])     # ev is at x after a damped step
-        if self.gate_failed:
-            return self.finish(7, ev, step_inf, be, f"{be:.2e} after maxfev iterations")
-        if self.clipped:
-            return self.finish(8, ev, step_inf, be, f"{self.clipped} components held by a bound")
-        return self.finish(2, ev, step_inf, be)
+            be = self.backward_error(ev.g, ev.jac)     # ev is at x after a damped step
+        if carry.gate_failed:
+            return self.finish(_Status.BACKWARD_ERROR, _End(ev, step_inf, be), f"{be:.2e} after maxfev iterations")
+        if carry.clipped:
+            return self.finish(_Status.ON_BOUND, _End(ev, step_inf, be), f"{carry.clipped} components held by a bound")
+        return self.finish(_Status.NOT_CONVERGED, _End(ev, step_inf, be))
 
 
 def newton(
@@ -1138,8 +1209,6 @@ def newton(
     with np.errstate(invalid="ignore"):
         x0_size = float(np.nanmax(np.abs(x_flat))) if n and np.any(np.isfinite(x_flat)) else 0.0
 
-    if lin_solver_kwargs is None:
-        lin_solver_kwargs = {}
     lin = _LinearSolver(solver, lin_solver_kwargs, row_scaling)
 
     mode = _damping_mode(damping, callback, lin)
@@ -1186,89 +1255,107 @@ def _attempt(function, x, args, options):
         return exc.result
 
 
+_EASY_NIT = 3          # a pseudo-time step whose Newton solve took at most this many iterations was easy
+_MIN_GROWTH = 2.0      # after an easy step dt grows at least by this factor
+_STEP_TRIES = 20       # tries of one pseudo-time step before the march fails
+_DT_SHRINK = 0.25      # factor on dt after a failed try
+
+
+class _March(NamedTuple):
+    """State of a :func:`pseudo_transient` march between its stages."""
+
+    x: np.ndarray
+    dt: float
+    history: list
+    g_norm: Optional[float] = None       # residual norm at x
+    g_prev: Optional[float] = None       # residual norm before the last pseudo-time step
+    g_attempt: Optional[float] = None    # residual norm at the last steady attempt
+    steady_result: object = None      # the last steady newton result
+
+
+class _Stage(NamedTuple):
+    """A stage of the march: the result if the march ends there, and the state after it."""
+
+    end: object
+    state: _March
+
+
 @dataclass(eq=False)
 class _PseudoTransient:
-    """One :func:`pseudo_transient` march: settings, state and the steady attempts."""
+    """The settings of a :func:`pseudo_transient` march and its stages; the march state is a :class:`_March`."""
 
     function: object
     args: tuple
-    x: np.ndarray
     mass_matrix: object
     inner: dict
     steady: dict
-    dt: float
     dt_max: float
     max_steps: object
     growth: float
     steady_ratio: float
     steady_every: object
     verbose: object
-    history: list = field(default_factory=list)
-    steady_result: object = None
-    g_prev: object = None
-    g_attempt: object = None
 
-    def result(self, success, message, nsteps):
-        steady_result = self.steady_result
-        xr = steady_result.x if (success and steady_result is not None) else self.x
-        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps,
-                              history=self.history, steady=steady_result)
+    def result(self, success, message, nsteps, s):
+        xr = s.steady_result.x if (success and s.steady_result is not None) else s.x
+        return OptimizeResult(x=xr, success=success, message=message, nsteps=nsteps, history=s.history,
+                              steady=s.steady_result)
 
-    def march(self):
-        """Pseudo-time steps with steady Newton attempts; the result of :func:`pseudo_transient`."""
+    def march(self, x, dt):
+        """Pseudo-time steps from ``x`` with steady Newton attempts; the result of :func:`pseudo_transient`."""
+        s = _March(x=x, dt=dt, history=[])
         for step in range(int(self.max_steps) + 1):
-            out = self._steady_check(step)
-            if out is not None:
-                return out
-            if step == self.max_steps:
-                break
-            out = self._time_step(step)
-            if out is not None:
-                return out
-        return self.result(False, "max_steps reached without a converged steady solve", int(self.max_steps))
+            end, s = self._steady_check(step, s)
+            if end is None and step != self.max_steps:
+                end, s = self._time_step(step, s)
+            if end is not None:
+                return end
+        return self.result(False, "max_steps reached without a converged steady solve", int(self.max_steps), s)
 
-    def _steady_due(self, step, g_norm):
+    def _steady_due(self, step, g_norm, g_attempt):
         """Whether to try the steady Newton solve at this step."""
-        if self.g_attempt is None or g_norm <= self.steady_ratio * self.g_attempt:
+        if g_attempt is None or g_norm <= self.steady_ratio * g_attempt:
             return True
         return step == self.max_steps or (self.steady_every and step % self.steady_every == 0)
 
-    def _steady_check(self, step):
-        """Residual norm at ``x`` and, when due, a steady solve; the result if the march ends."""
-        g_now, _ = self.function(self.x, *self.args)
-        self.g_norm = g_norm = float(np.linalg.norm(np.asarray(g_now, dtype=float).ravel()))
-        if not np.isfinite(g_norm):
-            return self.result(False, "non-finite residual during the pseudo-time march", step)
-        if self._steady_due(step, g_norm):
-            self.g_attempt = g_norm
-            self.steady_result = _attempt(self.function, self.x, self.args, self.steady)
-            if self.steady_result.success:
-                return self.result(True, f"Converged by the steady Newton solve after {step} "
-                                   "pseudo-time steps", step)
-        return None
+    def _steady_check(self, step, s):
+        """Residual norm at ``s.x`` and, when due, a steady solve; the result if the march ends."""
+        g_now, _ = self.function(s.x, *self.args)
+        s = s._replace(g_norm=float(np.linalg.norm(np.asarray(g_now, dtype=float).ravel())))
+        if not np.isfinite(s.g_norm):
+            return _Stage(self.result(False, "non-finite residual during the pseudo-time march", step, s), s)
+        if not self._steady_due(step, s.g_norm, s.g_attempt):
+            return _Stage(None, s)
+        s = s._replace(g_attempt=s.g_norm, steady_result=_attempt(self.function, s.x, self.args, self.steady))
+        if s.steady_result.success:
+            return _Stage(self.result(True, f"Converged by the steady Newton solve after {step} "
+                                      "pseudo-time steps", step, s), s)
+        return _Stage(None, s)
 
-    def _time_step(self, step):
+    def _grown_dt(self, s):
+        """``dt`` of the next step: grown after an easy step, by the residual reduction."""
+        if s.g_prev is None or not s.history:
+            return s.dt
+        if s.g_norm > 0.0 and s.history[-1]["nit"] <= _EASY_NIT:     # the last step took few iterations
+            return min(self.dt_max, s.dt * min(self.growth, max(_MIN_GROWTH, s.g_prev / s.g_norm)))
+        return s.dt
+
+    def _time_step(self, step, s):
         """One implicit pseudo-time step, shortening ``dt`` on failure; the result if it fails."""
-        g_norm, g_prev, history = self.g_norm, self.g_prev, self.history
-        easy = bool(history) and history[-1]["nit"] <= 3     # the last step took few iterations
-        if g_prev is not None and g_norm > 0.0 and easy:
-            self.dt = min(self.dt_max, self.dt * min(self.growth, max(2.0, g_prev / g_norm)))
-        self.g_prev = g_norm
-        x_old = self.x.ravel().copy()
-        for _ in range(20):
-            transient = _transient_residual(self.function, self.mass_matrix, x_old, self.dt)
-            step_result = _attempt(transient, self.x, self.args, self.inner)
+        dt = self._grown_dt(s)
+        x_old = s.x.ravel().copy()
+        for _ in range(_STEP_TRIES):
+            transient = _transient_residual(self.function, self.mass_matrix, x_old, dt)
+            step_result = _attempt(transient, s.x, self.args, self.inner)
             if step_result.success:
                 break
-            self.dt *= 0.25
+            dt *= _DT_SHRINK
         else:
-            return self.result(False, f"pseudo-time step {step} failed down to dt = {self.dt:.2e}", step)
-        self.x = step_result.x
-        history.append({"dt": self.dt, "residual_norm": g_norm, "nit": step_result.nit})
+            return _Stage(self.result(False, f"pseudo-time step {step} failed down to dt = {dt:.2e}", step, s), s)
+        history = s.history + [{"dt": dt, "residual_norm": s.g_norm, "nit": step_result.nit}]
         if self.verbose:
-            print(f"pseudo_transient step {step}: dt={self.dt:.2e} |g|={g_norm:.2e} "
-                  f"nit={step_result.nit}")
-        return None
+            print(f"pseudo_transient step {step}: dt={dt:.2e} |g|={s.g_norm:.2e} nit={step_result.nit}")
+        return _Stage(None, s._replace(x=step_result.x, dt=dt, g_prev=s.g_norm, history=history))
 
 
 def _transient_residual(function, mass_matrix, x_old, dt):
@@ -1353,10 +1440,10 @@ def pseudo_transient(function, initial_guess, mass=1.0, dt=1e-3, args=(), *, dt_
     mass_matrix = _mass_matrix(mass, shape)
     inner = {"maxfev": 10, "damping": "guarded", **(newton_kwargs or {})}
     steady = {"maxfev": 30, "damping": "guarded", **(steady_kwargs or {})}
-    run = _PseudoTransient(function=function, args=args, x=x, mass_matrix=mass_matrix, inner=inner,
-                           steady=steady, dt=dt, dt_max=dt_max, max_steps=max_steps, growth=growth,
-                           steady_ratio=steady_ratio, steady_every=steady_every, verbose=verbose)
-    return run.march()
+    run = _PseudoTransient(function=function, args=args, mass_matrix=mass_matrix, inner=inner, steady=steady,
+                           dt_max=dt_max, max_steps=max_steps, growth=growth, steady_ratio=steady_ratio,
+                           steady_every=steady_every, verbose=verbose)
+    return run.march(x, dt)
 
 
 _MAX_SECANT_RATIO = 4.0
@@ -1384,25 +1471,49 @@ def _continuation_predictions(path_p, path_x, p):
         yield path_x[-1] + ratio * (path_x[-1] - path_x[-2]), abs(ratio) <= _MAX_SECANT_RATIO
         if abs(ratio) <= _MAX_SECANT_RATIO:
             return
+    guess = _earlier_secant(path_p, path_x, step)
+    yield (path_x[-1].copy(), False) if guess is None else (guess, True)
+
+
+def _earlier_secant(path_p, path_x, step):
+    """The secant over ``step`` from the most recent solution before the last two that lies within the
+    bound, None when there is none."""
     for k in range(len(path_p) - 3, -1, -1):
         base = path_p[-1] - path_p[k]
         if base != 0 and abs(step) <= _MAX_SECANT_RATIO * abs(base):
-            yield path_x[-1] + (step / base) * (path_x[-1] - path_x[k]), True
-            return
-    yield path_x[-1].copy(), False
+            return path_x[-1] + (step / base) * (path_x[-1] - path_x[k])
+    return None
+
+
+class _Correction(NamedTuple):
+    """One corrector attempt at a sub-step: the newton result (None below round-off), whether it
+    jumped to another branch, and whether its prediction was a secant within the bound."""
+
+    res: object
+    jumped: bool
+    bounded: bool
+
+    @property
+    def ok(self):
+        """Whether the sub-step is accepted: converged without a jump."""
+        return self.res is not None and self.res.success and not self.jumped
+
+
+class _ContinuationSettings(NamedTuple):
+    """The options of one :func:`continuation` run: newton's, and its own."""
+
+    options: dict
+    max_change: Optional[float]
+    max_halvings: int
+    verbose: object
 
 
 class _Continuation:
     """One :func:`continuation` run: the path of solutions and those at the requested values."""
 
-    def __init__(self, function, options, max_change, max_halvings, verbose):
-        self.function, self.options, self.verbose = function, options, verbose
-        self.max_change, self.max_halvings = max_change, max_halvings
-        self.done, self.xs, self.results = [], [], []
-        self.path_p, self.path_x = [], []
-
-    def start(self, p, first):
-        """Record the solution ``first`` at the first value ``p``."""
+    def __init__(self, function, settings, p, first):
+        """Start from the solution ``first`` at the first value ``p``."""
+        self.function, self.settings = function, settings
         self.done, self.xs, self.results = [p], [first.x.copy()], [first]
         self.path_p, self.path_x = [p], [first.x.copy()]
 
@@ -1414,31 +1525,30 @@ class _Continuation:
 
     def _jumped(self, res, guess):
         """Whether the converged ``res`` moved more than ``max_change`` from its prediction."""
-        path_x = self.path_x
-        if res.success and self.max_change is not None and len(self.path_p) >= 2:
-            # no prediction to compare with before the second point
-            size = max(float(np.max(np.abs(path_x[-1]))),
-                       float(np.max(np.abs(res.x))), np.finfo(float).tiny)
-            return float(np.max(np.abs(res.x - guess))) > self.max_change * size
-        return False
+        if not res.success or self.settings.max_change is None:
+            return False
+        if len(self.path_p) < 2:            # no prediction to compare with before the second point
+            return False
+        size = max(float(np.max(np.abs(self.path_x[-1]))), float(np.max(np.abs(res.x))), np.finfo(float).tiny)
+        return float(np.max(np.abs(res.x - guess))) > self.settings.max_change * size
 
     def correct(self, p):
-        """Newton at ``p`` from each prediction in turn: ``(res, jumped, bounded)``."""
-        res, jumped, bounded = None, False, False
-        if p != self.path_p[-1]:            # else the sub-step is below round-off
-            function, options = self.function, self.options
-            for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
-                res = _attempt(lambda xv, _p=p: function(xv, _p), guess, (), options)
-                jumped = self._jumped(res, guess)
-                if res.success and not jumped:
-                    break
-        return res, jumped, bounded
+        """Newton at ``p`` from each prediction in turn: the last :class:`_Correction`."""
+        correction = _Correction(None, False, False)
+        if p == self.path_p[-1]:            # the sub-step is below round-off
+            return correction
+        for guess, bounded in _continuation_predictions(self.path_p, self.path_x, p):
+            res = _attempt(lambda xv, _p=p: self.function(xv, _p), guess, (), self.settings.options)
+            correction = _Correction(res, self._jumped(res, guess), bounded)
+            if correction.ok:
+                break
+        return correction
 
     def _accept(self, p, res, target):
         """Add the solution at ``p`` to the path; whether it is the one at ``target``."""
         self.path_p.append(p)
         self.path_x.append(res.x.copy())
-        if self.verbose:
+        if self.settings.verbose:
             print(f"continuation p={p:g} nit={res.nit}")
         if p == target:
             self.done.append(target)
@@ -1450,7 +1560,7 @@ class _Continuation:
     def _halved(self, level, step, tried):
         """The next sub-step level, at least one halving and short of ``tried``."""
         level += 1
-        while level <= self.max_halvings and abs(step) * 0.5**level >= tried:
+        while level <= self.settings.max_halvings and abs(step) * 0.5**level >= tried:
             level += 1
         return level
 
@@ -1460,49 +1570,73 @@ class _Continuation:
         # halves the sub-step; an accepted one doubles the next (at most to
         # the requested step), so a stretch needing short sub-steps does not
         # use up the halving budget while every sub-step succeeds.
-        path_p, max_halvings = self.path_p, self.max_halvings
+        path_p, max_halvings = self.path_p, self.settings.max_halvings
         step = target - path_p[-1]
         level = 0
         p = target
         while True:
-            res, jumped, bounded = self.correct(p)
-            if res is not None and res.success and not jumped:
-                if self._accept(p, res, target):
-                    return None
-                level = max(level - 1, 0)
-                h = step * 0.5**level
-                p = target if abs(target - p) <= abs(h) else p + h
+            correction = self.correct(p)
+            if not correction.ok:
+                # Halve until the sub-step is shorter than the one that failed: a
+                # failure at the capped last sub-step would otherwise be retried
+                # with the same prediction.
+                level = self._halved(level, step, abs(p - path_p[-1]))
+                if level > max_halvings or correction.res is None:
+                    return self._stopped(target, correction)
+                p = path_p[-1] + step * 0.5**level
                 continue
-            # Halve until the sub-step is shorter than the one that failed: a
-            # failure at the capped last sub-step would otherwise be retried
-            # with the same prediction.
-            level = self._halved(level, step, abs(p - path_p[-1]))
-            if level > max_halvings or res is None:
-                why = _continuation_failure(res, jumped, bounded)
-                return OptimizeResult(
-                    x=self.path_x[-1], success=False, params=self.done, xs=self.xs,
-                    results=self.results, last_param=path_p[-1],
-                    message=f"stopped at p = {path_p[-1]:g} on the way to {target:g}: {why}")
-            p = path_p[-1] + step * 0.5**level
+            if self._accept(p, correction.res, target):
+                return None
+            level = max(level - 1, 0)
+            p = _capped(p, step * 0.5**level, target)
+
+    def march(self, targets):
+        """Reach each of ``targets`` in turn: the result of :func:`continuation`."""
+        for target in targets:
+            if target == self.path_p[-1]:            # a repeated value: nothing to solve
+                self.repeat(target)
+            elif (failed := self.reach(target)) is not None:
+                return failed
+        return OptimizeResult(x=self.path_x[-1], success=True, params=self.done, xs=self.xs, results=self.results,
+                              last_param=self.path_p[-1], message="Reached every parameter value")
+
+    def _stopped(self, target, correction):
+        """The failure result of a march stopped on the way to ``target``."""
+        why = _continuation_failure(correction.res, correction.jumped, correction.bounded)
+        return OptimizeResult(
+            x=self.path_x[-1], success=False, params=self.done, xs=self.xs,
+            results=self.results, last_param=self.path_p[-1],
+            message=f"stopped at p = {self.path_p[-1]:g} on the way to {target:g}: {why}")
+
+
+def _capped(p, h, target):
+    """The next sub-step value ``p + h``, or ``target`` when it is at most ``h`` away."""
+    return target if abs(target - p) <= abs(h) else p + h
+
+
+def _failure_cause(res, jumped, bounded):
+    """The cause in :func:`_continuation_failure`, before the predictor suffix."""
+    if res is None:
+        return "the sub-step fell below round-off"
+    if jumped:
+        why = "the corrector jumps to another solution branch"
+        if bounded:
+            why += "; probably a turning point (fold) of the solution branch"
+        return why
+    if res.status == 4 and res.nit == 0:
+        return (f"the residual cannot be evaluated at the prediction ({res.message}); "
+                "it lies outside the residual's domain")
+    why = f"the corrector fails ({res.message})"
+    if bounded:
+        why += ("; a turning point (fold) of the solution branch, or a "
+                "corrector that cannot converge here (an inexact Jacobian, "
+                "such as NumJac's eps_jac, or a tolerance below round-off)")
+    return why
 
 
 def _continuation_failure(res, jumped, bounded):
     """Why continuation stopped after the sub-step that gave ``res``."""
-    if res is None:
-        why = "the sub-step fell below round-off"
-    elif jumped:
-        why = "the corrector jumps to another solution branch"
-        if bounded:
-            why += "; probably a turning point (fold) of the solution branch"
-    elif res.status == 4 and res.nit == 0:
-        why = (f"the residual cannot be evaluated at the prediction ({res.message}); "
-               "it lies outside the residual's domain")
-    else:
-        why = f"the corrector fails ({res.message})"
-        if bounded:
-            why += ("; a turning point (fold) of the solution branch, or a "
-                    "corrector that cannot converge here (an inexact Jacobian, "
-                    "such as NumJac's eps_jac, or a tolerance below round-off)")
+    why = _failure_cause(res, jumped, bounded)
     if res is not None and not bounded:
         why += (" from the constant predictor (no earlier solution far enough "
                 "back for a secant)")
@@ -1576,17 +1710,9 @@ def continuation(function, initial_guess, params, *, max_halvings=6, max_change=
                               last_param=None,
                               message=f"no solution at the first value {params[0]:g}: "
                                       f"{first.message}")
-    run = _Continuation(function, options, max_change, max_halvings, verbose)
-    run.start(params[0], first)
-    for target in params[1:]:
-        if target == run.path_p[-1]:            # a repeated value: nothing to solve
-            run.repeat(target)
-            continue
-        failed = run.reach(target)
-        if failed is not None:
-            return failed
-    return OptimizeResult(x=run.path_x[-1], success=True, params=run.done, xs=run.xs, results=run.results,
-                          last_param=run.path_p[-1], message="Reached every parameter value")
+    settings = _ContinuationSettings(options=options, max_change=max_change, max_halvings=max_halvings, verbose=verbose)
+    run = _Continuation(function, settings, params[0], first)
+    return run.march(params[1:])
 
 
 def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
@@ -1608,16 +1734,13 @@ def clip_approach(values, dummy, lower_bounds=0, upper_bounds=None, factor=0):
         np.clip(values, lower_bounds, upper_bounds, out=values)
     else:
         if lower_bounds is not None:
-            below_lower = values < lower_bounds
-            if np.any(below_lower):
-                broadcasted_lower_bounds = np.broadcast_to(lower_bounds, values.shape)
-                values[below_lower] = (1.0 + factor) * broadcasted_lower_bounds[
-                    below_lower
-                ] - factor * values[below_lower]
+            _approach_bound(values, values < lower_bounds, lower_bounds, factor)
         if upper_bounds is not None:
-            above_upper = values > upper_bounds
-            if np.any(above_upper):
-                broadcasted_upper_bounds = np.broadcast_to(upper_bounds, values.shape)
-                values[above_upper] = (1.0 + factor) * broadcasted_upper_bounds[
-                    above_upper
-                ] - factor * values[above_upper]
+            _approach_bound(values, values > upper_bounds, upper_bounds, factor)
+
+
+def _approach_bound(values, mask, bounds, factor):
+    """In place: the ``mask`` entries of ``values`` past ``bounds``, moved by the approach rule."""
+    if np.any(mask):
+        b = np.broadcast_to(bounds, values.shape)
+        values[mask] = (1.0 + factor) * b[mask] - factor * values[mask]

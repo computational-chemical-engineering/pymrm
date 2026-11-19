@@ -23,6 +23,11 @@ from typing import NamedTuple
 import numpy as np
 from scipy.sparse import diags, csc_array, csr_array
 
+try:  # private scipy kernel behind ``csc_array @ vector``
+    from scipy.sparse._sparsetools import csc_matvec as _csc_matvec
+except ImportError:  # pragma: no cover
+    _csc_matvec = None
+
 
 _FORMATS = {"csc", "csr"}
 
@@ -54,6 +59,24 @@ def _sparse_array(args, shape=None, format="csc"):
     if shape is not None:
         return cls(args, shape=shape)
     return cls(args)
+
+
+def _csc_abs_matvec(jac, v):
+    """``abs(jac) @ v`` without the checked copy that ``abs(jac)`` builds.
+
+    For a canonical float64 ``csc_array`` ``jac`` and a float64 vector ``v`` of length
+    ``jac.shape[1]`` (the caller checks both). scipy's ``@`` calls the same ``csc_matvec``
+    kernel on the same absolute entries into a zeroed result, so the floats are identical
+    (checked against scipy 1.18). Arrays that are inconsistent with their shape take the
+    checked route, which raises as before.
+    """
+    n_cols = jac.shape[1]
+    consistent = jac.indptr.size == n_cols + 1 and jac.indices.size == jac.data.size == jac.indptr[n_cols]
+    if _csc_matvec is None or not consistent:  # pragma: no cover
+        return abs(jac) @ v
+    result = np.zeros(jac.shape[0])
+    _csc_matvec(*jac.shape, jac.indptr, jac.indices, np.abs(jac.data), v, result)
+    return result
 
 
 def unwrap_bc_coeff(shape, bc_coeff, axis=0):

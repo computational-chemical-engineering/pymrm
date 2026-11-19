@@ -1,6 +1,7 @@
 """Numerical Jacobian construction with sparse stencil support."""
 
 import warnings
+from typing import NamedTuple
 
 import numpy as np
 from scipy.sparse import csc_array, csr_array, sparray
@@ -10,6 +11,21 @@ from numba import njit, prange
 
 def _slice_to_list(slc, dim_size):
     return list(range(*slc.indices(dim_size)))
+
+
+def _expand_axis_element(v, dim_size):
+    """Expand one element of a list axis specification (int, slice or range) to a list of ints."""
+    if isinstance(v, int):
+        return [v]
+    if isinstance(v, slice):
+        return _slice_to_list(v, dim_size)
+    if isinstance(v, range):
+        return list(v)
+    raise ValueError(
+        "Unsupported element in list for axis expansion: {}".format(
+            type(v)
+        )
+    )
 
 
 def _expand_axis(axis_val, dim_size):
@@ -30,18 +46,7 @@ def _expand_axis(axis_val, dim_size):
         # Could be a list of integers or slices
         expanded_list = []
         for v in axis_val:
-            if isinstance(v, int):
-                expanded_list.append(v)
-            elif isinstance(v, slice):
-                expanded_list.extend(_slice_to_list(v, dim_size))
-            elif isinstance(v, range):
-                expanded_list.extend(list(v))
-            else:
-                raise ValueError(
-                    "Unsupported element in list for axis expansion: {}".format(
-                        type(v)
-                    )
-                )
+            expanded_list.extend(_expand_axis_element(v, dim_size))
         return expanded_list
     elif isinstance(axis_val, range):
         return list(axis_val)
@@ -121,6 +126,25 @@ def _normalize_dependency(dep, shape_in, shape_out):
     return index_in, index_out, fixed_axes, periodic_axes
 
 
+def _expand_dependency(dep, shape_in, shape_out):
+    """Expand one normalised dependency into the list of explicit ``(idx_in, idx_out, fixed, periodic)``."""
+    idx_in, idx_out, fixed_axes, periodic_axes = dep
+    if idx_out is None:
+        if len(fixed_axes) > 0:
+            raise ValueError(
+                "Fixed axes are not allowed when the out-index is None."
+            )
+        idx_out = (0,) * len(shape_out)
+    in_expanded = _expand_index(idx_in, shape_in)  # list of tuples
+    out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
+
+    return [
+        (each_in, each_out, fixed_axes, periodic_axes)
+        for each_out in out_expanded
+        for each_in in in_expanded
+    ]
+
+
 def expand_dependencies(shape_in, shape_out, dependencies):
     """Expand compact dependency definitions into fully explicit tuples.
 
@@ -149,19 +173,8 @@ def expand_dependencies(shape_in, shape_out, dependencies):
 
     # Now expand reference and dependent indices
     expanded_deps = []
-    for idx_in, idx_out, fixed_axes, periodic_axes in normalized_deps:
-        if idx_out is None:
-            if len(fixed_axes) > 0:
-                raise ValueError(
-                    "Fixed axes are not allowed when the out-index is None."
-                )
-            idx_out = (0,) * len(shape_out)
-        in_expanded = _expand_index(idx_in, shape_in)  # list of tuples
-        out_expanded = _expand_index(idx_out, shape_out)  # list of tuples or [None]
-
-        for idx_out in out_expanded:
-            for idx_in in in_expanded:
-                expanded_deps.append((idx_in, idx_out, fixed_axes, periodic_axes))
+    for dep in normalized_deps:
+        expanded_deps.extend(_expand_dependency(dep, shape_in, shape_out))
 
     return expanded_deps
 
@@ -262,6 +275,42 @@ def iterate_over_entries(
     return current_idx
 
 
+class _Extent(NamedTuple):
+    """Relative extent of one dependency: ``shape_rel`` and the start positions in input and output."""
+
+    shape_rel: np.ndarray
+    idx_in: np.ndarray
+    idx_out: np.ndarray
+
+
+def _dependency_extent(dep, shape_in, shape_out):
+    """The ``_Extent`` of one expanded dependency, relative axes clipped at zero."""
+    idx_in, idx_out, fixed_axes, periodic_axes = dep
+    # Adjust idx_out and idx_in so that one of them starts at zero for relative indexing
+    # This reduces complexity when computing final positions.
+    idx_out_arr = np.maximum(-np.array(idx_in, dtype=np.int64), 0)
+    idx_in_arr = np.maximum(np.array(idx_in, dtype=np.int64), 0)
+    shape_rel = np.minimum(shape_in - idx_in_arr, shape_out - idx_out_arr)
+    for d in fixed_axes:
+        shape_rel[d] = 1
+        idx_out_arr[d] = idx_out[d]
+    for d in periodic_axes:
+        shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
+    return _Extent(np.maximum(shape_rel, 0), idx_in_arr, idx_out_arr)
+
+
+def _unique_pairs(primary, secondary):
+    """Unique ``(primary, secondary)`` pairs sorted by ``primary`` then ``secondary``, as two arrays."""
+    sorted_idx = np.unique(
+        np.concatenate(
+            (primary.reshape((1, -1)), secondary.reshape((1, -1))),
+            axis=0,
+        ),
+        axis=1,
+    )
+    return sorted_idx[0, :], sorted_idx[1, :]
+
+
 def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     """
     Generate row and column indices for the sparse matrix representation of a stencil pattern.
@@ -291,43 +340,17 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
             "Input and output shapes must have the same number of dimensions."
         )
 
-    # Estimate total number of non-zero elements needed
-    total_elements = 0
-    for dep in dependencies:
-        idx_in, idx_out, fixed_axes, periodic_axes = dep
-        idx_in_arr = np.array(idx_in, dtype=np.int64)
-        shape_rel = np.minimum(
-            shape_in + np.minimum(-idx_in_arr, 0), shape_out + np.minimum(idx_in_arr, 0)
-        )
-        for d in fixed_axes:
-            shape_rel[d] = 1
-        for d in periodic_axes:
-            shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
-        shape_rel = np.maximum(shape_rel, 0)
-        total_elements += np.prod(shape_rel)
+    extents = [_dependency_extent(dep, shape_in, shape_out) for dep in dependencies]
 
     # Preallocate arrays for row and col indices
+    total_elements = 0
+    for shape_rel, _, _ in extents:
+        total_elements += np.prod(shape_rel)
     row_indices = np.empty(total_elements, dtype=np.int64)
     col_indices = np.empty(total_elements, dtype=np.int64)
 
     entry_index = 0
-    for dep in dependencies:
-        idx_in, idx_out, fixed_axes, periodic_axes = dep
-        idx_in_arr = np.array(idx_in, dtype=np.int64)
-
-        # Adjust shape_rel for periodic and fixed axes
-        # Adjust idx_out and idx_in so that one of them starts at zero for relative indexing
-        # This reduces complexity when computing final positions.
-        idx_out_arr = np.maximum(-idx_in_arr, 0)
-        idx_in_arr = np.maximum(idx_in_arr, 0)
-        shape_rel = np.minimum(shape_in - idx_in_arr, shape_out - idx_out_arr)
-        for d in fixed_axes:
-            shape_rel[d] = 1
-            idx_out_arr[d] = idx_out[d]
-        for d in periodic_axes:
-            shape_rel[d] = np.minimum(shape_in[d], shape_out[d])
-        shape_rel = np.maximum(shape_rel, 0)
-
+    for shape_rel, idx_in_arr, idx_out_arr in extents:
         # Fill row and col indices using the helper
         entry_index = iterate_over_entries(
             shape_in,
@@ -345,26 +368,10 @@ def generate_sparsity_pattern(shape_in, shape_out, dependencies, format="csc"):
     # already in compressed-format order.
     if format == "csr":
         # Row-major: sort by (row, col) — optimal for CSR
-        sorted_idx = np.unique(
-            np.concatenate(
-                (row_indices.reshape((1, -1)), col_indices.reshape((1, -1))),
-                axis=0,
-            ),
-            axis=1,
-        )
-        row_indices = sorted_idx[0, :]
-        col_indices = sorted_idx[1, :]
+        row_indices, col_indices = _unique_pairs(row_indices, col_indices)
     else:
         # Column-major: sort by (col, row) — optimal for CSC (default)
-        sorted_idx = np.unique(
-            np.concatenate(
-                (col_indices.reshape((1, -1)), row_indices.reshape((1, -1))),
-                axis=0,
-            ),
-            axis=1,
-        )
-        col_indices = sorted_idx[0, :]
-        row_indices = sorted_idx[1, :]
+        col_indices, row_indices = _unique_pairs(col_indices, row_indices)
 
     return row_indices, col_indices
 
@@ -400,6 +407,44 @@ def group_columns_by_non_overlap_numba(indptr, indices):
     return g, groupnum
 
 
+class _Pattern(NamedTuple):
+    """Boolean sparsity pattern ``matrix`` and whether a symmetric reordering applies to it."""
+
+    matrix: csc_array
+    reorderable: bool
+
+
+def _boolean_pattern(args, shape):
+    """The boolean ``csc_array`` pattern of ``colgroup`` input: a sparse array or ``(rows, cols)`` arrays."""
+    if isinstance(args[0], sparray):
+        S = csc_array(args[0])
+        return _Pattern(csc_array((S.data != 0, S.indices, S.indptr), shape=S.shape), True)
+    if isinstance(args[0], np.ndarray) and isinstance(args[1], np.ndarray):
+        rows = args[0]
+        cols = args[1]
+        data = np.ones(rows.shape, dtype=np.bool_)
+        T = csc_array((data, (rows, cols)), shape=shape)
+        return _Pattern(T, shape[0] == shape[1])
+    raise ValueError(
+        "Input should be a sparse array, or two ndarrays containing row and col indices"
+    )
+
+
+def _reordered_groups(T, g, num_groups):
+    """Column groups of ``T`` after a Cuthill-McKee ordering, if that needs fewer groups."""
+    # scipy returns the reverse Cuthill-McKee order; reversing it gives the plain Cuthill-McKee order.
+    p = reverse_cuthill_mckee(T)
+    p = p[::-1]
+    T = T[:, p]
+    TT = T.transpose() @ T
+    g2, num_groups2 = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
+    # Use whichever packing required fewer groups.
+    if num_groups2 < num_groups:
+        q = np.argsort(p)
+        return g2[q], num_groups2
+    return g, num_groups
+
+
 def colgroup(*args, shape=None, try_reorder=True):
     """Group structurally independent columns for simultaneous perturbations.
 
@@ -418,41 +463,38 @@ def colgroup(*args, shape=None, try_reorder=True):
     tuple[numpy.ndarray, int]
         Column group labels and the number of groups.
     """
-    if isinstance(args[0], sparray):
-        S = csc_array(args[0])
-        T = csc_array((S.data != 0, S.indices, S.indptr), shape=S.shape)
-    elif isinstance(args[0], np.ndarray) and isinstance(args[1], np.ndarray):
-        rows = args[0]
-        cols = args[1]
-        data = np.ones(rows.shape, dtype=np.bool_)
-        T = csc_array((data, (rows, cols)), shape=shape)
-        if shape[0] != shape[1]:
-            try_reorder = False
-    else:
-        raise ValueError(
-            "Input should be a sparse array, or two ndarrays containing row and col indices"
-        )
+    pattern = _boolean_pattern(args, shape)
+    T = pattern.matrix
+    try_reorder = try_reorder and pattern.reorderable
 
     TT = T.transpose() @ T
     g, num_groups = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
 
     if try_reorder and num_groups > 1:
-        # Form the reverse column minimum-degree ordering.
-        p = reverse_cuthill_mckee(T)
-        p = p[::-1]
-        T = T[:, p]
-        TT = T.transpose() @ T
-        g2, num_groups2 = group_columns_by_non_overlap_numba(TT.indptr, TT.indices)
-        # Use whichever packing required fewer groups.
-        if num_groups2 < num_groups:
-            q = np.argsort(p)
-            g = g2[q]
-            num_groups = num_groups2
+        g, num_groups = _reordered_groups(T, g, num_groups)
 
     return g, num_groups
 
 
 DENSE_1D_WARNING_SIZE = 100
+
+
+def _normalize_axes(axes, name, ndims):
+    """Sorted unique ``axes`` taken modulo ``ndims``; an axis outside ``-ndims <= axis < ndims`` raises."""
+    out = []
+    for axis in axes:
+        if not -ndims <= axis < ndims:
+            raise ValueError(f"{name}: axis {axis} out of range for ndims={ndims}")
+        out.append(axis % ndims)
+    return sorted(set(out))
+
+
+def _block_pattern(ndims, blocks):
+    """Index pattern with ``slice(None)`` on the block axes and ``0`` elsewhere."""
+    dep_block = ndims * [0]
+    for axis in blocks:
+        dep_block[axis] = slice(None)
+    return dep_block
 
 
 def stencil_block_diagonals(
@@ -487,24 +529,14 @@ def stencil_block_diagonals(
     Jacobian stays exact.
     """
 
-    def _normalise(axes, name):
-        out = []
-        for axis in axes:
-            if not -ndims <= axis < ndims:
-                raise ValueError(f"{name}: axis {axis} out of range for ndims={ndims}")
-            out.append(axis % ndims)
-        return sorted(set(out))
-
-    diagonals = _normalise(axes_diagonals, "axes_diagonals")
-    periodic = _normalise(periodic_axes, "periodic_axes")
+    diagonals = _normalize_axes(axes_diagonals, "axes_diagonals", ndims)
+    periodic = _normalize_axes(periodic_axes, "periodic_axes", ndims)
     if axes_blocks is None:
         blocks = [] if (ndims == 1 and 0 in diagonals) else [ndims - 1]
     else:
-        blocks = _normalise(axes_blocks, "axes_blocks")
+        blocks = _normalize_axes(axes_blocks, "axes_blocks", ndims)
 
-    dep_block = ndims * [0]
-    for axis in blocks:
-        dep_block[axis] = slice(None)
+    dep_block = _block_pattern(ndims, blocks)
     band_axes = [axis for axis in diagonals if axis not in blocks]
     if not band_axes:
         return [(tuple(dep_block), tuple(dep_block), blocks, periodic)]
@@ -625,6 +657,18 @@ def _resolve_shapes(shape, shape_in, shape_out):
     )
 
 
+def _dense_1d_shape(shape, stencil, kwargs):
+    """``shape`` as a tuple if the default stencil on it gives a large dense 1-D Jacobian, else ``None``."""
+    if shape is None or kwargs:
+        return None
+    if stencil is not stencil_block_diagonals:
+        return None
+    shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
+    if len(shape_t) != 1:
+        return None
+    return shape_t if shape_t[0] >= DENSE_1D_WARNING_SIZE else None
+
+
 class NumJac:
     """Numerical Jacobian evaluator based on grouped finite differences.
 
@@ -688,17 +732,16 @@ class NumJac:
         self.eps_jac = eps_jac
         self.format = format
 
-        if shape is not None and stencil is stencil_block_diagonals and not kwargs:
-            shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
-            if len(shape_t) == 1 and shape_t[0] >= DENSE_1D_WARNING_SIZE:
-                warnings.warn(
-                    f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
-                    f"({shape_t[0]} function evaluations per call). For a field on a grid "
-                    f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
-                    "dense coupling is intended.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+        shape_t = _dense_1d_shape(shape, stencil, kwargs)
+        if shape_t is not None:
+            warnings.warn(
+                f"NumJac({shape_t}) builds a dense {shape_t[0]} x {shape_t[0]} Jacobian "
+                f"({shape_t[0]} function evaluations per call). For a field on a grid "
+                f"use shape {(shape_t[0], 1)}; pass axes_blocks=[-1] to confirm that "
+                "dense coupling is intended.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Initialize stencil
         self.init_stencil(stencil, **kwargs)

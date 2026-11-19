@@ -44,25 +44,32 @@ def translate_indices_to_larger_array(linear_indices, shape, new_shape, offset=N
     return new_linear_indices
 
 
+def _pair_if_integers(dims):
+    """``(dims, dims)`` when ``dims`` is all integers, else the tuple of ``dims`` unchanged."""
+    dims = tuple(dims)
+    if all(isinstance(dim, numbers.Integral) for dim in dims):
+        return dims, dims
+    return dims
+
+
+class _ShapeOffset(NamedTuple):
+    """``shape``, ``new_shape`` and ``offset`` of an index update, each in ((rows), (cols)) form."""
+
+    shape: tuple
+    new_shape: tuple
+    offset: tuple
+
+
 def _parse_shape_offset(shape, new_shape, offset):
     """Normalise *shape*, *new_shape* and *offset* into ((rows), (cols)) form.
 
     This is a shared helper for :func:`update_csc_array_indices` and
     :func:`update_csr_array_indices`.
     """
-    shape = tuple(shape)
-    if all(isinstance(dim, numbers.Integral) for dim in shape):
-        shape = (shape, shape)
-    new_shape = tuple(new_shape)
-    if all(isinstance(dim, numbers.Integral) for dim in new_shape):
-        new_shape = (new_shape, new_shape)
-    if offset is None:
-        offset = (None, None)
-    else:
-        offset = tuple(offset)
-        if all(isinstance(dim, numbers.Integral) for dim in offset):
-            offset = (offset, offset)
-    return shape, new_shape, offset
+    shape = _pair_if_integers(shape)
+    new_shape = _pair_if_integers(new_shape)
+    offset = (None, None) if offset is None else _pair_if_integers(offset)
+    return _ShapeOffset(shape, new_shape, offset)
 
 
 def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
@@ -79,87 +86,53 @@ def update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
     return _update_csc_array_indices(sparse_mat, shape, new_shape, offset)
 
 
-def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
-    """Internal CSC implementation for :func:`update_csc_array_indices`."""
-    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
+def _update_compressed_indices(sparse_mat, parsed, major):
+    """Re-embed a compressed sparse matrix; ``major`` is 0 for CSR and 1 for CSC."""
+    shape, new_shape, offset = parsed
+    minor = 1 - major
 
     # Extract matrix data and original indices
     data = sparse_mat.data
-    row_indices = sparse_mat.indices  # Row indices (modifiable)
-    col_pointers = sparse_mat.indptr  # Column pointers
-    num_rows = sparse_mat.shape[0]  # Number of rows in the original matrix
-    num_cols = sparse_mat.shape[1]  # Number of columns in the original matrix
+    indices = sparse_mat.indices
+    pointers = sparse_mat.indptr
+    n_major = sparse_mat.shape[major]
+    n_minor = sparse_mat.shape[minor]
 
-    # Generate original linear row and column indices
-    original_linear_rows = row_indices
-    original_linear_cols = np.arange(num_cols)  # Columns as a sequential array
-
-    if (shape[0] is None) or (new_shape[0] is None):
-        new_row_indices = original_linear_rows
+    if (shape[minor] is None) or (new_shape[minor] is None):
+        new_indices = indices
     else:
-        new_row_indices = translate_indices_to_larger_array(
-            original_linear_rows, shape[0], new_shape[0], offset[0]
+        new_indices = translate_indices_to_larger_array(
+            indices, shape[minor], new_shape[minor], offset[minor]
         )
-        num_rows = np.prod(new_shape[0])
+        n_minor = math.prod(new_shape[minor])
 
-    if (shape[1] is None) or (new_shape[1] is None):
-        new_col_pointers = col_pointers
+    if (shape[major] is None) or (new_shape[major] is None):
+        new_pointers = pointers
     else:
-        new_col_indices = translate_indices_to_larger_array(
-            original_linear_cols, shape[1], new_shape[1], offset[1]
+        new_major = translate_indices_to_larger_array(
+            np.arange(n_major), shape[major], new_shape[major], offset[major]
         )
-        num_cols = math.prod(new_shape[1])
-        new_col_pointers = np.zeros(num_cols + 1, dtype=int)
-        new_col_pointers[new_col_indices + 1] = np.diff(col_pointers)
-        new_col_pointers = np.cumsum(new_col_pointers)
+        n_major = math.prod(new_shape[major])
+        new_pointers = np.zeros(n_major + 1, dtype=int)
+        new_pointers[new_major + 1] = np.diff(pointers)
+        new_pointers = np.cumsum(new_pointers)
 
     # Create a new sparse matrix with the corrected 2D shape
-    updated_mat = csc_array(
-        (data, new_row_indices, new_col_pointers), shape=(num_rows, num_cols)
-    )
+    array_cls = (csr_array, csc_array)[major]
+    dims = (n_major, n_minor) if major == 0 else (n_minor, n_major)
+    return array_cls((data, new_indices, new_pointers), shape=dims)
 
-    return updated_mat
+
+def _update_csc_array_indices(sparse_mat, shape, new_shape, offset=None):
+    """Internal CSC implementation for :func:`update_csc_array_indices`."""
+    parsed = _parse_shape_offset(shape, new_shape, offset)
+    return _update_compressed_indices(sparse_mat, parsed, 1)
 
 
 def update_csr_array_indices(sparse_mat, shape, new_shape, offset=None):
     """Update CSR matrix row/column indexing for embedding in a larger domain."""
-    shape, new_shape, offset = _parse_shape_offset(shape, new_shape, offset)
-
-    # Extract matrix data and original indices
-    data = sparse_mat.data
-    col_indices = sparse_mat.indices    # Column indices
-    row_pointers = sparse_mat.indptr    # Row pointers
-    num_rows = sparse_mat.shape[0]
-    num_cols = sparse_mat.shape[1]
-
-    original_linear_cols = col_indices
-    original_linear_rows = np.arange(num_rows)
-
-    if (shape[1] is None) or (new_shape[1] is None):
-        new_col_indices = original_linear_cols
-    else:
-        new_col_indices = translate_indices_to_larger_array(
-            original_linear_cols, shape[1], new_shape[1], offset[1]
-        )
-        num_cols = math.prod(new_shape[1])
-
-    if (shape[0] is None) or (new_shape[0] is None):
-        new_row_pointers = row_pointers
-    else:
-        new_row_indices = translate_indices_to_larger_array(
-            original_linear_rows, shape[0], new_shape[0], offset[0]
-        )
-        num_rows = math.prod(new_shape[0])
-        new_row_pointers = np.zeros(num_rows + 1, dtype=int)
-        new_row_pointers[new_row_indices + 1] = np.diff(row_pointers)
-        new_row_pointers = np.cumsum(new_row_pointers)
-
-    # Create a new sparse matrix with the corrected 2D shape
-    updated_mat = csr_array(
-        (data, new_col_indices, new_row_pointers), shape=(num_rows, num_cols)
-    )
-
-    return updated_mat
+    parsed = _parse_shape_offset(shape, new_shape, offset)
+    return _update_compressed_indices(sparse_mat, parsed, 0)
 
 
 def update_array_indices(sparse_mat, shape, new_shape, offset=None):
@@ -215,24 +188,62 @@ def _check_shared_axes(shapes, first, axis):
             )
 
 
+def _integer_slice(ix, dim):
+    """Unit slice of the integer ``ix`` (negative counts from the end), ``None`` if out of range."""
+    ix = int(ix) + (dim if ix < 0 else 0)
+    return slice(ix, ix + 1) if 0 <= ix < dim else None
+
+
+def _unit_step_extent(ix, dim):
+    """Start and length of the slice ``ix`` in an axis of length ``dim``, ``None`` unless a unit-step box."""
+    start, stop, step = ix.indices(dim)
+    return (start, stop - start) if step == 1 and stop > start else None
+
+
 def _box_extent(index, parent, parent_shape):
     """Start and shape of the unit-step box ``index`` in a domain of shape ``parent_shape``."""
     starts, shape = [], []
     for ix, dim in zip(index, parent_shape):
         if isinstance(ix, numbers.Integral):
-            ix = int(ix) + (dim if ix < 0 else 0)
-            if not 0 <= ix < dim:
+            ix = _integer_slice(ix, dim)
+            if ix is None:
                 raise ValueError(f"index {index} is out of range for {parent!r} {parent_shape}")
-            ix = slice(ix, ix + 1)
         if not isinstance(ix, slice):
             raise ValueError("a subdomain index holds integers and slices only")
-        start, stop, step = ix.indices(dim)
-        if step != 1 or stop <= start:
+        extent = _unit_step_extent(ix, dim)
+        if extent is None:
             raise ValueError(f"index {index} is not a non-empty unit-step box of {parent!r}")
+        start, size = extent
         starts.append(start)
-        shape.append(stop - start)
-    shape = tuple(shape)
-    return starts, shape
+        shape.append(size)
+    return starts, tuple(shape)
+
+
+def _padded_index(index, parent, parent_shape):
+    """``index`` as a tuple with one entry per axis of the parent domain."""
+    index = index if isinstance(index, tuple) else (index,)
+    if len(index) > len(parent_shape):
+        raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
+    return index + (slice(None),) * (len(parent_shape) - len(index))
+
+
+def _flat_subdomain(parent_index, name, starts, shape):
+    """Local shape, offset and box of a subdomain in the region-major (flat) state."""
+    box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
+    flat = parent_index[box].ravel()
+    if np.any(np.diff(flat) != 1):
+        raise ValueError(
+            f"subdomain {name!r} is not contiguous in the region-major state; "
+            "with axis=None take a range along the first axis of the domain"
+        )
+    start = int(flat[0])
+    return (flat.size,), (start,), slice(start, start + flat.size)
+
+
+def _boxed_subdomain(parent_offset, starts, shape):
+    """Local shape, offset and box of a subdomain in a state concatenated along an axis."""
+    offset = tuple(o + s for o, s in zip(parent_offset, starts))
+    return shape, offset, tuple(slice(o, o + n) for o, n in zip(offset, shape))
 
 
 class _Placement(NamedTuple):
@@ -257,8 +268,8 @@ def _flat_placement(sizes):
     return _Placement(None, (sum(sizes.values()),), local, offset, box)
 
 
-def _axis_placement(shapes, axis):
-    """Place the domains one after another along ``axis`` (all other axes shared)."""
+def _normalised_axis(shapes, axis):
+    """Common number of dimensions of the domains and ``axis`` as a non-negative int."""
     ndims = {len(shape) for shape in shapes.values()}
     if len(ndims) != 1:
         raise ValueError(
@@ -268,15 +279,26 @@ def _axis_placement(shapes, axis):
     ndim = ndims.pop()
     if not isinstance(axis, numbers.Integral) or not -ndim <= axis < ndim:
         raise ValueError(f"axis {axis} is out of range for {ndim}-dimensional domains")
-    axis = int(axis) % ndim
-    first = next(iter(shapes.values()))
-    _check_shared_axes(shapes, first, axis)
+    return ndim, int(axis) % ndim
+
+
+def _stack_along_axis(shapes, ndim, axis):
+    """Offsets and boxes of the domains stacked along ``axis``, and the stacked length."""
     offset, box = {}, {}
     start = 0
     for name, shape in shapes.items():
         offset[name] = tuple(start if i == axis else 0 for i in range(ndim))
         box[name] = tuple(slice(o, o + s) for o, s in zip(offset[name], shape))
         start += shape[axis]
+    return offset, box, start
+
+
+def _axis_placement(shapes, axis):
+    """Place the domains one after another along ``axis`` (all other axes shared)."""
+    ndim, axis = _normalised_axis(shapes, axis)
+    first = next(iter(shapes.values()))
+    _check_shared_axes(shapes, first, axis)
+    offset, box, start = _stack_along_axis(shapes, ndim, axis)
     state_shape = tuple(start if i == axis else s for i, s in enumerate(first))
     return _Placement(axis, state_shape, dict(shapes), offset, box)
 
@@ -436,26 +458,14 @@ class BlockLayout:
         if name in self.shapes:
             raise ValueError(f"name {name!r} is already used")
         parent_shape = self.shapes[parent]
-        index = index if isinstance(index, tuple) else (index,)
-        if len(index) > len(parent_shape):
-            raise ValueError(f"index {index} has more axes than domain {parent!r} {parent_shape}")
-        index = index + (slice(None),) * (len(parent_shape) - len(index))
+        index = _padded_index(index, parent, parent_shape)
         starts, shape = _box_extent(index, parent, parent_shape)
         if self.axis is None:
-            box = tuple(slice(s, s + n) for s, n in zip(starts, shape))
-            flat = self.index(parent)[box].ravel()
-            if np.any(np.diff(flat) != 1):
-                raise ValueError(
-                    f"subdomain {name!r} is not contiguous in the region-major state; "
-                    "with axis=None take a range along the first axis of the domain"
-                )
-            start = int(flat[0])
-            self._local[name], self._offset[name] = (flat.size,), (start,)
-            self._box[name] = slice(start, start + flat.size)
+            local, offset, box = _flat_subdomain(self.index(parent), name, starts, shape)
         else:
-            offset = tuple(o + s for o, s in zip(self._offset[parent], starts))
-            self._local[name], self._offset[name] = shape, offset
-            self._box[name] = tuple(slice(o, o + n) for o, n in zip(offset, shape))
+            local, offset, box = _boxed_subdomain(self._offset[parent], starts, shape)
+        self._local[name], self._offset[name] = local, offset
+        self._box[name] = box
         self.shapes[name] = shape
         self._sizes[name] = math.prod(shape)
 
@@ -599,6 +609,19 @@ class BlockLayout:
             format=format,
         )
 
+    def _block_side(self, block, side, name):
+        """Local shape and offset of domain ``name`` on one side of ``block`` (0 rows, 1 columns)."""
+        if name is None:
+            return None, None
+        self._check_name(name)
+        n = self._sizes[name]
+        if block.shape[side] != n:
+            kind = "rows" if side == 0 else "columns"
+            raise ValueError(
+                f"block has {block.shape[side]} {kind}, domain {name!r} has {n} unknowns"
+            )
+        return self._local[name], self._offset[name]
+
     def place(self, block, rows, cols):
         """Embed a domain-by-domain block into the full system.
 
@@ -630,19 +653,7 @@ class BlockLayout:
         KeyError
             If a name is unknown.
         """
-        sides = []
-        for side, name in ((0, rows), (1, cols)):
-            if name is None:
-                sides.append((None, None))
-                continue
-            self._check_name(name)
-            n = self._sizes[name]
-            if block.shape[side] != n:
-                kind = "rows" if side == 0 else "columns"
-                raise ValueError(
-                    f"block has {block.shape[side]} {kind}, domain {name!r} has {n} unknowns"
-                )
-            sides.append((self._local[name], self._offset[name]))
+        sides = [self._block_side(block, side, name) for side, name in ((0, rows), (1, cols))]
         (shape_r, offset_r), (shape_c, offset_c) = sides
         # Always pass explicit (rows, cols) pairs: an all-integer tuple would be
         # read as "same for rows and columns". The CSR/CSC pointer rebuild in
@@ -698,31 +709,27 @@ class BlockLayout:
         return jac
 
 
-def _interface_coefficients(ic, shape, shape_i, axis):
-    """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
-    a, b = [
-        [
-            tuple(
-                (
-                    unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis)
-                    if ic_elem and key in ic_elem
-                    else np.zeros((1,) * len(shape_i))
-                )
-                for j in range(2)
-            )
-            for ic_elem in ic
-        ]
-        for key in ["a", "b"]
-    ]
-
-    d = [
-        (
-            unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
-            if ic_elem and "d" in ic_elem
-            else np.zeros((1,) * len(shape_i))
+def _interface_pair(ic_elem, key, shape, axis):
+    """Coefficient ``key`` of one interface equation for both subdomains, zeros where absent."""
+    if ic_elem and key in ic_elem:
+        return tuple(
+            unwrap_bc_coeff(shape, ic_elem.get(key, (0, 0))[j], axis=axis) for j in range(2)
         )
-        for ic_elem in ic
-    ]
+    return tuple(np.zeros((1,) * len(shape)) for j in range(2))
+
+
+def _interface_source(ic_elem, shape, axis):
+    """Source term ``d`` of one interface equation, zeros where absent."""
+    if ic_elem and "d" in ic_elem:
+        return unwrap_bc_coeff(shape, ic_elem.get("d", 0), axis=axis)
+    return np.zeros((1,) * len(shape))
+
+
+def _interface_coefficients(ic, shape, axis):
+    """Coefficients ``a``, ``b`` (per subdomain) and ``d`` of the two interface equations."""
+    a = [_interface_pair(ic_elem, "a", shape, axis) for ic_elem in ic]
+    b = [_interface_pair(ic_elem, "b", shape, axis) for ic_elem in ic]
+    d = [_interface_source(ic_elem, shape, axis) for ic_elem in ic]
     return a, b, d
 
 
@@ -846,6 +853,45 @@ def _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format
     return interface_matrix
 
 
+def _interface_shapes(shapes, axis):
+    """Combined shape of the two subdomains and the shape of the interface plane."""
+    if not all(
+        s1 == s2 for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1])) if i != axis
+    ):
+        raise ValueError(
+            "Tuples shapes[0] and shapes[1] must be equal except for the specified axis."
+        )
+    shape = tuple(
+        s1 + s2 if i == axis else s1
+        for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1]))
+    )
+    shape_i = tuple(1 if i == axis else s for i, s in enumerate(shape))
+    return shape, shape_i
+
+
+def _cell_centers(x_cs, x_fs):
+    """Cell-centre coordinates of the two subdomains, midpoints of the faces where not given."""
+    return [
+        0.5 * (x_fs[i][1:] + x_fs[i][:-1]) if x_cs[i] is None else x_cs[i]
+        for i in range(2)
+    ]
+
+
+def _interface_stencil_indices(shape_t, n_first):
+    """Row and column indices of the 4-point stencil around the interface."""
+    n0, n1, n2 = shape_t
+    i0 = np.arange(n0).reshape(-1, 1, 1)
+    i2 = np.arange(n2).reshape(1, 1, -1)
+    # Row indices: flat index into the interface (n0 x n2) array
+    row_indices = np.ravel_multi_index(
+        (i0, np.zeros((1, 4, 1), dtype=int), i2), (n0, 1, n2)
+    )
+    # Column indices: 4-point stencil around the interface
+    stencil = (n_first + np.array([-2, -1, 0, 1])).reshape(1, -1, 1)
+    col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
+    return row_indices, col_indices
+
+
 def construct_interface_matrices(
     shapes,
     x_fs,
@@ -884,25 +930,10 @@ def construct_interface_matrices(
         ``(mat0, bc00, bc01, mat1, bc10, bc11)``.
     """
 
-    if not all(
-        s1 == s2 for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1])) if i != axis
-    ):
-        raise ValueError(
-            "Tuples shapes[0] and shapes[1] must be equal except for the specified axis."
-        )
-    shape = tuple(
-        s1 + s2 if i == axis else s1
-        for i, (s1, s2) in enumerate(zip(shapes[0], shapes[1]))
-    )
-    shape_i = tuple(1 if i == axis else s for i, s in enumerate(shape))
+    shape, shape_i = _interface_shapes(shapes, axis)
+    x_cs = _cell_centers(x_cs, x_fs)
 
-    # Extract the cell-centered grid points for the two subdomains
-    for i in range(2):
-        if x_cs[i] is None:
-            x_cs = list(x_cs)
-            x_cs[i] = 0.5 * (x_fs[i][1:] + x_fs[i][:-1])
-
-    a, b, d = _interface_coefficients(ic, shape, shape_i, axis)
+    a, b, d = _interface_coefficients(ic, shape, axis)
 
     alphas = _interface_alphas(x_cs, x_fs)
 
@@ -914,20 +945,12 @@ def construct_interface_matrices(
     m_inv, values = _interface_stencil_values(a, b, alphas, shape_i, axis)
 
     shape_t = _field_geometry(shape, axis).shape_t
-    n0, n1, n2 = shape_t
-    i0 = np.arange(n0).reshape(-1, 1, 1)
-    i2 = np.arange(n2).reshape(1, 1, -1)
-    # Row indices: flat index into the interface (n0 x n2) array
-    row_indices = np.ravel_multi_index(
-        (i0, np.zeros((1, 4, 1), dtype=int), i2), (n0, 1, n2)
-    )
-    # Column indices: 4-point stencil around the interface
-    stencil = (shapes[0][axis] + np.array([-2, -1, 0, 1])).reshape(1, -1, 1)
-    col_indices = np.ravel_multi_index((i0, stencil, i2), shape_t)
+    row_indices, col_indices = _interface_stencil_indices(shape_t, shapes[0][axis])
 
     # Create the sparse matrix representing the interface
     interface_matrix = _interface_sparse_matrices(values, row_indices, col_indices, shape_t, format)
 
+    n0, _, n2 = shape_t
     geo = _InterfaceBcGeometry(shape_i, shape_t, np.ravel_multi_index(
         (np.arange(n0).reshape(-1, 1), np.arange(n2).reshape(1, -1)), (n0, n2)
     ))
@@ -942,13 +965,12 @@ def construct_interface_matrices(
             interface_matrix[1],
             interface_bc[1],
         )
-    else:
-        interface_bc = _interface_bc_by_source(m_inv, d, shapes_d, geo)
-        return (
-            interface_matrix[0],
-            interface_bc[0][0],
-            interface_bc[0][1],
-            interface_matrix[1],
-            interface_bc[1][0],
-            interface_bc[1][1],
-        )
+    interface_bc = _interface_bc_by_source(m_inv, d, shapes_d, geo)
+    return (
+        interface_matrix[0],
+        interface_bc[0][0],
+        interface_bc[0][1],
+        interface_matrix[1],
+        interface_bc[1][0],
+        interface_bc[1][1],
+    )
