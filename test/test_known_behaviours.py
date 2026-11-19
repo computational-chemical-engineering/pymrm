@@ -56,7 +56,6 @@ class _LuSolver:
         return _Reusing()
 
 
-@pytest.mark.xfail(strict=True, reason="maintainer-note-c2 item 2: dx aliases a reused solver buffer")
 def test_newton_user_solver_reusing_its_buffer_matches_fresh_output():
     """maintainer-note-c2 item 2: a user solver that reuses its output buffer gives the same iteration."""
     x0 = np.array([-2.0, 2.0, 2.0])

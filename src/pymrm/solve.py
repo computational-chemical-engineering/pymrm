@@ -125,6 +125,11 @@ def _solver_kind(solver):
     raise ValueError("Unsupported solver method.")
 
 
+def _copied(solve):
+    """``solve`` returning a copy, so that a user solver may reuse its output buffer."""
+    return lambda rhs: np.array(solve(rhs), dtype=float)
+
+
 class _LinearSolver:
     """Builds, per Newton iteration, a ``solve(rhs)`` for the Jacobian."""
 
@@ -158,12 +163,12 @@ class _LinearSolver:
         if self.kind in ("cg", "bicgstab"):
             return self._iterative(jac), None
         if self.kind == "splu":
-            return jac.solve, None
+            return _copied(jac.solve), None
         if self.kind == "factorize":
             factor = self.solver.factorize(jac)
-            return factor.solve, None
+            return _copied(factor.solve), None
         solver, kwargs = self.solver, self.kwargs
-        return (lambda rhs: solver(jac, rhs, **kwargs)), None
+        return (lambda rhs: np.array(solver(jac, rhs, **kwargs), dtype=float)), None
 
     def _direct_sparse(self, jac):
         options = {"permc_spec": "COLAMD", **self.splu_kwargs}
