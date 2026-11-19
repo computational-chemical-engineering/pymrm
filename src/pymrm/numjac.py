@@ -728,8 +728,8 @@ class NumJac:
         **kwargs
             Additional options passed to the stencil callable.
         """
-        if isinstance(shape, numbers.Integral):
-            shape = (shape,)    # an int shape is the 1-D shape (n,)
+        if isinstance(shape, numbers.Integral) and not isinstance(shape, bool):
+            shape = (int(shape),)    # an int shape is the 1-D shape (n,)
         self.shape_in, self.shape_out = _resolve_shapes(shape, shape_in, shape_out)
 
         self.eps_jac = eps_jac
