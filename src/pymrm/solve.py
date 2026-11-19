@@ -1236,11 +1236,11 @@ def newton(
         and ``clipped`` (components held by a bound).
 
         ``status``: 0 converged; 1 converged to the stagnation floor;
-        2 ``maxfev`` iterations without convergence; 3 damping fell below its minimum; 7 step test
-        met but ``backward_error > backward_tol``; 8 stopped on a bound (the
-        bound is likely cutting off the solution). Statuses 4 (non-finite
-        residual or Jacobian that no damping avoids), 5 (singular Jacobian)
-        (singular Jacobian, also when ``spilu`` cannot factorise it) and 6
+        2 ``maxfev`` iterations without convergence; 3 damping fell below its
+        minimum; 7 step test met but ``backward_error > backward_tol``; 8
+        stopped on a bound (the bound is likely cutting off the solution).
+        Statuses 4 (non-finite residual or Jacobian that no damping avoids),
+        5 (singular Jacobian, also when ``spilu`` cannot factorise it) and 6
         (non-finite Newton step, or an iterative linear solver that did not
         converge) are raised as :class:`NewtonBreakdown`, whose ``result``
         holds this object.
