@@ -190,7 +190,10 @@ forms as by `construct_convflux_upwind`; the columns of `jac_v` follow the
 shape of `v` as passed, and `jac_v=True` refuses a cell-centred `v`. An
 initial guess with `v = 0` everywhere gives a zero convective Jacobian.
 For a lower round-off floor write the steady residual as the correction to the
-upwind solution (pitfalls P10, `A2.1`) (gl 59).
+upwind solution (pitfalls P10, `A2.1`) (gl 59). The term `jac_up @ (c - c_up)`
+is the upwind residual only when the upwind problem is linear and `c_up` is its
+solution, and its 1e-15 agreement with deferred correction is between two
+routes sharing one LU factorisation, so it does not test the factorisation.
 
 **Deferred correction for TVD convection** (structure S5), inside a time step:
 keep first-order upwind in the constant Jacobian and add the limiter correction

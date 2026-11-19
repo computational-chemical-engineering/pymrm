@@ -175,7 +175,7 @@ def test_p7_newton_stops_on_absolute_step():
     def f(x):
         return np.array([x[0] ** 2 - s]), csc_array(np.array([[2.0 * x[0]]]))
 
-    res = newton(f, np.array([1e-8]), damping="none", backward_tol=None, stagnation=False)   # the iteration before 2.5.0
+    res = newton(f, np.array([1e-8]), damping="none", backward_tol=None, stagnation=False)  # the iteration before 2.5.0
     assert res.success and res.nit == 1
     assert res.x[0] / np.sqrt(s) > 40.0
 
@@ -279,12 +279,14 @@ def _graetz(limiter, nx=40, ny=10, diffusivity=0.1):
     diff, diff_bc = (-diffusivity * div_y @ grad).tocsc(), _dense(-diffusivity * div_y @ grad_bc)
     jac_upwind = (div_x @ conv + diff).tocsc()
 
-    def deferred(n_iter):
+    def deferred(n_iter, omega=1.0, tol=0.0):
         c = spsolve(jac_upwind, -(_dense(div_x @ conv_bc) + diff_bc))
         for _ in range(n_iter):
             _, dc = interp_cntr_to_stagg_tvd(c.reshape(shape), x_f, None, bc_x, v, limiter, axis=0)
             g = jac_upwind @ c + _dense(div_x @ conv_bc) + diff_bc + div_x @ (v * dc).ravel()
-            c = c - spsolve(jac_upwind, g)
+            if np.abs(g).max() < tol:
+                break
+            c = c - omega * spsolve(jac_upwind, g)
         return np.abs(g).max()
 
     tvd = ConvFluxTVD(shape, x_f, bc=bc_x, tvd_limiter=limiter, axis=0)
@@ -320,3 +322,11 @@ def test_p10_steady_deferred_correction_stalls():
     assert 20 < newton(upwind_jac, np.zeros(n), tol=1e-12, maxfev=300, damping="monotone").nit < 60   # about 31
     _, _, upwind_jac, n = _graetz(minmod)
     assert newton(upwind_jac, np.zeros(n), tol=1e-12, maxfev=300, damping="monotone").nit > 100      # about 130
+
+
+def test_p10_under_relaxation_depends_on_the_limiter():
+    from pymrm import smart, vanleer
+    deferred, _, _, _ = _graetz(vanleer)
+    assert deferred(100, omega=0.6, tol=1e-10) < 1e-10   # converges: 41 sweeps to 1e-12
+    deferred, _, _, _ = _graetz(smart)
+    assert deferred(100, omega=0.6, tol=1e-10) > 1e-6    # cycles; SMART needs omega <= 0.5

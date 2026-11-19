@@ -261,27 +261,32 @@ rate, because every held cell capped every later step at half its length.
   does not say which solution: on a folded branch (`B1.4`) it gave eta = 1.155
   against 44.55 seeded (gl 110).
 
-## P10. Steady TVD by deferred correction stalls
+## P10. Steady TVD by deferred correction can stall
 
 Deferred correction (the limiter correction in the residual, the upwind
 Jacobian) is a fixed-point iteration, not Newton. For a steady problem it
 converges only slowly with minmod, and with van Leer, MUSCL or SMART it can fail
 to converge at all: the upwind Jacobian underestimates how a limited face value
-responds to an odd-even error, so that error grows in the cells where the
-gradient ratio is far from 1 (a profile that is flat and then bends, behind an
-inlet, in 2-D). The stall is not universal: on smooth steady 1-D profiles van
-Leer deferred correction converged in 4 to 34 sweeps to the Newton solution
-(`A2.4`: 7 sweeps, 1.4e-11; `B1.7`, `B2.2`), and on the 2-D Graetz pages it
-converges under-relaxed (omega = 0.6: 23 to 49 sweeps) while at omega = 1 it
-does not settle in 600 sweeps (`I1.3`) and is a period-two cycle (`A3.15`). Report a stall only where you measured one
-(gl 14, 50, 76, 118, 120).
+responds to an odd-even error in the cells where the gradient ratio is far
+from 1 (a profile that is flat and then bends, behind an inlet, in 2-D), and at
+omega = 1 the iteration locks into a period-two cycle (also on the test
+problem). The stall is not universal: on smooth steady 1-D profiles van Leer
+deferred correction converged in 4 to 34 sweeps to the Newton solution
+(`A2.4`: 7 sweeps, 1.4e-11; `B1.7`, `B2.2`), and on the 2-D Graetz pages van
+Leer converges under-relaxed (omega = 0.6: 23 to 49 sweeps) while at omega = 1
+it does not settle in 600 sweeps (`I1.3`) and is a period-two cycle (`A3.15`).
+On the test problem MUSCL needs omega <= 0.6 and SMART omega <= 0.5. Report a
+stall only where you measured one (gl 14, 50, 76, 118, 120).
 
 - Symptom: the residual drops a few decades, then stops at 1e-3 to 1e-1 and
   stays there, or a steady `newton` call with the deferred-correction model
   reports `success=False`; with minmod, hundreds of iterations.
 - Measured: 2-D Graetz problem (parabolic flow along x, diffusion across, wall
   value 0), 40 x 10 cells. After 300 deferred-correction iterations the residual
-  is 8e-8 for minmod, 4e-3 for van Leer and 3e-2 to 6e-2 for MUSCL. With the
+  is 8e-8 for minmod, 4e-3 for van Leer and 3e-2 to 6e-2 for MUSCL (the last
+  two are period-two cycles). Under-relaxed to residual 1e-12: van Leer takes
+  87, 37 and 41 sweeps at omega = 0.8, 0.7 and 0.6, MUSCL 70 at 0.6, SMART 219
+  at 0.5, and SMART still cycles at 0.6. With the
   exact Jacobian from `ConvFluxTVD` and `newton(..., damping="monotone")`, every
   limiter converges to 1e-12 in 5 to 12 steps. Passing the upwind Jacobian to
   `newton` instead: undamped it fails for every limiter; with
@@ -295,16 +300,22 @@ does not settle in 600 sweeps (`I1.3`) and is a period-two cycle (`A3.15`). Repo
   Jacobian with `NumJac` or finite differences: the limited face value reaches
   two cells upwind, and differencing across the limiter kinks stalls near 1e-7.
   Deferred correction remains fine inside an implicit time step with one or two
-  inner iterations and a small Courant number.
+  inner iterations and a small Courant number. If deferred correction is kept,
+  print the last sweep change and the full TVD residual, and check once against
+  `ConvFluxTVD` Newton. An omega that works for one limiter can cycle for
+  another.
 - Cost: Newton refactorises every iteration. Steady 1-D it is faster (`A2.8`:
   0.010 s against 0.054 s); in a transient at Courant 0.5 deferred correction
   is twice as fast (`A2.5`, gap 2e-9); on 1.2 million unknowns under-relaxed
   deferred correction takes 11.5 s against 102 s, with Newton on a coarser grid
   as its check (`I1.3`) (gl 50, 67, 71, 128).
 - Write the residual as the correction to the upwind solution,
-  `jac_up @ (c - c_up) + div @ (F_tvd(c) - F_up(c))`: in full form the
-  `D/dz^2` entries put the residual floor near 4e-10 on 1600 cells and the exit
-  depends on the BLAS kernel; the correction form agrees with deferred
-correction to 1e-15 on every kernel (`A2.1`). A gap
-  between two solvers at small Pe on a fine grid is that floor, not a stall
+  `jac_up @ (c - c_up) + div @ (F_tvd(c) - F_up(c))`, where
+  `jac_up @ (c - c_up)` is the upwind residual only when the upwind problem is
+  linear and `c_up` is its solution: in full form the `D/dz^2` entries put the
+  residual floor near 4e-10 on 1600 cells and the exit depends on the BLAS
+  kernel; the correction form agrees with deferred correction to 1e-15 on
+  every kernel (`A2.1`). Both routes share one LU factorisation of `jac_up`,
+  so that agreement does not test the factorisation. A gap between two
+  solvers at small Pe on a fine grid is that floor, not a stall
   (gl 13, 59, 118).
