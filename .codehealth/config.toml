@@ -1,4 +1,4 @@
-# cce-code-health configuration for pymrm (campaign c1 2026-11-16, c2 2026-11-17). The gate reads this file from
+# cce-code-health configuration for pymrm (campaign c1 2026-11-16, c2 2026-11-17, c3 2026-11-18). The gate reads this file from
 # the base commit, so a step cannot loosen its own gate; `.codehealth/*` is always forbidden in a step.
 schema = 1
 profile = "python@1"
@@ -22,7 +22,9 @@ public_api = true
 # benchmark run's fresh TMPDIR, which the gate deletes), so a
 # cache=True kernel is always measured cold and never leaves files in the (gitignored) src/pymrm/__pycache__,
 # which the benchmark tree-write check cannot see. The warm-cache gain is measured outside the gate.
-prefix = '''test -f src/pymrm/_version.py || cp {gitdir}/../src/pymrm/_version.py src/pymrm/_version.py; export NUMBA_CACHE_DIR="${TMPDIR:-/tmp}/codehealth-numba-$$-$(date +%s%N)";'''
+# c3 (codehealth >= 9d30abf): a benchmark tier sets NUMBA_CACHE_DIR itself (cold: fresh per run; warm: one per
+# side), so the prefix keeps a value the tool set and creates a fresh one only for the other tiers.
+prefix = '''test -f src/pymrm/_version.py || cp {gitdir}/../src/pymrm/_version.py src/pymrm/_version.py; export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-${TMPDIR:-/tmp}/codehealth-numba-$$-$(date +%s%N)}";'''
 
 [gate.env]
 PYTHONHASHSEED = "0"
@@ -93,3 +95,15 @@ timeout = 900
 max_slowdown = 0.03
 metric = "both"
 cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py assembly'
+
+# c3 (2026-11-18): the same newton benchmark with a warm numba cache (one cache directory per side, filled by the
+# warm-up), i.e. what a user with a cache sees. The cold bench-newton above stays the campaign's (d) definition.
+[[gate.tier]]
+name = "bench-newton-warm"
+kind = "benchmark"
+cadence = "step"
+cache = "warm"
+timeout = 900
+max_slowdown = 0.03
+metric = "both"
+cmd = 'PYTHONPATH=src "$CODEHEALTH_PY" .codehealth/bench.py newton'

@@ -1,5 +1,6 @@
 """Numerical Jacobian construction with sparse stencil support."""
 
+import numbers
 import warnings
 from typing import NamedTuple
 
@@ -663,7 +664,7 @@ def _dense_1d_shape(shape, stencil, kwargs):
         return None
     if stencil is not stencil_block_diagonals:
         return None
-    shape_t = (shape,) if isinstance(shape, (int, np.integer)) else tuple(shape)
+    shape_t = tuple(shape)
     if len(shape_t) != 1:
         return None
     return shape_t if shape_t[0] >= DENSE_1D_WARNING_SIZE else None
@@ -727,6 +728,8 @@ class NumJac:
         **kwargs
             Additional options passed to the stencil callable.
         """
+        if isinstance(shape, numbers.Integral) and not isinstance(shape, bool):
+            shape = (int(shape),)    # an int shape is the 1-D shape (n,)
         self.shape_in, self.shape_out = _resolve_shapes(shape, shape_in, shape_out)
 
         self.eps_jac = eps_jac

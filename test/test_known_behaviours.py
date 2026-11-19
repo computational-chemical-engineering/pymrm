@@ -1,0 +1,295 @@
+"""Tests that pin the known behaviours listed in the c2 maintainer note (code-health campaign c3).
+
+A pin asserts today's behaviour. An xfail asserts the correct behaviour and fails today, so
+that a fix flips it.
+"""
+import re
+import warnings
+
+import numpy as np
+import pytest
+from scipy.sparse import csc_array, dia_array, random as sparse_random
+from scipy.sparse.linalg import splu
+
+import pymrm.solve
+from pymrm import NumJac, continuation, pseudo_transient
+from pymrm.helpers import _csc_abs_matvec
+from pymrm.numjac import expand_dependencies, generate_sparsity_pattern
+from pymrm.solve import _Bounds, newton
+
+
+def test_numjac_int_shape_equals_tuple_shape():
+    """maintainer-note-c2 item 1: NumJac(shape=100) builds the same Jacobian as NumJac(shape=(100,))."""
+    c = np.linspace(1.0, 2.0, 100)
+    with pytest.warns(UserWarning, match="dense"):
+        _, jac_tuple = NumJac(shape=(100,))(lambda v: v**2, c)
+    with pytest.warns(UserWarning, match="dense"):
+        _, jac_int = NumJac(shape=100)(lambda v: v**2, c)
+    np.testing.assert_array_equal(jac_int.toarray(), jac_tuple.toarray())
+
+
+def _coupled_system(x):
+    """Three coupled exponential, cubic and hyperbolic equations with an exact Jacobian."""
+    g = np.array([np.exp(x[0]) + x[1] - 3, x[0] * x[1]**3 - 2 + x[2], np.sinh(x[2]) + x[0] - 1])
+    jac = np.array([[np.exp(x[0]), 1, 0], [x[1]**3, 3 * x[0] * x[1]**2, 1], [1, 0, np.cosh(x[2])]])
+    return g, csc_array(jac)
+
+
+class _LuSolver:
+    """A user linear solver (factorize protocol); with ``reuse`` every solve returns one shared buffer."""
+
+    def __init__(self, reuse):
+        self.reuse = reuse
+        self.buffer = np.empty(3)
+
+    def factorize(self, jac):
+        lu = splu(csc_array(jac))
+        if not self.reuse:
+            return lu
+        buffer = self.buffer
+
+        class _Reusing:
+            @staticmethod
+            def solve(rhs):
+                buffer[:] = lu.solve(rhs)
+                return buffer
+        return _Reusing()
+
+
+def test_newton_user_solver_reusing_its_buffer_matches_fresh_output():
+    """maintainer-note-c2 item 2: a user solver that reuses its output buffer gives the same iteration."""
+    x0 = np.array([-2.0, 2.0, 2.0])
+    fresh = newton(_coupled_system, x0, solver=_LuSolver(False), damping="monotone")
+    reused = newton(_coupled_system, x0, solver=_LuSolver(True), damping="monotone")
+    assert fresh.status == reused.status == 0
+    assert (reused.nit, reused.nfev) == (fresh.nit, fresh.nfev)
+    np.testing.assert_array_equal(reused.x, fresh.x)
+
+
+def test_newton_empty_guess_raises_value_error():
+    """maintainer-note-c2 item 3: newton on n = 0 raises ValueError.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    with pytest.raises(ValueError):
+        newton(lambda x: (np.zeros(0), csc_array((0, 0))), np.zeros(0))
+
+
+@pytest.mark.parametrize("dense", [False, True])
+def test_newton_accepts_a_bool_sparse_residual(dense):
+    """maintainer-note-c2 item 3: a bool sparse residual is accepted and gives the float residual's x.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    def make(dtype):
+        def function(x):
+            g = csc_array((x > 0.5).astype(float).reshape(-1, 1)).astype(dtype)
+            return g, (np.eye(2) if dense else csc_array(np.eye(2)))
+        return function
+
+    x0 = np.array([1.2, 0.3])
+    as_float = newton(make(float), x0)
+    as_bool = newton(make(bool), x0)
+    assert as_float.status == as_bool.status == 0
+    assert as_bool.x.tobytes() == as_float.x.tobytes()
+
+
+_TRIDIAGONAL = np.diag([3.0, 3.0, 3.0]) + np.diag([1.0, 1.0], 1) + np.diag([1.0, 1.0], -1)
+
+
+def _cubic_chain(matrix_type):
+    """A tridiagonal linear term plus a cubic, with its Jacobian in the sparse type ``matrix_type``."""
+    def function(x):
+        return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), matrix_type(_TRIDIAGONAL + np.diag(3 * x**2))
+    return function
+
+
+@pytest.mark.parametrize("damping", ["none", "guarded", "monotone", "armijo"])
+def test_newton_dia_array_jacobian_matches_csc(damping):
+    """maintainer-note-c2 item 4: a dia_array Jacobian under damping converges to the csc_array result."""
+    x0 = np.ones(3)
+    expected = newton(_cubic_chain(csc_array), x0, damping=damping)
+    result = newton(_cubic_chain(dia_array), x0, damping=damping)
+    assert expected.status == result.status == 0
+    np.testing.assert_allclose(result.x, expected.x, rtol=1e-12)
+
+
+def _dense_cubic_chain(x):
+    """``_cubic_chain`` with a dense Jacobian."""
+    return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), _TRIDIAGONAL + np.diag(3 * x**2)
+
+
+@pytest.mark.parametrize("damping", ["none", "guarded"])
+def test_newton_dense_splu_key_is_ignored_in_every_mode(damping):
+    """maintainer-note-c2 item 5: a splu key in lin_solver_kwargs on a dense Jacobian is ignored silently.
+
+    Every damping mode gives the x of a run without the key, and no warning (the suite turns warnings into errors).
+    """
+    expected = newton(_dense_cubic_chain, np.ones(3), damping=damping)
+    result = newton(_dense_cubic_chain, np.ones(3), damping=damping, lin_solver_kwargs={"permc_spec": "NATURAL"})
+    assert expected.status == result.status == 0
+    assert result.x.tobytes() == expected.x.tobytes()
+
+
+def test_newton_dense_non_splu_key_warns_ignored_and_is_ignored():
+    """maintainer-note-c2 item 5: a key that is no splu option warns "ignored" and does not reach the dense solver."""
+    expected = newton(_dense_cubic_chain, np.ones(3), damping="none")
+    with pytest.warns(RuntimeWarning, match="is ignored"):
+        result = newton(_dense_cubic_chain, np.ones(3), damping="none", lin_solver_kwargs={"assume_a": "diagonal"})
+    assert expected.status == result.status == 0
+    assert result.x.tobytes() == expected.x.tobytes()
+
+
+def _raising_after_the_first_call():
+    """sqrt(2) residual that evaluates once and raises ValueError at every later point."""
+    calls = []
+
+    def function(x):
+        calls.append(1)
+        if len(calls) > 1:
+            raise ValueError("bad trial point")
+        return np.array([x[0]**2 - 2]), csc_array([[2 * x[0]]])
+    return function
+
+
+def test_newton_monotone_error_at_the_first_trial_point_depends_on_maxfev():
+    """maintainer-note-c2 item 6: a ValueError at the first trial point gives status 2 or raises.
+
+    With maxfev=1 that iteration is the last: status 2 and a message naming ValueError. With
+    maxfev=2 the ValueError propagates. Pins current behaviour; a deliberate change updates this test.
+    """
+    result = newton(_raising_after_the_first_call(), np.ones(1), damping="monotone", maxfev=1)
+    assert result.status == 2
+    assert "ValueError" in result.message
+    with pytest.raises(ValueError):
+        newton(_raising_after_the_first_call(), np.ones(1), damping="monotone", maxfev=2)
+
+
+def test_bounds_commit_marks_a_component_that_project_did_not_hold():
+    """maintainer-note-c2 item 7: _Bounds.commit finds held components by float equality.
+
+    For x = 1, lower = 0 and dx = 1.5 the step is limited to lam = 0.66 and lands at 0.01: project holds
+    no component, yet commit marks it held. Pins current behaviour; a deliberate change updates this test.
+    """
+    bounds = _Bounds(np.array([0.0]), None, 0.99)
+    x, dx = np.array([1.0]), np.array([1.5])
+    lam = bounds.max_step(x, dx)
+    assert lam == pytest.approx(0.66)
+    trial = x - lam * dx
+    assert bounds.project(trial, x, dx) == 0
+    bounds.commit(x, trial, dx)
+    assert bounds.held.tolist() == [True]
+
+
+def test_pseudo_transient_failure_message_reports_a_dt_below_every_dt_tried(monkeypatch):
+    """maintainer-note-c2 item 8: the failure message names a dt below the smallest dt tried.
+
+    The march shrinks dt by 4 after each failed try and reports the shrunk value after the last one.
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    tried = []
+    original = pymrm.solve._transient_residual
+
+    def spy(function, mass_matrix, x_old, dt):
+        tried.append(dt)
+        return original(function, mass_matrix, x_old, dt)
+
+    monkeypatch.setattr(pymrm.solve, "_transient_residual", spy)
+    result = pseudo_transient(lambda x: (np.ones(1), csc_array([[1.0]])), np.ones(1), dt=1e-3,
+                              newton_kwargs={"tol": 0.0, "maxfev": 2})
+    assert not result.success
+    reported = float(re.search(r"failed down to dt = (\S+)", result.message).group(1))
+    assert len(tried) > 1
+    assert reported < min(tried)
+    assert min(tried) / reported == pytest.approx(4.0, rel=1e-2)
+
+
+def test_continuation_first_value_failure_returns_the_failed_result_only():
+    """maintainer-note-c2 item 9: when the first value fails, results = [first], params = [] and xs = [].
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    def function(x, p):
+        return np.array([x[0]**2 + 1.0]), csc_array([[2 * x[0]]])
+
+    result = continuation(function, np.ones(1), [0.0, 1.0, 2.0])
+    assert not result.success
+    assert len(result.results) == 1 and not result.results[0].success
+    assert result.params == [] and result.xs == []
+    assert result.last_param is None
+    assert "no solution at the first value" in result.message
+
+
+def test_newton_ignored_lin_solver_kwargs_warning_reports_the_callers_file():
+    """maintainer-note-c2 item 10: the "ignored" warning for lin_solver_kwargs names the caller's file.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        newton(lambda x: (x - 1.0, csc_array([[1.0]])), np.zeros(1), lin_solver_kwargs={"unknown_key": 1})
+    ignored = [w for w in caught if "is ignored" in str(w.message)]
+    assert len(ignored) == 1
+    assert ignored[0].category is RuntimeWarning
+    assert ignored[0].filename == __file__
+
+
+@pytest.mark.parametrize("index_dtype", [np.int32, np.int64])
+@pytest.mark.parametrize("n", [7, 40])
+def test_csc_abs_matvec_equals_abs_matmul_bitwise(index_dtype, n):
+    """maintainer-note-c2 item 12: helpers._csc_abs_matvec(jac, v) equals abs(jac) @ v bitwise.
+
+    The helper calls a private scipy kernel (scipy >= 1.13). Pins current behaviour; a deliberate change
+    updates this test.
+    """
+    rng = np.random.default_rng(12)
+    jac = csc_array(sparse_random(n, n, density=0.3, random_state=1, format="csc"))
+    jac.data = rng.standard_normal(jac.data.size)
+    jac.indices = jac.indices.astype(index_dtype)
+    jac.indptr = jac.indptr.astype(index_dtype)
+    v = rng.standard_normal(n)
+    result = _csc_abs_matvec(jac, v)
+    assert jac.indices.dtype == index_dtype
+    assert result.tobytes() == (abs(jac) @ v).tobytes()
+
+
+def test_generate_sparsity_pattern_accepts_a_one_shot_iterator():
+    """maintainer-note-c2 item 13: an iterator of dependencies gives the pattern of the list.
+
+    Pins current behaviour; a deliberate change updates this test.
+    """
+    deps = expand_dependencies((5, 2), (5, 2), [(0, 0), (1, 0), (-1, 0)])
+    rows, cols = generate_sparsity_pattern((5, 2), (5, 2), list(deps))
+    rows_iter, cols_iter = generate_sparsity_pattern((5, 2), (5, 2), iter(deps))
+    assert len(rows) > 0
+    np.testing.assert_array_equal(rows_iter, rows)
+    np.testing.assert_array_equal(cols_iter, cols)
+
+
+def _singular_zero_row(x):
+    """A residual whose sparse Jacobian has a zero row, so that ``spilu`` cannot factorise it."""
+    jac = csc_array(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    return np.array([x[0] - 1.0, 1.0, x[2] - 2.0]), jac
+
+
+@pytest.mark.parametrize("solver", ["cg", "bicgstab"])
+def test_newton_krylov_singular_jacobian_raises_krylov_breakdown(solver):
+    """maintainer-note-c2 item 17: a singular sparse Jacobian with cg/bicgstab raises KrylovBreakdown, status 5."""
+    with pytest.raises(pymrm.solve.KrylovBreakdown) as info:
+        newton(_singular_zero_row, np.zeros(3), solver=solver)
+    assert isinstance(info.value, RuntimeError)
+    assert info.value.result.status == 5
+    assert "spilu" in str(info.value)
+
+
+def test_continuation_with_cg_ends_on_a_singular_jacobian_instead_of_raising():
+    """maintainer-note-c2 item 17, via continuation: a spilu failure ends the march as a direct solver's singular
+    Jacobian does (a KrylovBreakdown is a NewtonBreakdown), instead of raising a bare RuntimeError."""
+    def function(x, p):
+        jac = csc_array(np.diag([1.0, p, 1.0]))
+        return jac @ x - np.array([1.0, p, 1.0]), jac
+
+    result = continuation(function, np.zeros(3), [1.0, 0.5, 0.0], newton_kwargs={"solver": "cg"})
+    assert not result.success
+    assert result.params[0] == 1.0 and 0.0 not in result.params
+    assert "spilu" in result.message

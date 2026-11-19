@@ -156,8 +156,9 @@ def test_place_equals_pick_sandwich(fmt):
                     n_r = sizes[a] if a is not None else none_size
                     n_c = sizes[b] if b is not None else none_size
                     block = _random_block(n_r, n_c, fmt)
-                    left = layout.pick(a).T if a is not None else eye_array(n_r)
-                    right = layout.pick(b) if b is not None else eye_array(n_c)
+                    # CSR identities: scipy 1.18 raises for a DIA product with an all-zero DIA block
+                    left = layout.pick(a).T if a is not None else eye_array(n_r, format="csr")
+                    right = layout.pick(b) if b is not None else eye_array(n_c, format="csr")
                     expected = (left @ block @ right).toarray()
                     placed = layout.place(block, a, b)
                     assert isinstance(placed, csr_array if fmt == "csr" else csc_array)
