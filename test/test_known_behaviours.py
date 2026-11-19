@@ -272,8 +272,6 @@ def _singular_zero_row(x):
     return np.array([x[0] - 1.0, 1.0, x[2] - 2.0]), jac
 
 
-@pytest.mark.xfail(strict=True, raises=RuntimeError,
-                   reason="maintainer-note-c2 item 17: spilu raises a bare RuntimeError")
 @pytest.mark.parametrize("solver", ["cg", "bicgstab"])
 def test_newton_krylov_singular_jacobian_raises_krylov_breakdown(solver):
     """maintainer-note-c2 item 17: a singular sparse Jacobian with cg/bicgstab raises KrylovBreakdown, status 5."""
@@ -281,3 +279,4 @@ def test_newton_krylov_singular_jacobian_raises_krylov_breakdown(solver):
         newton(_singular_zero_row, np.zeros(3), solver=solver)
     assert isinstance(info.value, RuntimeError)
     assert info.value.result.status == 5
+    assert "spilu" in str(info.value)

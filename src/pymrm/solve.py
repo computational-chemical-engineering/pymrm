@@ -79,7 +79,8 @@ class NewtonBreakdown(np.linalg.LinAlgError):
 
 
 class KrylovBreakdown(NewtonBreakdown, RuntimeError):
-    """An iterative linear solver did not converge (status 6).
+    """An iterative linear solver did not converge (status 6), or its ILU
+    preconditioner (``spilu``) found the Jacobian singular (status 5).
 
     Also a ``RuntimeError``, as raised up to pymrm 2.5.0.
     """
@@ -90,6 +91,10 @@ class _SingularJacobian(Exception):
 
 
 class _LinearSolverFailed(Exception):
+    pass
+
+
+class _PreconditionerSingular(Exception):
     pass
 
 
@@ -227,7 +232,10 @@ class _LinearSolver:
                 f"solver='{self.kind}' requires a sparse Jacobian or a custom solver."
             )
         n = jac.shape[0]
-        ilu = linalg.spilu(sparse.csc_array(jac))
+        try:
+            ilu = linalg.spilu(sparse.csc_array(jac))
+        except RuntimeError as exc:
+            raise _PreconditionerSingular(f"spilu failed: {exc}") from exc
         precond = linalg.LinearOperator((n, n), ilu.solve)
         method = linalg.cg if self.kind == "cg" else linalg.bicgstab
         kwargs, name = self.kwargs, self.kind.upper()
@@ -773,6 +781,8 @@ class _NewtonRun:
             dx = np.asarray(solve(self.lin.rhs(ev)), dtype=float).reshape(-1)
         except _SingularJacobian as exc:
             raise self._breakdown(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc))
+        except _PreconditionerSingular as exc:
+            raise self._breakdown(_Status.SINGULAR, _End(ev, step_inf, float("nan")), str(exc), KrylovBreakdown)
         except _LinearSolverFailed as exc:
             raise self._breakdown(_Status.SOLVER_FAILED, _End(ev, step_inf, float("nan")), str(exc), KrylovBreakdown)
         if not np.isfinite(dx).all():
