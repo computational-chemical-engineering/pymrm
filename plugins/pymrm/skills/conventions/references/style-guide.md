@@ -9,6 +9,10 @@ Read it together with [`pitfalls.md`](pitfalls.md): API behaviour that has
 produced wrong answers in practice, each entry backed by a test in
 `test/test_pitfalls.py` of the pymrm repository.
 
+A measured example is cited by its gallery catalogue ID (`B1.1`) and the row it
+came from as "(gl N)": row N of `docs/refresh-learnings.md` in the pymrm gallery
+(<https://github.com/computational-chemical-engineering/pymrm-gallery>).
+
 The goal is not to make every model identical. The goal is to make them
 predictable: same structure, same naming, same array conventions, and same
 separation between physics, discretisation, solver, and plotting.
@@ -414,6 +418,15 @@ Use `nu` explicitly:
 
 Do not rely on memory for this. Put the geometry in a comment next to the call.
 
+`nu` is not always the only place the geometry enters. A Thiele modulus or a
+Robin condition defined on `V_p/S_x` carries it again in `R/(V_p/S_x)` (3 sphere,
+2 cylinder, 1 slab): changing only `nu` gives a model that converges and is wrong
+(`G1.8`: the slab misses its closed form by 0.67, and agrees to 1.1e-5 with the
+ratio changed too). Check every change of geometry against the closed form for
+that geometry, and change it in the post-processing on the same basis (`E1.2`: a
+2-D through-flow divided by a sphere's volume gave 1.032 where 4.5 is expected)
+(gl 30, 154).
+
 ## 10. Nonlinear Source Terms
 
 ### 10.1 Preferred style
@@ -442,6 +455,21 @@ rhs = nu @ rates
 This is especially useful in reaction-network and ODE models, where the stoichiometric structure is part
 of the teaching objective.
 
+### 10.3 Floating point in sources and post-processing
+
+- Write closed forms that cancel near a parameter value without the cancellation:
+  `np.expm1((d - 1) * np.log(tau)) / (d - 1)`, not `(tau**(d - 1) - 1) / (d - 1)` near
+  `d = 1`. No solver tolerance recovers the lost digits (`B2.3`: bias 1.0e-6 became
+  8.4e-9) (gl 12).
+- A difference quotient of such a closed form reports the cancellation divided by the
+  step. Before calling a gap truncation, repeat with the same step on a series and with
+  a larger step: truncation shrinks with the step, round-off grows (`B1.4`: 1.2e-5
+  published as truncation, 6.7e-8 on the series) (gl 109).
+- Compute step times as `(i + 1) * dt`, not by `t += dt`, and select time windows with a
+  half-step margin: ten steps of 0.01 sum to 0.09999999999999999, and `t >= 0.1` drops
+  the edge (`B3.2`: the dropped edge held the maximum error, 6.2e-5 against the reported
+  4.3e-5) (gl 133).
+
 ## 11. Solver Rules
 
 1. Use `newton(...)` for nonlinear implicit steps and steady-state solves.
@@ -468,6 +496,16 @@ of the teaching objective.
    2.5.0), then regularised kinetics with `damping="monotone"`, `scale=`,
    then `pseudo_transient` or `continuation`. Do not wrap `newton` in a
    home-made line search.
+8. Newton knows nothing of dynamic stability: from a nearby guess it converges
+   to an unstable steady state as fast as to a stable one (`B1.1`: the middle
+   branch in 4 iterations). Show stability by time or pseudo-time marching, and
+   folds by continuation in the physical parameter (gl 18).
+9. Locate a root (a threshold, a crossing, a length) with `find_roots` over a
+   bracket that follows from the physics, and raise unless it finds exactly one
+   (`E1.1`: `[L_mf, L_mf / (1 - delta_max)]` instead of hand constants). Where
+   the feature can lie outside the domain, decide from a parameter test whether
+   it exists, and raise when it exists but the domain is too short, instead of
+   returning `nan` for both (`E1.2`) (gl 152, 156).
 
 Preferred `solve()` pattern:
 
@@ -509,9 +547,9 @@ Every model should include at least one of the following:
 5. Physical monotonicity or boundedness check
 
 Every check must be able to fail. Break the model on purpose (flip a sign, change
-`nu`, mismatch a bc) and confirm the checked number moves; a check that does not
-move tests nothing. Refine every axis that carries error (grid and time step) and
-report the observed order. Read outlet and wall values with
+`nu`, mismatch a bc) and confirm the checked number fails its own tolerance;
+moving is not enough (13.1). Refine every axis that carries error (grid and time
+step) and report the observed order (13.2). Read outlet and wall values with
 `compute_boundary_values`, not from the last cell centre (pitfalls P8).
 
 Examples:
@@ -521,6 +559,132 @@ Examples:
 - TVD scheme is sharper than FOU but remains bounded
 - total mass is conserved in a closed reaction system
 - concentration stays non-negative
+
+### 13.1 Break rows
+
+- A defect protects a check only if it fails that check's tolerance. Under a 5 %
+  tolerance a 1 % defect is invisible (`J4.6`: `k2 + 1 %`). Size the defect against the
+  tolerance, or tighten the tolerance to about 100 times the measured spread until the
+  defect fails it (gl 7).
+- Measure a defect's effect as the difference between two solves that differ only by the
+  defect, on the same grid. Against an external reference each solve adds its own
+  discretisation error (`A2.8`: a far-field defect reported as 5.9e-7, the grid error,
+  moves the answer by 2.5e-16) (gl 70).
+- A comparison of an approximation with an exact solve needs the case where the
+  approximation is exact by construction, and a unit check of the formula (`A3.1`: with
+  a linear equilibrium the misprinted additivity rule missed the exact answer by 109 %)
+  (gl 78).
+- For a closed-form correlation, keep every published constant in one dictionary that
+  every function takes as an argument; one defect per constant (digits transposed, sign
+  flipped), and one that flips each threshold claim (`F1.3`: 42 defects failed 88 of 89
+  claims) (gl 175).
+- A scan whose cases are related by a symmetry of the model counts each case more than
+  once. Scan the fundamental domain and check the symmetry once as an identity, with a
+  defect that breaks it (`A2.5`: 12 rows were 8 beds, and the two "exceptions" one bed)
+  (gl 65).
+
+### 13.2 Observed orders
+
+- Fit orders from successive differences of three levels at a constant ratio
+  (`observed_orders`), and quote the error against the Richardson limit. Errors against
+  the finest grid, or against the exact value on a ladder that refines one axis only,
+  carry a fixed error in every level (`H1.9`: 2.39 against the finest grid, 2.09 and
+  2.05 from differences; `A3.15`: 2.12 against 2.01) (gl 43, 75).
+- Refine every axis before calling a remaining gap a difference. "The solver cannot
+  resolve this effect" is about one grid, not the solver (`A3.2`: the gap left at a
+  fixed step count, 0.18 %, was the step error) (gl 82).
+- Report the order per case, not averaged, and check it at a second parameter value
+  before explaining an excess. A thin reacting layer converges at orders between 2 and 3
+  on practical grids: bound such an order by [2, 3], and by [1.9, 2.1] only where the
+  layer is resolved (`B1.1`: mean 2.35 was 2.96, 2.06, 2.03; the slab gives 2.0 at phi =
+  1). Check the arithmetic: a ratio 2.29 at a 1.33x refinement is order 2.9 (`B1.2`) (gl
+  19, 95).
+- Orders that oscillate (upwind on a shock: 0.88 to 1.12 on 50 to 1600 cells, `A1.5`)
+  are reported as a minimum and a maximum. A pre-asymptotic order from nearly equal
+  differences moves with the numerical stack (`J1.10`: 1.79, later 2.11): report a range
+  with its reason (gl 9, 163).
+- Show that the finest difference is above round-off: measure round-off by the residual
+  of an identity the discrete equations satisfy exactly, such as a conservation gap
+  (`B3.1`: finest difference 3.1e3 times the gap; 3.95 on a ladder taken too fine, which
+  is the defect for this check) (gl 132).
+
+### 13.3 Round-off and tolerance-level numbers
+
+- Classify each checked number by what it is: zero by construction (an identity, checked
+  at a bound of round-off), set by a solver or integrator tolerance, or physical. Never
+  decide by its size, and never state a round-off value as a number: state the bound
+  (`J4.6`: 9.7e-16 stated, 4.8e-16 on another machine) (gl 1, 2).
+- An integrator meets a closed form to round-off when the solution is linear in the
+  integrated variable; that is an identity, not a tolerance bound (`B2.3`: 2.7e-15
+  against a bound of 1e-7) (gl 129).
+- Never divide by a round-off quantity, also not in a printed sentence (`J4.8`: 7e-12 on
+  one BLAS kernel, 0.0 on another, `ZeroDivisionError`) (gl 6).
+- Do not count "exact zeros" after a Newton step: count on the construction that makes
+  them, or below a threshold with a margin (`H1.1`: one step of 1e-16 moved 264 of 3014
+  zeros) (gl 40).
+
+### 13.4 Roots, limits and extremes
+
+- An argmax on the last point of the domain says "at or beyond the end": extend the
+  domain (`C2.10`: the maximum was at 6.65 m, not at the 3 m exit) (gl 22).
+- A crossing read as the nearest node of a grid is the node: use `find_roots`, and for
+  an extremum the roots of the derivative. A maximum over a range taken on a grid is
+  often the value at the edge; say what limit it tends to (`J1.5`: 0.0912 on the grid,
+  0.0940 as root) (gl 182).
+- Take limits in closed form, and check on the grid that the approach is monotone
+  (`A1.6`: the grid end gave 1.21x, the limit 1.17x). A limit evaluated at a finite
+  point is a rate: check it as a bound at that point (`A1.1`: 1.5e-7 at x = 1e9).
+  Evaluate it through the dimensionless function, at the dimensionless value you state
+  (`A1.8`: velocities of 1e-9 m/s were Re 2e-8) (gl 147, 189, 221).
+- A bounded minimiser of a flat, noisy objective resolves the minimum only to about
+  `sqrt(2 dF / F'')`; root a cancellation-free derivative instead (`B3.3`: a one-ulp
+  change of the bracket moved the result from 1.8e-9 to 1.2e-7) (gl 138).
+
+### 13.5 Statements in prose
+
+- Generate every number and count in the text from the code or the loaded table that
+  holds it; never retype one (`D1.1`: text said five, the code printed 6; `F1.3`: "ten
+  times" was 1.25 / 0.16 = 7.8). Take another model's results from its stored output and
+  its code unchanged, by import or byte-identical copy (`A1.8`: against retyped
+  constants 2.6e-8, against the stored values 0) (gl 55, 174, 213, 225).
+- A failure mode or trap stated in the text needs the code that produces it (`D1.1`: a
+  quoted 123 K error has no code path, the solve gives 0.52 K; `A2.1`) (gl 53, 60).
+- Compare with a bound as the ratio to the bound, with its margin; compute a closeness
+  ("within a few percent") over the whole stated range; and measure a negligibility on
+  the data the model is about, not at a few chosen conditions (`I1.3`: "2.0x" was 2.3 to
+  7.7; `A1.1`: within 10 % only for 7.8 < x < 28.6; `F1.3`: 15 % in a table, 138 % on
+  the data). A physical bound needs a number the model holds (`A1.8`) (gl 52, 146, 170,
+  224).
+- Compute a sensitivity of a coupled system by solving it again with the parameter
+  changed, and say what is held fixed (`G1.7`: a quoted 44 % was 21 to 41 % through the
+  loop). "A fit absorbs this effect" needs the equivalent parameter root-found per case
+  (`E2.1`: 5.00 to 3.85 cm, not one 4.2 cm) (gl 29, 168).
+- A constant that matches at one point does not show that the assumption behind it holds
+  there: measure the assumption (`J1.5`: the LDF coefficient equals 15 where the profile
+  is far from parabolic) (gl 180).
+- Say what two "independent" routes share (`E1.1`: a closed form and an ODE route shared
+  the end condition and the source function) (gl 150).
+- Measure a grid error at every point a comparison uses, not where the profile is
+  flattest (`C2.1`: 2.1e-5 at one point, 4.1e-5 over 61) (gl 143).
+
+### 13.6 Data and statistics
+
+- Read printed precision from the string: `pd.read_csv(..., dtype=str)` beside the
+  numeric column, since `0.270` as a float is `0.27` (`H1.8`: a rounding band of 8.43 %
+  from the float, 0.92 % from the string). A verdict decided by rounding carries its
+  distance to the rounding boundary, in last-digit units, and a defect that makes a
+  "none" false; a precision claim over a set is a count, with the unit of each phrase
+  printed (`B2.1`, `A2.6`: 5 of 7) (gl 46, 143, 206, 229).
+- Bootstrap with enough resamples that the seed hardly moves the result: vectorise
+  (`rng.integers` on group sums), take the tolerance from the spread over about a dozen
+  seeds, check each verdict ("excludes 0") as its own claim, and give added draws their
+  own generator (`A1.5`: with 2000 resamples an end moved by up to 0.03, or 15 %; with
+  200000 by 0.003) (gl 157, 159).
+- Fit an exponent or a coefficient with its standard error, pool groups with separate
+  intercepts, and add a suspected confound as a regressor before naming it (`B2.1`: 2.9
+  standard errors from zero became 1.0). Rank rival models by the paired standard error
+  of each gap, and nested models by the extra sum of squares F test (`C1.1`: a
+  "discriminating" gap was 0.63 SE) (gl 203, 267).
 
 ## 14. Anti-Patterns to Avoid
 
