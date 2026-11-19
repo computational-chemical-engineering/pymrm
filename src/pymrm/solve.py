@@ -806,9 +806,9 @@ class _NewtonRun:
         measured = near or last_it or crit.relative
         if measured:
             be = crit.backward_error(ev, self.x_flat)
-        # An unmeasured be (nan) passes the gate. That is never decisive: the gate is read only with
-        # converged or stagnant (_stop_status, gate_failed); both imply near, or the relative test, which
-        # always measures.
+        # An unmeasured be (nan) passes the gate. That is never decisive: the gate decides only together
+        # with converged or stagnant (_stop_status, gate_failed); both imply near, or the relative test,
+        # which always measures.
         backward_tol = crit.backward_tol
         gate = backward_tol is None or not measured or np.isnan(be) or be <= backward_tol
         stagnant = self.use_stagnation and near and _stalled(window, step_inf)
@@ -1097,20 +1097,28 @@ def newton(
 
         * ``None``, ``'spsolve'`` or ``'lu'``: direct LU at every size,
           ``scipy.sparse.linalg.splu`` (COLAMD ordering) for sparse Jacobians
-          and ``scipy.linalg.lu_factor`` for dense ones. The factorisation is
-          reused for the damping test. ``lin_solver_kwargs`` go to ``splu``;
-          a dense Jacobian ignores them (keys that are not ``splu`` options
-          warn that they are ignored).
-        * ``'cg'``, ``'bicgstab'``: ILU-preconditioned Krylov solvers, only on
-          request; ``lin_solver_kwargs`` go to the Krylov solver.
+          and LAPACK ``getrf``/``getrs`` for dense ones. With
+          ``damping='none'`` and no ``row_scaling`` the factorisation is that
+          of pymrm 2.5.0 (``spsolve``'s for sparse Jacobians,
+          ``scipy.linalg.solve`` for dense ones). The factorisation is reused
+          for the damping test.
+        * ``'cg'``, ``'bicgstab'``: ILU-preconditioned (``spilu``) Krylov
+          solvers, only on request; sparse Jacobians only.
         * ``'splu'``: ``function`` returns an already factorised ``SuperLU``
           object instead of a matrix; its ``.solve()`` is used.
         * an object with a ``factorize(jac)`` method returning an object with
           ``.solve(rhs)``: a user factorisation (for example a Schur
           complement) that takes part in the damping test.
-        * a callable ``solver(jac, rhs, **lin_solver_kwargs) -> dx``.
+        * a callable ``solver(jac, rhs, **lin_solver_kwargs) -> dx``. ``rhs``
+          is the residual as a float array in the shape ``function`` returns
+          it; ``dx`` is flattened.
     lin_solver_kwargs : dict, optional
-        Keyword arguments forwarded to the linear solver.
+        Keyword arguments for the linear solver. Direct solver: the ``splu``
+        options (``permc_spec``, ``diag_pivot_thresh``, ``relax``,
+        ``panel_size``, ``options``), used for sparse Jacobians only; other
+        keys warn that they are ignored. ``'cg'``, ``'bicgstab'``: passed to
+        the Krylov solver. Callable ``solver``: passed to it. ``'splu'`` and a
+        ``factorize`` object: not used.
     callback : callable, optional
         ``callback(x, residual)`` after each accepted step, with ``residual``
         the residual before the step. It may modify ``x`` in place (for
@@ -1143,11 +1151,8 @@ def newton(
           ``callback`` or a callable ``solver`` is given, since those may
           change the step after it is taken.
 
-        Measured on 84 Arrhenius (Weisz-Hicks) pellets from three starts:
-        ``'none'`` 60 converged, ``'guarded'`` 62 at the same cost,
-        ``'monotone'`` 69 at about twice the function evaluations. On
-        half-order kinetics with a dead zone ``'monotone'`` with regularised
-        kinetics converged in every case, plain Newton in a third.
+        ``'monotone'`` converges from more starting points than ``'guarded'``,
+        at about twice the function evaluations.
     bounds : float, array, tuple, or scipy.optimize.Bounds, optional
         ``(lower, upper)``; each side ``None``, a scalar, or an array that
         broadcasts against the shape of ``initial_guess`` (shape ``(nc,)``
@@ -1207,8 +1212,7 @@ def newton(
         LU factorisation. Improves pivoting when rows have different units.
         Off by default: it changes the pivot order and with it the round-off,
         and continuations that pass close to a turning point with a
-        tolerance near round-off then end on a different branch (measured on
-        a gallery page).
+        tolerance near round-off may then end on a different branch.
     recoverable : tuple of exception types, optional
         Exceptions that mark a damped trial point as unusable: the step is
         shortened. Non-finite residuals are treated the same way. Exceptions
@@ -1232,12 +1236,13 @@ def newton(
         and ``clipped`` (components held by a bound).
 
         ``status``: 0 converged; 1 converged to the stagnation floor;
-        2 ``maxfev`` reached; 3 damping fell below its minimum; 7 step test
+        2 ``maxfev`` iterations without convergence; 3 damping fell below its minimum; 7 step test
         met but ``backward_error > backward_tol``; 8 stopped on a bound (the
         bound is likely cutting off the solution). Statuses 4 (non-finite
         residual or Jacobian that no damping avoids), 5 (singular Jacobian)
-        and 6 (non-finite Newton step, or an iterative linear solver that did
-        not converge) are raised as :class:`NewtonBreakdown`, whose ``result``
+        (singular Jacobian, also when ``spilu`` cannot factorise it) and 6
+        (non-finite Newton step, or an iterative linear solver that did not
+        converge) are raised as :class:`NewtonBreakdown`, whose ``result``
         holds this object.
 
     Raises
@@ -1248,7 +1253,8 @@ def newton(
         When no Newton step can be formed (statuses 4 to 6). It is a
         ``numpy.linalg.LinAlgError`` and so a ``ValueError``, as the
         exceptions these cases raised up to 2.5.0; :class:`KrylovBreakdown`
-        (an iterative solver failed) is also a ``RuntimeError``.
+        (an iterative solver failed, or its ILU preconditioner found the
+        Jacobian singular) is also a ``RuntimeError``.
 
     Notes
     -----
@@ -1282,14 +1288,10 @@ def newton(
     ``tol``. :func:`pymrm.checks.residual_check` gives a stricter, purely
     componentwise verdict after the fact.
 
-    **Changes in 3.0.0.** Before, ``newton`` took plain full steps even
-    into a non-finite residual, stopped on the step test alone, and switched
-    to ILU-BiCGSTAB above 50 000 unknowns. Pass ``damping="none",
-    backward_tol=None`` for the old iteration; it then
-    takes the same steps, evaluations and results as before. A singular
-    Jacobian, a non-finite residual or step, or an iterative linear solver
-    that does not converge still raise, now as :class:`NewtonBreakdown`
-    with the result attached.
+    **The pymrm 2.x iteration.** ``damping="none", backward_tol=None`` takes
+    the steps, evaluations and results of pymrm 2.5.0 (which also switched
+    to ILU-BiCGSTAB above 50 000 unknowns: pass ``solver='bicgstab'`` for
+    that).
     """
     x = np.array(initial_guess, dtype=float, order="C")
     shape = x.shape
