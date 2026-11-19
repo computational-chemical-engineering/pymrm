@@ -135,7 +135,7 @@ def test_newton_dense_non_splu_key_warns_ignored_and_is_ignored():
     """maintainer-note-c2 item 5: a key that is no splu option warns "ignored" and does not reach the dense solver."""
     expected = newton(_dense_cubic_chain, np.ones(3), damping="none")
     with pytest.warns(RuntimeWarning, match="is ignored"):
-        result = newton(_dense_cubic_chain, np.ones(3), damping="none", lin_solver_kwargs={"assume_a": "pos"})
+        result = newton(_dense_cubic_chain, np.ones(3), damping="none", lin_solver_kwargs={"assume_a": "diagonal"})
     assert expected.status == result.status == 0
     assert result.x.tobytes() == expected.x.tobytes()
 
@@ -280,3 +280,16 @@ def test_newton_krylov_singular_jacobian_raises_krylov_breakdown(solver):
     assert isinstance(info.value, RuntimeError)
     assert info.value.result.status == 5
     assert "spilu" in str(info.value)
+
+
+def test_continuation_with_cg_ends_on_a_singular_jacobian_instead_of_raising():
+    """maintainer-note-c2 item 17, via continuation: a spilu failure ends the march as a direct solver's singular
+    Jacobian does (a KrylovBreakdown is a NewtonBreakdown), instead of raising a bare RuntimeError."""
+    def function(x, p):
+        jac = csc_array(np.diag([1.0, p, 1.0]))
+        return jac @ x - np.array([1.0, p, 1.0]), jac
+
+    result = continuation(function, np.zeros(3), [1.0, 0.5, 0.0], newton_kwargs={"solver": "cg"})
+    assert not result.success
+    assert result.params[0] == 1.0 and 0.0 not in result.params
+    assert "spilu" in result.message
