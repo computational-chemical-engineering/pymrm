@@ -114,20 +114,30 @@ def test_newton_dia_array_jacobian_matches_csc(damping):
     np.testing.assert_allclose(result.x, expected.x, rtol=1e-12)
 
 
-def test_newton_dense_splu_key_raises_without_damping_and_works_when_guarded():
-    """maintainer-note-c2 item 5: a splu key in lin_solver_kwargs on a dense Jacobian.
+def _dense_cubic_chain(x):
+    """``_cubic_chain`` with a dense Jacobian."""
+    return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), _TRIDIAGONAL + np.diag(3 * x**2)
 
-    With damping="none" the key reaches the dense solver and raises TypeError, with damping="guarded" the
-    solve succeeds. Neither case warns. Pins current behaviour; a deliberate change updates this test.
+
+@pytest.mark.parametrize("damping", ["none", "guarded"])
+def test_newton_dense_splu_key_is_ignored_in_every_mode(damping):
+    """maintainer-note-c2 item 5: a splu key in lin_solver_kwargs on a dense Jacobian is ignored silently.
+
+    Every damping mode gives the x of a run without the key, and no warning (the suite turns warnings into errors).
     """
-    def function(x):
-        return _TRIDIAGONAL @ x + x**3 - np.array([1.0, 2.0, 3.0]), _TRIDIAGONAL + np.diag(3 * x**2)
+    expected = newton(_dense_cubic_chain, np.ones(3), damping=damping)
+    result = newton(_dense_cubic_chain, np.ones(3), damping=damping, lin_solver_kwargs={"permc_spec": "NATURAL"})
+    assert expected.status == result.status == 0
+    assert result.x.tobytes() == expected.x.tobytes()
 
-    kwargs = {"permc_spec": "NATURAL"}
-    with pytest.raises(TypeError):
-        newton(function, np.ones(3), damping="none", lin_solver_kwargs=kwargs)
-    result = newton(function, np.ones(3), damping="guarded", lin_solver_kwargs=kwargs)
-    assert result.status == 0
+
+def test_newton_dense_non_splu_key_warns_ignored_and_is_ignored():
+    """maintainer-note-c2 item 5: a key that is no splu option warns "ignored" and does not reach the dense solver."""
+    expected = newton(_dense_cubic_chain, np.ones(3), damping="none")
+    with pytest.warns(RuntimeWarning, match="is ignored"):
+        result = newton(_dense_cubic_chain, np.ones(3), damping="none", lin_solver_kwargs={"assume_a": "pos"})
+    assert expected.status == result.status == 0
+    assert result.x.tobytes() == expected.x.tobytes()
 
 
 def _raising_after_the_first_call():

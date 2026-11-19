@@ -196,13 +196,13 @@ class _LinearSolver:
 
     def _direct_dense(self, jac):
         if self.legacy:
-            # scipy.linalg.solve, which detects structure (symmetric, triangular)
+            # scipy.linalg.solve, which detects structure (symmetric, triangular);
+            # lin_solver_kwargs apply to sparse Jacobians only
             a = np.asarray(jac)
-            dense_kwargs = self.kwargs
 
             def solve(rhs):
                 try:
-                    return dense_solve(a, np.asarray(rhs), **dense_kwargs)
+                    return dense_solve(a, np.asarray(rhs))
                 except np.linalg.LinAlgError as exc:
                     raise _SingularJacobian(str(exc)) from exc
             return solve, None
@@ -1088,7 +1088,9 @@ def newton(
         * ``None``, ``'spsolve'`` or ``'lu'``: direct LU at every size,
           ``scipy.sparse.linalg.splu`` (COLAMD ordering) for sparse Jacobians
           and ``scipy.linalg.lu_factor`` for dense ones. The factorisation is
-          reused for the damping test. ``lin_solver_kwargs`` go to ``splu``.
+          reused for the damping test. ``lin_solver_kwargs`` go to ``splu``;
+          a dense Jacobian ignores them (keys that are not ``splu`` options
+          warn that they are ignored).
         * ``'cg'``, ``'bicgstab'``: ILU-preconditioned Krylov solvers, only on
           request; ``lin_solver_kwargs`` go to the Krylov solver.
         * ``'splu'``: ``function`` returns an already factorised ``SuperLU``
