@@ -623,6 +623,10 @@ Examples:
 - Do not count "exact zeros" after a Newton step: count on the construction that makes
   them, or below a threshold with a margin (`H1.1`: one step of 1e-16 moved 264 of 3014
   zeros) (gl 40).
+- A restructuring that should change no number (constants and functions moved into a
+  module) is checked bit-identical before a long run: execute the old and the new
+  definitions side by side on coarse grids (`D1.1`: five thresholds, a Radau route and
+  both unit readings identical in under a minute) (gl 56).
 
 ### 13.4 Roots, limits and extremes
 
@@ -640,6 +644,13 @@ Examples:
 - A bounded minimiser of a flat, noisy objective resolves the minimum only to about
   `sqrt(2 dF / F'')`; root a cancellation-free derivative instead (`B3.3`: a one-ulp
   change of the bracket moved the result from 1.8e-9 to 1.2e-7) (gl 138).
+- "Falls monotonically" is a count of steps that pass a nonzero threshold over the
+  stated range, so round-off steps of either sign do not decide it and a defect that
+  flattens the curve fails it (`F3.2`: 20 of 20 steps beyond 1e-6). Where a behaviour
+  starts or stops in a parameter, a scan of a few values does not place the boundary:
+  give the closed form or the asymptote that does, with a check (`J5.6`: 8 scanned
+  values; `s = 1/2 + (2m - 1)/(4 alpha)` puts it at m = 1/2, checked to 3.5e-7 at
+  alpha = 1e10) (gl 272, 329).
 
 ### 13.5 Statements in prose
 
@@ -686,6 +697,28 @@ Examples:
   standard errors from zero became 1.0). Rank rival models by the paired standard error
   of each gap, and nested models by the extra sum of squares F test (`C1.1`: a
   "discriminating" gap was 0.63 SE) (gl 203, 267).
+- Judge a t statistic against the Student t quantile for its degrees of freedom,
+  two-sided 95 %: `scipy.stats.t.ppf(0.975, dof)`, never 2 (`J2.6`: 12.71 at 1 dof; `J2.7`: 4.30
+  at 2, 3.18 at 3). Each alternative choice in a sensitivity range gets its own mean,
+  standard error and dof; the base case's standard error at the ends of the range
+  misstates what they exclude (`J2.6`: one end was 2.346 +/- 0.178, t 1.94 at 4 dof
+  against 2.78, so the value called excluded was not) (gl 323, 324).
+- The standard error of a slope fitted to values read off a figure is at least the
+  reading error carried to the slope: use the larger of the two (`J2.7`: 0.0070 from the
+  regression, 0.0097 from the reading; t 15.6 became 11.1) (gl 325).
+- Compare groups that also differ in a covariate on matched pairs, with the matching
+  rule stated, or by a regression with the covariate, not by an unpaired difference
+  (`F1.8`: a liquid-velocity effect of 0.300
+  unpaired was 0.222 +/- 0.033 over 5 pairs matched within 6 % in gas velocity) (gl 326).
+- A power law fitted by root-finding the derivative of a scatter function (the residual
+  sum of squares of `ln y`, the other parameters refitted at each trial) is linear least
+  squares in disguise: for `ln y = s ln x1 - s n ln x2 + c` fit `(s, m, c)` with
+  one `lstsq` and take `n = -m/s` (`E1.1`: n = 0.6173 either way). Keep `find_roots` for
+  the confidence-interval crossings, and require exactly two (gl 151).
+- A resampled optimum on a scan edge that is a limit of the model (an exponent going to
+  infinity), not an end of the search, is counted and kept, not raised on: register the
+  count with its seed spread and a break row that narrows the grid (`J4.1`: 28 to 54 of
+  4000 draws on the edge; a wider grid left draws on the new edge) (gl 292).
 
 ## 14. Anti-Patterns to Avoid
 
