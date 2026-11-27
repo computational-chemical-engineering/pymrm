@@ -25,7 +25,8 @@ except ImportError:  # pymrm 2.3.1 or older: use the copy in this skill's script
   Richardson error estimate; `ns` must have a constant ratio.
 - `find_roots(f, lo, hi)`: every sign change in a range, failed evaluations
   reported separately; use it for thresholds (runaway, ignition, critical inlet).
-- `residual_check(fun, x)`: scale-free backward error of a solution.
+- `residual_check(fun, x, scale=None)`: scale-free backward error of a solution
+  (`scale="field"` judges each unknown against its field's size, as `newton` does).
 
 ## Judge the final residual relative to the size of the terms
 
@@ -40,6 +41,14 @@ the same verdict whatever the scaling of rows and unknowns (not across offset
 units such as degrees Celsius against kelvin). Or scale the equations to order one (divide each
 balance by a reference rate) and then use an absolute threshold. Never raise "not converged"
 on a solve that reports convergence without first printing both numbers.
+
+A component far below the size of its field (a depleted cell, a reaction dead
+zone, an absent species) can show a backward error up to order one under the
+default, on a state `newton` accepted: `newton` judges each unknown against its
+field. Pass `scale="field"`, with `x` in the shape `newton` was given, for the same
+measure, or `scale=` the unknowns' magnitudes as
+given to `newton`. Measured: `B1.6`, a sweep `newton` converged at `tol=1e-12`,
+read 0.12 with the default and 1.1e-16 against the field maximum (gl 115).
 
 ## Keep tolerances above the round-off floor
 

@@ -204,13 +204,33 @@ def find_roots(f, lo, hi, n_scan=64, log=False, xtol=1e-12):
     return {"roots": roots, "failed": failed, "message": message}
 
 
-def residual_check(fun, x, tol=1e-8):
+def _field_magnitude(x, scale):
+    """Per unknown, the reference magnitude ``x_ref`` of :func:`residual_check`."""
+    if scale is None:
+        return np.zeros(x.size)
+    if isinstance(scale, str):
+        if scale != "field":
+            raise ValueError(f"scale must be None, 'field', or positive numbers, not {scale!r}")
+        ax = np.abs(x)
+        largest = float(ax.max()) if x.size else 0.0
+        floor = 1e-6 * largest  # as newton: no field below 1e-6 of the largest unknown
+        if x.ndim >= 2:
+            ref = np.maximum(ax.reshape(-1, x.shape[-1]).max(axis=0), floor)
+            return np.broadcast_to(ref, x.shape).ravel()
+        return np.full(x.size, largest)
+    ref = np.array(np.broadcast_to(np.asarray(scale, dtype=float), x.shape)).ravel()
+    if not (np.all(np.isfinite(ref)) and np.all(ref > 0.0)):
+        raise ValueError("scale must be finite and positive for every unknown.")
+    return ref
+
+
+def residual_check(fun, x, tol=1e-8, scale=None):
     """Judge a solution by its componentwise backward error.
 
     An absolute threshold on the residual depends on the units and scaling of
-    the equations. The backward error ``max_i |g_i| / (|J| |x| + |J x - g|)_i``
-    is scale-free: it measures the relative change in the (linearised) equation
-    coefficients that would make ``x`` exact.
+    the equations. The backward error ``max_i |g_i| / (|J| (|x| + x_ref) +
+    |J x - g|)_i`` is scale-free: it measures the relative change in the
+    (linearised) equation coefficients that would make ``x`` exact.
 
     Parameters
     ----------
@@ -220,19 +240,41 @@ def residual_check(fun, x, tol=1e-8):
         Candidate solution, for example ``result.x`` from :func:`pymrm.newton`.
     tol : float, optional
         Acceptance threshold on the backward error.
+    scale : None, ``"field"``, float or numpy.ndarray, optional
+        The reference magnitude ``x_ref`` of each unknown. ``None`` (default)
+        uses ``x_ref = 0``: every unknown is judged against its own size, so a
+        component far below its neighbours (a depleted cell, a reaction dead
+        zone) can show a large backward error on a solution
+        :func:`pymrm.newton` accepted. ``"field"`` is the measure ``newton``
+        uses without its ``scale``: ``x_ref`` is the largest ``|x|`` of the
+        unknown's field (fields along the last axis of ``x``; a one-dimensional
+        ``x`` is one field), and no less than ``1e-6`` times the largest
+        ``|x|``. Pass ``x`` in the shape ``newton`` was given: a flattened
+        state is one field. ``newton`` also floors with the initial guess's
+        largest ``|x|``, which this check does not know. A positive float or
+        array broadcast against ``x`` gives ``x_ref`` directly, as
+        ``newton``'s ``scale`` does.
 
     Returns
     -------
     dict
         ``ok`` (bool), ``backward_error`` and ``max_abs_residual``.
+
+    Raises
+    ------
+    ValueError
+        If ``scale`` is a string other than ``"field"``, or has a value that is
+        not finite and positive.
     """
     x = np.asarray(x, dtype=float)
+    x_ref = _field_magnitude(x, scale)
     g, jac = fun(x.copy())
     g = _as_dense_vector(g)
     x_flat = x.ravel()
     jac = sparse.csr_array(jac) if sparse.issparse(jac) else np.asarray(jac, dtype=float)
     abs_jac = abs(jac)
-    denominator = abs_jac @ np.abs(x_flat) + np.abs(jac @ x_flat - g)
+    v = np.abs(x_flat) if scale is None else np.abs(x_flat) + x_ref
+    denominator = abs_jac @ v + np.abs(jac @ x_flat - g)
     denominator = np.where(denominator > 0.0, denominator, np.finfo(float).tiny)
     backward_error = float(np.max(np.abs(g) / denominator))
     return {"ok": bool(backward_error <= tol), "backward_error": backward_error,
