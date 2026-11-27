@@ -114,6 +114,10 @@ carries its own value (tanks in series, a cell model, a CSTR cascade).
 - `{"outflow": True}` marks a whole boundary, not one field. Streams that move in
   opposite directions need one operator each (api-map, "Streams in opposite
   directions") (gl 165).
+- An outlet left `None` is not an outflow: that face carries nothing, as a
+  Dirichlet zero does. With an exchange sink `newton` then converges silently to
+  a wrong state (`F2.3`: 95.63 % against 93.31 %); since 3.4.0 the operator warns
+  when a boundary without a condition has outgoing velocity (gl 187).
 - Do: `{"outflow": True}` on every convection-only outlet, read with
   `compute_boundary_values` under that same dictionary.
 

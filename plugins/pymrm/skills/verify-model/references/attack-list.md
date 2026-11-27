@@ -27,6 +27,10 @@ move, the check is structural: it may stay as a code check, never as evidence.
   324) (gl 116).
 - "Structural" is often a missing row: a guard computed in the rows' helper moved 2.6e4
   to 0 (`D1.1`) (gl 54, 205).
+- A solver-floor companion of an order claim needs a row that loosens the solver; a
+  coarser ladder or a changed parameter leaves the finest difference far above the floor
+  (`J3.1`: 1.1e6 times the floor at baseline, 2.1e4 with the step ceiling unscaled, 11
+  with `newton` `tol=1e-4`) (gl 289).
 
 ## 2. A second route that is no route
 
@@ -263,6 +267,9 @@ bounds) for each reported value.
   `success` barely below `tol` (gl 102, 193).
 - `newton` raises `NewtonBreakdown` on a singular Jacobian rather than return
   `success=False` (`B3.3`: 13 of 20) (gl 139).
+- The source's own iteration can be the stop: reproduce a published result with the
+  source's stop rule as well as converged (`J2.7`: at the paper's 0.001 per increment
+  the march stops at sweep 357 with d32 7.4 % below the steady state) (gl 328).
 
 ## 14. A statistical verdict without a standard error
 

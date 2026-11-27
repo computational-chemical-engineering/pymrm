@@ -109,6 +109,15 @@ solve fails, so a failed solve is never mistaken for a sign.
 - Read a march at step times: interpolation between steps made Heun look third
   order on `B2.3`. Land one implicit step on the target instead (`J3.1`)
   (gl 126, 288).
+- A maximum over a window is the largest of the window ends and the interior
+  stationary points. Demanding an interior root of the derivative fails when a
+  parameter moves the maximum to an end (`F1.8`: under a 10 % defect four break
+  rows raised "no root on [0.042, 0.38]", so they caught nothing) (gl 327).
+- A maximum in time root-found from the right-hand side at the dense state agrees
+  with the scan only to the interpolant's accuracy, and a flat stretch can hold
+  several stationary points in one bracket: take the largest stationary value and
+  judge its shortfall against the scan at a tolerance scaled with `rtol` (`J4.6`:
+  a fixed 1e-9 test failed 5 of 11 points at `rtol=1e-6`) (gl 302).
 
 ## When Newton does not converge
 
@@ -190,6 +199,15 @@ Use it there with Newton as the check on a coarser grid (`A3.15`, `I1.3`) (gl 50
 - A linear multi-stream plug-flow model is solved exactly in the eigenmodes of
   `V^-1 S`, each normalised at its larger end (condition 28 against 7.7e59,
   `E2.1`) (gl 167).
+- A linear equation on constant operators, `eps dc/dt = Lop c + b` with `b`
+  constant in time, is solved exactly in time in the modes of the generalised
+  symmetric eigenproblem of `diag(V) @ Lop` against `diag(eps * V)`, with `V` the
+  cell volumes (`scipy.linalg.eigh(A, B)`), which takes the time axis out of the
+  error budget. That matrix is symmetric only with flux conditions at both ends
+  (check it): with Dirichlet or Robin conditions pymrm's boundary closure couples
+  two cells, so use a general eigensolver or `expm`. Keep the forcing of the
+  constant mode, so that a wrong boundary flux shows as a drift of the inventory (`J3.5`: symmetric to 1.2e-16, backward Euler converges to the
+  modal profile at orders 0.99 and 1.00, inventory drift 9e-13) (gl 210).
 
 ## Marching and quadrature
 
