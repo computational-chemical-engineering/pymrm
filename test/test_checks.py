@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.sparse import csc_array
+import pytest
+from scipy.sparse import csc_array, diags_array
 
 from pymrm import NumJac, construct_div, construct_grad, newton
 from pymrm.checks import check_jacobian, find_roots, observed_orders, residual_check
@@ -73,6 +74,56 @@ def test_residual_check_is_scale_free():
         return tuple(v * 1e6 for v in fun(c))
 
     assert residual_check(fun, sol.x)["ok"] and residual_check(scaled, sol.x)["ok"]
+
+
+def test_residual_check_scale_judges_a_depleted_unknown_as_newton_does():
+    # gallery learnings row 115: a component far below its field's size
+    b = np.array([1.0, 1e-50])
+
+    def fun(x):
+        return x**2 - b, diags_array(2.0 * x, format="csc")
+
+    sol = newton(fun, np.ones(2))
+    assert sol.success and sol.x[1] > 1e-12          # accepted against the field's size
+    plain = residual_check(fun, sol.x)
+    assert not plain["ok"] and plain["backward_error"] > 0.1
+    field = residual_check(fun, sol.x, scale="field")
+    assert field["ok"] and field["backward_error"] <= sol.backward_error
+    assert residual_check(fun, sol.x, scale=1.0)["backward_error"] == field["backward_error"]
+    assert field["max_abs_residual"] == plain["max_abs_residual"]
+
+
+def test_residual_check_field_scale_is_per_field_and_validated():
+    x = np.array([[1.0, 1e-3], [1e-30, 2e-3]])     # two fields along the last axis
+
+    def fun(u):
+        return u.ravel() - x.ravel() + np.array([0.0, 0.0, 0.0, 1e-20]), csc_array(np.eye(4))
+
+    field = residual_check(fun, x, scale="field")["backward_error"]
+    assert np.isclose(field, 1e-20 / (2e-3 + 2e-3 + 1e-20))   # judged against field 1's size, 2e-3
+    per_field = residual_check(fun, x, scale=np.array([1.0, 2e-3]))["backward_error"]
+    assert per_field == field
+    with pytest.raises(ValueError):
+        residual_check(fun, x, scale="fields")
+    with pytest.raises(ValueError):
+        residual_check(fun, x, scale=0.0)
+    with pytest.raises(ValueError):
+        residual_check(fun, x, scale=-1.0)
+
+
+def test_residual_check_field_matches_newtons_backward_error():
+    from pymrm.solve import _backward_error, _field_reference
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0.5, 2.0, (5, 3))
+    x[:, 2] *= 1e-9                                  # a field below the 1e-6 floor
+    jac = csc_array(np.diag(rng.uniform(1.0, 3.0, 15)) + np.diag(np.ones(14), 1))
+    g = rng.normal(scale=1e-14, size=15)
+
+    def fun(u):
+        return g, jac
+
+    newton_measure = _backward_error(g, jac, x.ravel(), _field_reference(x.ravel(), x.shape, None))
+    assert residual_check(fun, x, scale="field")["backward_error"] == newton_measure
 
 
 def test_check_jacobian_fails_on_nan_probe_and_mixed_scales():
